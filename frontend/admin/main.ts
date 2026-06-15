@@ -66,6 +66,7 @@ async function loadAll(): Promise<void> {
 function showApp(): void {
   setEl('login-screen', 'none');
   setEl('main-nav', 'flex');
+  setEl('brand-corner', 'flex');
   setEl('main-content', 'block');
   void loadAll();
 }
@@ -74,6 +75,7 @@ function doLogout(): void {
   clearToken();
   setEl('login-screen', 'flex');
   setEl('main-nav', 'none');
+  setEl('brand-corner', 'none');
   setEl('main-content', 'none');
 }
 

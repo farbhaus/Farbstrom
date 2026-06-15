@@ -231,6 +231,9 @@ export function toggleChat(): void {
   document.getElementById('right-panel')?.classList.toggle('open', next);
   document.getElementById('chat-toggle')?.classList.toggle('panel-open', next);
   if (next) document.getElementById('chat-toggle')?.classList.remove('has-notification');
+  // Refresh the pill: on mobile it hides while chat is open and reappears when
+  // chat closes.
+  revealPill();
   reflowDuringPanelTransition();
 }
 
@@ -309,147 +312,149 @@ function setupFullscreen(): void {
   document.addEventListener('webkitfullscreenchange', onFsChange);
 }
 
-// Mobile landscape splits the bottom toolbar into two vertical side bars
-// and folds the top bar's items into them so the player gets the full
-// viewport height (#151). DOM-move (not clone) so existing event listeners
-// keep working. Original {parent, nextSibling} positions are recorded on
-// first move and used to restore when leaving the breakpoint.
-type Anchor = { parent: ParentNode; next: Node | null };
-const moveAnchors = new Map<Element, Anchor>();
+// The bottom toolbar is a floating "disappearing" pill (#186): it fades out
+// after a few seconds of inactivity and reappears on pointer movement, touch,
+// or a keypress. Hiding is suppressed while the user is interacting with the
+// pill (hover / keyboard focus inside it) or while the chat panel is open, so
+// it never vanishes mid-action. CSS (#bottom-toolbar.toolbar-hidden) does the
+// actual fade.
+const PILL_IDLE_MS = 3000;
+let pillHideTimer: ReturnType<typeof setTimeout> | null = null;
 
-function moveTo(el: Element | null, dest: Element | null): void {
-  if (!el || !dest) return;
-  if (!moveAnchors.has(el)) {
-    moveAnchors.set(el, { parent: el.parentNode!, next: el.nextSibling });
-  }
-  dest.appendChild(el);
+function pillEl(): HTMLElement | null {
+  return document.getElementById('bottom-toolbar');
 }
 
-function restoreAll(): void {
-  // Restore in reverse insert order so nextSibling references resolve
-  // correctly even when multiple siblings moved out of the same parent.
-  const entries = Array.from(moveAnchors.entries()).reverse();
-  for (const [el, a] of entries) {
-    if (a.next && a.next.parentNode === a.parent) {
-      a.parent.insertBefore(el, a.next);
-    } else {
-      a.parent.appendChild(el);
+// On mobile the chat panel is a full-width overlay, so a visible pill would sit
+// on top of the chat composer. Keep the pill hidden while chat is open there;
+// chat is closed via its own header button.
+function pillSuppressed(): boolean {
+  return viewerStore.get().chatOpen && window.innerWidth <= MOBILE_BP;
+}
+
+// Keep the pill visible while the pointer is over it, keyboard focus is inside
+// it, the ⋯ More sheet is open, or (on desktop) the chat panel is open.
+function pillPinned(pill: HTMLElement): boolean {
+  if (pill.matches(':hover')) return true;
+  if (pill.contains(document.activeElement)) return true;
+  if (pill.classList.contains('more-open')) return true;
+  if (viewerStore.get().chatOpen && window.innerWidth > MOBILE_BP) return true;
+  return false;
+}
+
+// The ⋯ More button (mobile) toggles the secondary-controls sheet above the
+// pill. (Tapping outside the pill closes it — handled in setupPillAutohide.)
+function setupMoreMenu(): void {
+  const pill = pillEl();
+  const moreBtn = document.getElementById('more-btn');
+  if (!pill || !moreBtn) return;
+  moreBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = pill.classList.toggle('more-open');
+    moreBtn.classList.toggle('active', open);
+    revealPill();
+  });
+}
+
+// On mobile the secondary controls move out of the pill into #more-sheet (the
+// ⋯ popup) so the pill stays a slim single row of essentials; on desktop they
+// return to their original inline positions (preserving the full toolbar
+// order). DOM-move (not clone) keeps their event listeners intact.
+const TOOLBAR_EXTRA_IDS = ['focus-btn', 'conf-toggle', 'player-controls', 'device-btn', 'resync-btn'];
+type ToolbarAnchor = { parent: Node; next: Node | null };
+const toolbarAnchors = new Map<Element, ToolbarAnchor>();
+
+function applyMobileToolbar(mobile: boolean): void {
+  const sheet = document.getElementById('more-sheet');
+  if (!sheet) return;
+  if (mobile) {
+    for (const id of TOOLBAR_EXTRA_IDS) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (!toolbarAnchors.has(el)) {
+        toolbarAnchors.set(el, { parent: el.parentNode!, next: el.nextSibling });
+      }
+      sheet.appendChild(el);
     }
+  } else if (toolbarAnchors.size) {
+    // Restore in reverse insert order so nextSibling references resolve even
+    // when several siblings moved out of the same parent.
+    for (const [el, a] of Array.from(toolbarAnchors.entries()).reverse()) {
+      if (a.next && a.next.parentNode === a.parent) a.parent.insertBefore(el, a.next);
+      else a.parent.appendChild(el);
+    }
+    toolbarAnchors.clear();
+    pillEl()?.classList.remove('more-open');
+    document.getElementById('more-btn')?.classList.remove('active');
   }
-  moveAnchors.clear();
-}
-
-function makeCluster(): HTMLDivElement {
-  const d = document.createElement('div');
-  d.className = 'side-cluster';
-  return d;
-}
-
-function makeSep(): HTMLDivElement {
-  const d = document.createElement('div');
-  d.className = 'tb-sep';
-  return d;
-}
-
-// Append a sequence of "logical blocks" to a side-bar cluster, inserting
-// tb-sep separators between blocks — mirrors the desktop bottom toolbar's
-// group separators.
-function appendBlocks(cluster: HTMLDivElement, blocks: (Element | null)[][]): void {
-  let first = true;
-  for (const block of blocks) {
-    const items = block.filter((el): el is Element => !!el);
-    if (items.length === 0) continue;
-    if (!first) cluster.appendChild(makeSep());
-    for (const el of items) moveTo(el, cluster);
-    first = false;
-  }
-}
-
-function applyLandscapeLayout(active: boolean): void {
-  const body = document.body;
-  if (active === body.classList.contains('landscape-mobile')) return;
-  const left = document.getElementById('left-toolbar');
-  const right = document.getElementById('right-toolbar');
-  if (active && left && right) {
-    const camGroup = document.getElementById('cam-btn')?.parentElement ?? null;
-    const pointer = document.getElementById('pointer-btn');
-    const focusBtn = document.getElementById('focus-btn');
-    const confToggle = document.getElementById('conf-toggle');
-    const chatToggle = document.getElementById('chat-toggle');
-    const playerControls = document.getElementById('player-controls');
-    const deviceBtn = document.getElementById('device-btn');
-    const resyncBtn = document.getElementById('resync-btn');
-    const fullscreenBtn = document.getElementById('fullscreen-btn');
-    const wsStatus = document.getElementById('ws-status');
-    const participantCount = document.getElementById('participant-count');
-    const liveBadge = document.getElementById('live-badge');
-    const leaveBtn = document.getElementById('leave-btn');
-
-    // Main control columns. Logical blocks mirror the desktop bottom toolbar's
-    // grouping.
-    const lCluster = makeCluster();
-    appendBlocks(lCluster, [
-      [camGroup],                  // media inputs (cam/mic/screen)
-      [focusBtn, confToggle],      // layout toggles (focus + strip)
-    ]);
-    const rCluster = makeCluster();
-    appendBlocks(rCluster, [
-      [playerControls, resyncBtn, fullscreenBtn], // play/mute + reload + fullscreen
-      [chatToggle],                               // chat panel toggle
-    ]);
-
-    // Outer lane per bar: status indicator + button(s) on the screen edge. Top
-    // items pack up; the bottom button (left: pointer, right: gear) is pinned
-    // to the BOTTOM (CSS margin-top:auto) so the notch's mid band — empty
-    // between them — tucks in harmlessly (no safe-area reserve needed).
-    const lOuter = document.createElement('div');
-    lOuter.className = 'side-outer';
-    moveTo(wsStatus, lOuter);
-    moveTo(participantCount, lOuter);
-    moveTo(pointer, lOuter);      // pointer pinned to the bottom
-
-    const rOuter = document.createElement('div');
-    rOuter.className = 'side-outer';
-    moveTo(liveBadge, rOuter);
-    moveTo(leaveBtn, rOuter);
-    moveTo(deviceBtn, rOuter);
-
-    // .side-row aligns the outer lane to the top of the control column.
-    const lRow = document.createElement('div');
-    lRow.className = 'side-row';
-    lRow.appendChild(lOuter);
-    lRow.appendChild(lCluster);
-    left.appendChild(lRow);
-
-    const rRow = document.createElement('div');
-    rRow.className = 'side-row';
-    rRow.appendChild(rCluster);
-    rRow.appendChild(rOuter);
-    right.appendChild(rRow);
-
-    body.classList.add('landscape-mobile');
-  } else {
-    restoreAll();
-    // Drop the cluster wrappers — they're disposable; on next entry we
-    // build fresh ones.
-    if (left) left.replaceChildren();
-    if (right) right.replaceChildren();
-    body.classList.remove('landscape-mobile');
-  }
-  // Stage dimensions changed — re-run sizing.
   requestAnimationFrame(sizeStage);
 }
 
-function setupLandscapeToolbar(): void {
-  const mql = window.matchMedia('(max-height: 440px) and (orientation: landscape)');
-  const apply = (): void => applyLandscapeLayout(mql.matches);
+function setupResponsiveToolbar(): void {
+  const mql = window.matchMedia(`(max-width: ${MOBILE_BP}px)`);
+  const apply = (): void => applyMobileToolbar(mql.matches);
   apply();
-  // MediaQueryList is the most reliable signal; resize/orientationchange are
-  // belt-and-braces for older Safari versions where MQL.change can miss
-  // mid-rotation states.
   mql.addEventListener?.('change', apply);
-  window.addEventListener('resize', apply);
-  screen.orientation?.addEventListener('change', apply);
+}
+
+// Collapse the pill (and the ⋯ sheet) immediately — used on an outside tap.
+function hidePill(): void {
+  const pill = pillEl();
+  if (!pill) return;
+  if (pillHideTimer) clearTimeout(pillHideTimer);
+  pill.classList.remove('more-open');
+  document.getElementById('more-btn')?.classList.remove('active');
+  pill.classList.add('toolbar-hidden');
+}
+
+function revealPill(): void {
+  const pill = pillEl();
+  if (!pill) return;
+  if (pillHideTimer) clearTimeout(pillHideTimer);
+  if (pillSuppressed()) {
+    pill.classList.add('toolbar-hidden');
+    return;
+  }
+  pill.classList.remove('toolbar-hidden');
+  pillHideTimer = setTimeout(() => {
+    const p = pillEl();
+    if (!p) return;
+    if (pillPinned(p)) revealPill(); // still busy — re-arm; hide once it's free
+    else p.classList.add('toolbar-hidden');
+  }, PILL_IDLE_MS);
+}
+
+function setupPillAutohide(): void {
+  // Mouse movement (desktop) keeps the pill awake; touch relies on tap-toggle.
+  document.addEventListener(
+    'pointermove',
+    (e) => {
+      if (e.pointerType === 'mouse') revealPill();
+    },
+    { passive: true },
+  );
+  document.addEventListener('keydown', () => revealPill());
+  // Tap/click: inside the pill keeps it up; outside toggles it off (or reveals
+  // it when already hidden), and always collapses the ⋯ sheet.
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      const pill = pillEl();
+      if (!pill) return;
+      if (pill.contains(e.target as Node)) {
+        revealPill();
+      } else if (pill.classList.contains('toolbar-hidden')) {
+        revealPill();
+      } else {
+        hidePill();
+      }
+    },
+    { passive: true },
+  );
+  // Re-arm the idle countdown when the pointer leaves the pill (it was pinned
+  // by :hover while inside).
+  pillEl()?.addEventListener('mouseleave', () => revealPill());
+  revealPill(); // start visible, begin the idle countdown
 }
 
 export function initLayout(): void {
@@ -466,7 +471,9 @@ export function initLayout(): void {
   });
 
   setupFullscreen();
-  setupLandscapeToolbar();
+  setupResponsiveToolbar();
+  setupPillAutohide();
+  setupMoreMenu();
 
   window.addEventListener('resize', sizeStage);
   // iOS animates rotation over ~300ms and reports stale dimensions mid-flight,
