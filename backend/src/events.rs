@@ -36,6 +36,16 @@ pub struct HostRevokedEvent {
     pub participant_id: String,
 }
 
+/// Emitted when a presenter asks a participant to unmute. LiveKit cannot
+/// force-unmute a track (privacy), so the request is pushed to the target's
+/// own client over WS — their browser prompts and, on consent, re-enables the
+/// mic itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConferenceUnmuteEvent {
+    pub slug: String,
+    pub participant_id: String,
+}
+
 /// Emitted whenever a participant's admission/kick state changes for a
 /// room: new waiting joiner, admit, admit-all, kick, unkick. The WS layer
 /// reacts by pushing the current waiting + kicked lists to every connected
@@ -78,6 +88,7 @@ pub struct EventChannels {
     pub participant_kicked: broadcast::Sender<KickedEvent>,
     pub host_revoked: broadcast::Sender<HostRevokedEvent>,
     pub moderation_changed: broadcast::Sender<ModerationChangedEvent>,
+    pub conference_unmute: broadcast::Sender<ConferenceUnmuteEvent>,
 }
 
 impl EventChannels {
@@ -94,6 +105,7 @@ impl EventChannels {
             participant_kicked: broadcast::channel(64).0,
             host_revoked: broadcast::channel(64).0,
             moderation_changed: broadcast::channel(64).0,
+            conference_unmute: broadcast::channel(64).0,
         }
     }
 }

@@ -2,7 +2,7 @@
 // the kicked-poller. Other modules call `wsSend()` to push client messages.
 
 import { addFileToSection, appendChatHistory, appendChatMessage, appendFileMessage, loadSessionFiles, removeFileEverywhere, setChatEnabled } from './chat.js';
-import { disconnectLiveKit, requestAutoFocus, setFocus, syncConferenceTiles } from './conference.js';
+import { disconnectLiveKit, requestAutoFocus, requestSelfUnmute, setFocus, syncConferenceTiles } from './conference.js';
 import { applyDisplayState, destroyPlayer, reloadPlayer } from './player.js';
 import { applyModerationUpdate } from './roster.js';
 import { clearAllPointers, hidePointer, pruneCursorsToRoster, renderPointer } from './pointer.js';
@@ -163,6 +163,9 @@ function handleMessage(msg: WsMessage): void {
       return;
     case 'file:removed':
       removeFileEverywhere(msg.id);
+      return;
+    case 'conference:unmute':
+      void requestSelfUnmute();
       return;
     case 'pointer:move':
       if (msg.participantId !== getParticipantId()) {

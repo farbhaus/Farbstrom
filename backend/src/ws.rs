@@ -862,6 +862,16 @@ async fn send_to_non_presenters_in_room(rooms: &WsRooms, slug: &str, msg: &str) 
     }
 }
 
+/// Send a message to a specific participant without closing their connection.
+async fn send_to_participant(rooms: &WsRooms, slug: &str, participant_id: &str, msg: &str) {
+    let rooms_guard = rooms.read().await;
+    if let Some(room) = rooms_guard.get(slug) {
+        if let Some(participant) = room.get(participant_id) {
+            let _ = participant.tx.send(Message::Text(msg.to_string().into()));
+        }
+    }
+}
+
 /// Send a message to a specific participant and close their connection.
 async fn send_to_participant_and_close(
     rooms: &WsRooms,
@@ -1050,6 +1060,19 @@ pub fn spawn_event_listeners(state: Arc<AppState>) {
 
                 // Broadcast updated participants after removal
                 broadcast_participants(&WS_ROOMS, &event.slug).await;
+            }
+        });
+    }
+
+    // conference:unmute — presenter asked a participant to unmute. LiveKit
+    // can't force-unmute (privacy), so push the request to the target's own
+    // client, which prompts and re-enables the mic on consent.
+    {
+        let mut rx = state.events.conference_unmute.subscribe();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                let msg = json!({"type": "conference:unmute"}).to_string();
+                send_to_participant(&WS_ROOMS, &event.slug, &event.participant_id, &msg).await;
             }
         });
     }

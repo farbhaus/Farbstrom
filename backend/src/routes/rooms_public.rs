@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio_stream::StreamExt;
 
 use crate::error::AppError;
-use crate::events::{KickedEvent, ModerationChangedEvent};
+use crate::events::{ConferenceUnmuteEvent, KickedEvent, ModerationChangedEvent};
 use crate::livekit::LiveKitClient;
 use crate::presence;
 use crate::routes::rate_limit;
@@ -714,11 +714,23 @@ async fn mute_participant(
         return Err(AppError::Forbidden("Only presenters can mute".into()));
     }
 
-    let livekit = LiveKitClient::new(&state.config, state.http_client.clone());
-    livekit
-        .mute_published_track(&slug, &target_id, &track_sid, muted)
-        .await
-        .map_err(AppError::Internal)?;
+    if muted {
+        // Server-side mute is enforced by LiveKit and the target's SDK
+        // auto-mutes on receipt.
+        let livekit = LiveKitClient::new(&state.config, state.http_client.clone());
+        livekit
+            .mute_published_track(&slug, &target_id, &track_sid, true)
+            .await
+            .map_err(AppError::Internal)?;
+    } else {
+        // LiveKit cannot force-unmute a track (privacy), so calling it here is
+        // a misleading no-op. Push an unmute request to the target instead —
+        // their browser prompts and re-enables the mic itself on consent.
+        let _ = state.events.conference_unmute.send(ConferenceUnmuteEvent {
+            slug: slug.clone(),
+            participant_id: target_id.clone(),
+        });
+    }
 
     info!(
         room_slug = %slug,
