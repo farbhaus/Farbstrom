@@ -29,14 +29,18 @@ nav {
     left: 50%; transform: translateX(-50%);
     max-width: calc(100vw - 24px); z-index: var(--z-pill);
 }
-/* Logo lives outside the pill — fixed to the upper-left on desktop. */
+/* Corner radius matches the cards/other elements (override .nav-pill's pill radius). */
+#main-nav { border-radius: var(--r-lg); }
+/* Logo + Sign out live outside the pill — fixed to the top corners on desktop
+   (logo left, sign out right). */
 .brand {
     font-weight: 700; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
     display: inline-flex; align-items: center;
     position: fixed; top: 22px; left: 32px; z-index: var(--z-pill);
 }
 .brand img { height: 20px; display: block; }
-.nav-right { display: flex; gap: 8px; align-items: center; }
+/* Sign out: a normal small button fixed to the top-right corner (mirrors the logo). */
+#logout-btn { position: fixed; top: 22px; right: 32px; z-index: var(--z-pill); }
 .nav-tabs { display: flex; gap: 4px; }
 /* Tab icons are hidden on desktop (text labels shown); mobile flips this. */
 .nav-tabs .btn-tab, #logout-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
@@ -59,8 +63,6 @@ nav {
     color: var(--text); border-bottom-color: transparent;
     background: color-mix(in srgb, var(--text) 15%, transparent);
 }
-/* Sign out matches the pill curvature too. */
-#logout-btn { border-radius: var(--r-pill); }
 
 /* ---- Main ---- */
 main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
@@ -384,25 +386,35 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
         gap: 6px;
         padding: 6px 14px;
     }
-    /* Logo moves to the top, centered (the pill is at the bottom on mobile). */
+    /* Logo (centered) + Sign out (right) sit at the top of the page and scroll
+       with it (position:absolute, not fixed) so they never overlay content. */
     .brand {
+        position: absolute;
         top: calc(14px + env(safe-area-inset-top, 0px));
         left: 50%; transform: translateX(-50%);
     }
-    /* Flatten the tab/right containers so every icon is a direct flex child and
+    /* Sign out: text form (icon hidden), scrolls with the page like the logo. */
+    #logout-btn {
+        position: absolute;
+        top: calc(14px + env(safe-area-inset-top, 0px));
+        right: max(16px, env(safe-area-inset-right));
+    }
+    #logout-btn .tab-icon { display: none; }
+    /* Flatten the tab container so every icon is a direct flex child and
        space-between distributes them edge-to-edge. */
-    .nav-tabs, .nav-right { display: contents; }
-    /* Icon-only tabs: hide text labels, show the icons, square the buttons. */
-    .btn-tab .tab-label, #logout-btn .tab-label { display: none; }
+    .nav-tabs { display: contents; }
+    /* Icon-only tabs: hide text labels, show the icons. Wider-than-tall so the
+       active highlight reads as a pill, not a circle. */
+    .btn-tab .tab-label { display: none; }
     .tab-icon { display: block; }
-    .nav-tabs .btn-tab, #logout-btn { padding: 8px; }
+    .nav-tabs .btn-tab { padding: 8px 12px; }
 
     main {
         padding: 16px;
         padding-left: max(16px, env(safe-area-inset-left));
         padding-right: max(16px, env(safe-area-inset-right));
-        /* Clear the top-centered logo + breathing room (no navbar up top now). */
-        padding-top: calc(48px + env(safe-area-inset-top, 0px));
+        /* Clear the top logo / sign-out row (which scrolls away with the page). */
+        padding-top: calc(56px + env(safe-area-inset-top, 0px));
         /* Clear the floating pill at the bottom. */
         padding-bottom: calc(96px + env(safe-area-inset-bottom));
     }
@@ -494,10 +506,15 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
     </div>
 </div>
 
-<!-- Logo sits outside the pill: upper-left on desktop, top-centered on mobile. -->
+<!-- Logo + Sign out sit outside the pill, in the corners (desktop) / at the top
+     of the page (mobile, scrolling with content). -->
 <div id="brand-corner" class="brand u-hidden">
     <img id="brand-logo" alt="" class="u-hidden">
 </div>
+<button class="btn btn-sm u-hidden" id="logout-btn" title="Sign out">
+    <svg class="tab-icon" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+    <span class="tab-label">Sign out</span>
+</button>
 <nav id="main-nav" class="nav-pill u-hidden">
     <div class="nav-tabs">
         <button class="btn btn-tab active" data-tab="rooms" title="Rooms">
@@ -523,12 +540,6 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
         <button class="btn btn-tab" data-tab="settings" title="Settings">
             <svg class="tab-icon" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
             <span class="tab-label">Settings</span>
-        </button>
-    </div>
-    <div class="nav-right">
-        <button class="btn btn-sm" id="logout-btn" title="Sign out">
-            <svg class="tab-icon" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-            <span class="tab-label">Sign out</span>
         </button>
     </div>
 </nav>

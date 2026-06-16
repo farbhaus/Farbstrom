@@ -215,6 +215,9 @@ html, body { overflow: hidden; }
     width: 0; overflow: hidden;
     margin: 0;
     background: var(--surface);
+    /* When closed (width:0) the surface bg would still paint the 2px border-box,
+       leaving a thin vertical strip beside the stage — clip it to the padding box. */
+    background-clip: padding-box;
     display: flex; flex-direction: column;
     transition: width 0.25s ease, margin 0.25s ease;
     border: 1px solid transparent;
@@ -505,22 +508,27 @@ body:not(.has-host) #roster-body .host-only { display: none; }
    so #stage's grid arranges the focused tile (col 1) and strip (col 2). */
 body.has-focus #stage {
     display: grid;
-    grid-template-columns: var(--strip-w) 1fr;
+    /* The strip column sizes to the strip's own width (animated below), so the
+       open/close animates a plain width like the chat panel — not the grid
+       track itself, which interpolates less smoothly. */
+    grid-template-columns: auto 1fr;
     grid-template-rows: 1fr;
     gap: 8px;
     align-content: stretch;
     justify-content: stretch;
-    transition: grid-template-columns 0.25s ease, gap 0.25s ease;
+    transition: gap 0.25s ease;
 }
 body.has-focus #stage-strip {
     grid-column: 1; grid-row: 1;
     display: flex;
+    width: var(--strip-w);
     padding: 8px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
     z-index: 20;
-    transition: padding 0.25s ease, opacity 0.25s ease, border-color 0.25s ease;
+    /* Same width/ease as the chat panel so the two panels animate identically. */
+    transition: width 0.25s ease, padding 0.25s ease, opacity 0.25s ease, border-color 0.25s ease;
     opacity: 1;
 }
 body.has-focus #stage > .tile[data-focused] {
@@ -577,10 +585,10 @@ body.has-focus #focus-btn .fb-icon-grid { display: block; }
    transition plays. The strip itself fades + un-pads to disguise the
    width-clip. */
 body.has-focus.strip-hidden #stage {
-    grid-template-columns: 0 1fr;
     gap: 0;
 }
 body.has-focus.strip-hidden #stage-strip {
+    width: 0;
     padding: 0;
     opacity: 0;
     border-color: transparent;
@@ -697,44 +705,55 @@ body.has-focus.strip-hidden #stage-strip {
 .file-row-dl:hover { border-color: var(--dim); background: var(--surface2); }
 #files-empty { padding: var(--sp-3); font-size: 12px; color: var(--dim); text-align: center; }
 
-/* ---- Bottom toolbar — floating, auto-hiding pill (#186) ----
-   Absolutely positioned over the stage (its containing block is #app, which is
-   position:relative). The .nav-pill class carries the shared glassy aesthetic
-   (translucent bg, blur, radius, border, shadow). */
+/* ---- Bottom toolbar — in-flow, always-visible centered pill (#186) ----
+   Sits in the #app flex column (not over the stage): align-self centers it
+   horizontally while it reserves its own height, so the stage/tiles size to the
+   space left over. The .nav-pill class carries the shared glassy aesthetic. */
 #bottom-toolbar {
-    position: absolute; left: 50%; transform: translateX(-50%);
-    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
-    max-width: calc(100% - 24px); z-index: var(--z-pill);
+    align-self: center; flex-shrink: 0;
+    /* Match the 8px layout gutter: the stage's 8px bottom padding supplies the
+       gap above the pill (so top margin is 0, like the chat panel's), 8px to the
+       window edges. */
+    margin: 0 auto calc(8px + env(safe-area-inset-bottom, 0px));
+    max-width: calc(100% - 16px); z-index: var(--z-pill);
     display: flex; align-items: center; justify-content: center;
-    gap: 4px; padding: 6px 12px;
-    /* Smooth, gentle fade — longer than --dur-fast so the disappear/appear
-       reads as a soft glide rather than a snap. */
-    transition: opacity 0.34s var(--ease-out),
-                transform 0.34s var(--ease-out);
-}
-/* Auto-hide ("disappearing") state — fade down and out, ignore pointer. */
-#bottom-toolbar.toolbar-hidden {
-    opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.98);
-    pointer-events: none;
-}
-@media (prefers-reduced-motion: reduce) {
-    #bottom-toolbar { transition: opacity var(--dur-fast) var(--ease-out); }
-    #bottom-toolbar.toolbar-hidden { transform: translateX(-50%); }
+    /* Match the tiles/columns corner radius (override .nav-pill's pill radius)
+       so the toolbar matches the rest of the layout on every viewport. */
+    border-radius: var(--r-lg);
+    /* Extra end padding so the first/last buttons aren't cramped against the ends. */
+    gap: 4px; padding: 6px 16px;
 }
 .toolbar-group { display: flex; gap: 4px; }
 .tb-sep { width: 1px; height: 28px; background: var(--border); margin: 0 8px; }
-/* The ⋯ More toggle and its popup sheet only exist on mobile (see the
-   responsive block); desktop shows every control inline. */
+
+/* ⋯ More toggle + popup sheet: shown only in "compact" mode (mobile) where the
+   secondary controls are moved into the sheet so the pill stays one row. */
 #more-btn { display: none; }
 #more-btn svg { fill: currentColor; stroke: none; }
-#more-sheet { display: none; }
+#bottom-toolbar.compact #more-btn { display: flex; }
+#more-sheet {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    flex-wrap: wrap; justify-content: center; align-items: center;
+    gap: 6px; padding: 10px 12px; max-width: calc(100vw - 24px);
+    background: var(--pill-bg); border: 1px solid var(--pill-border);
+    /* Match the tiles/columns radius (mobile-only popup), not the pill radius. */
+    border-radius: var(--r-lg);
+    backdrop-filter: blur(var(--pill-blur)); -webkit-backdrop-filter: blur(var(--pill-blur));
+}
+#bottom-toolbar.compact.more-open #more-sheet { display: flex; }
+#more-sheet .tb-sep { display: none; }
+/* Compact pill drops its in-pill dividers (some bound a moved-out group). */
+#bottom-toolbar.compact > .tb-sep { display: none; }
+#more-btn.active { border-color: var(--accent); color: var(--accent); }
 
 .tb-btn {
     width: 42px; height: 42px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     background: var(--surface2); border: 1.5px solid var(--border);
-    /* Rounded to echo the pill's curvature (#186). */
-    border-radius: 16px; color: var(--dim); cursor: pointer;
+    /* Standard button radius, matching the rest of the layout (#186). */
+    border-radius: var(--r-btn); color: var(--dim); cursor: pointer;
     transition: border-color 0.15s, color 0.15s, background 0.15s;
     position: relative;
 }
@@ -804,44 +823,23 @@ body.has-focus.strip-hidden #stage-strip {
     .top-sep { display: none; }
     #leave-btn { margin-left: 0 !important; }
 
-    /* Toolbar pill stays a slim single row of essentials (cam/mic/screen,
-       pointer, chat, fullscreen, ⋯). layout.ts moves the secondary controls
-       into #more-sheet so the pill never wraps into a blob. */
+    /* Mobile: the pill is a slim full-width bottom row of essentials (cam/mic/
+       screen, pointer, chat, fullscreen, ⋯); layout.ts moves the secondary
+       controls into #more-sheet (compact mode). */
     #bottom-toolbar {
-        /* Span (almost) the full width and spread the essentials across it. */
-        width: calc(100% - 32px);
-        max-width: none;
+        /* Span the full width (less the 8px gutter each side) and spread the
+           essentials across it. Rounded-rect radius to match the tiles/columns
+           (a full-width stadium would look out of place). */
+        width: calc(100% - 16px);
         justify-content: space-between;
         gap: 6px;
-        padding: 6px 14px;
+        padding: 6px 16px;
     }
     /* Flatten the groups so every essential is a direct flex child and
        space-between distributes them edge-to-edge. */
     .toolbar-group { display: contents; }
-    #more-btn { display: flex; }
     /* Drop the in-pill dividers — the even spacing carries the rhythm. */
     #bottom-toolbar > .tb-sep { display: none; }
-
-    /* #more-sheet is the floating popup above the pill, shown on ⋯ tap. The
-       moved controls (and their now-flattened groups) wrap inside it. */
-    #more-sheet {
-        display: none;
-        position: absolute;
-        bottom: calc(100% + 8px);
-        left: 50%; transform: translateX(-50%);
-        flex-wrap: wrap; justify-content: center; align-items: center;
-        gap: 6px; padding: 10px 12px;
-        max-width: calc(100vw - 24px);
-        background: var(--pill-bg);
-        border: 1px solid var(--pill-border);
-        border-radius: 22px;
-        backdrop-filter: blur(var(--pill-blur));
-        -webkit-backdrop-filter: blur(var(--pill-blur));
-    }
-    #bottom-toolbar.more-open #more-sheet { display: flex; }
-    #more-btn.active { border-color: var(--accent); color: var(--accent); }
-    /* No vertical dividers inside the wrapped sheet. */
-    #more-sheet .tb-sep { display: none; }
     #player-controls { gap: 4px; }
     #volume-slider { display: none; }
     #seek-slider { width: 120px; }
@@ -875,6 +873,8 @@ body.has-focus.strip-hidden #stage-strip {
     body.has-focus #stage-strip {
         grid-column: 1; grid-row: 1;
         flex-direction: row;
+        /* Full-width carousel on mobile — undo the desktop fixed strip width. */
+        width: auto;
         height: 104px;
         overflow-x: auto; overflow-y: hidden;
     }
@@ -895,12 +895,38 @@ body.has-focus.strip-hidden #stage-strip {
     .join-box, .waiting-box, #landing-screen .panel-box { width: calc(100vw - 32px); padding: 32px 24px; }
 }
 
-/* Mobile landscape — shrink the top bar to maximize stage area. The toolbar is
-   a floating pill in every orientation now (#186 replaced the old #151 side
-   bars), so it needs no special-casing here. */
+/* Side pills are empty/hidden outside the landscape split. */
+.side-pill { display: none; }
+
+/* Mobile landscape — vertical space is scarce, so split the toolbar into two
+   floating vertical pills on the left/right edges (layout.ts moves the groups
+   in) and hide the bottom pill. */
 @media (max-height: 440px) and (orientation: landscape) {
     #top-bar { height: 36px; }
     #volume-slider { display: none; }
+    #bottom-toolbar { display: none; }
+    /* Two vertical pills of stacked buttons, centered in the area BELOW the 36px
+       top bar — the +18px shifts the centre down by half the top bar so they
+       never overlap it. Edges sit 14px in for breathing room. */
+    .side-pill {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        /* Extra top/bottom padding so the end buttons clear the rounded corners. */
+        gap: 4px; padding: 12px 6px;
+        position: absolute; top: calc(50% + 18px); transform: translateY(-50%);
+        max-height: calc(100% - 52px); overflow-y: auto; z-index: var(--z-pill);
+        /* Match the tiles/columns radius, not the pill radius. */
+        border-radius: var(--r-lg);
+    }
+    #left-toolbar  { left:  calc(14px + env(safe-area-inset-left, 0px)); }
+    #right-toolbar { right: calc(14px + env(safe-area-inset-right, 0px)); }
+    /* Inset the stage to exactly the pill's outer edge (14px offset + ~56px pill)
+       so the stage's own 8px padding is the only gap to the tiles — matching the
+       8px gutter used everywhere else. (Keeps sizeStage's math correct since it
+       sizes to #stage's now-narrower width.) */
+    #main-row {
+        padding-left:  calc(70px + env(safe-area-inset-left, 0px));
+        padding-right: calc(70px + env(safe-area-inset-right, 0px));
+    }
 }
 </style>
 </head>
@@ -1257,6 +1283,12 @@ body.has-focus.strip-hidden #stage-strip {
         </button>
         <div id="more-sheet"></div>
     </div>
+
+    <!-- Mobile-landscape side pills. Empty by default; layout.ts splits the
+         toolbar groups into these two floating vertical pills when the short
+         landscape breakpoint matches, freeing vertical space for the stage. -->
+    <div id="left-toolbar"  class="side-pill nav-pill" aria-hidden="true"></div>
+    <div id="right-toolbar" class="side-pill nav-pill" aria-hidden="true"></div>
 
 </div><!-- /app -->
 

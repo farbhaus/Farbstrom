@@ -67,6 +67,7 @@ function showApp(): void {
   setEl('login-screen', 'none');
   setEl('main-nav', 'flex');
   setEl('brand-corner', 'flex');
+  setEl('logout-btn', 'inline-flex');
   setEl('main-content', 'block');
   void loadAll();
 }
@@ -76,6 +77,7 @@ function doLogout(): void {
   setEl('login-screen', 'flex');
   setEl('main-nav', 'none');
   setEl('brand-corner', 'none');
+  setEl('logout-btn', 'none');
   setEl('main-content', 'none');
 }
 
