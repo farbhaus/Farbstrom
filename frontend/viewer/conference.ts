@@ -3,6 +3,7 @@
 // (kick + mute). Co-located because tile rendering is tightly coupled to
 // LiveKit's track state.
 
+import { confirmModal } from '../shared/components.js';
 import { toast } from '../shared/utils.js';
 import { sizeStage } from './layout.js';
 import { disablePointerMode } from './pointer.js';
@@ -665,6 +666,23 @@ async function toggleMic(): Promise<void> {
     selfMuteInFlight = false;
   }
   refreshConfButtons();
+}
+
+// Host asked us to unmute. LiveKit can't force a remote mic back on, so the
+// server forwards the request here and we ask for consent before re-enabling
+// — no surprise hot mic.
+export async function requestSelfUnmute(): Promise<void> {
+  if (!livekitRoom) return; // not in the conference — nothing to unmute
+  if (viewerStore.get().micOn) return; // already live
+  const ok = await confirmModal({
+    title: 'Unmute?',
+    message: 'The host is asking you to unmute your microphone.',
+    confirmLabel: 'Unmute',
+    cancelLabel: 'Stay muted',
+  });
+  if (!ok) return;
+  if (viewerStore.get().micOn) return; // toggled on while the prompt was open
+  await toggleMic();
 }
 
 async function toggleScreenShare(): Promise<void> {

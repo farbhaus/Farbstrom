@@ -181,7 +181,7 @@ html, body { overflow: hidden; }
     display: flex; align-items: center; padding: 0 16px;
 }
 #top-left { flex: 1; display: flex; align-items: center; }
-.brand-logo:not(.u-hidden) { height: 25px; opacity: 1; transition: opacity 0.15s; margin: 20px; display: flex }
+.brand-logo:not(.u-hidden) { height: 30px; opacity: 1; transition: opacity 0.15s; margin: 20px; display: flex }
 .brand-logo:hover { opacity: 1; }
 .brand-wordmark-sm { font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); opacity: 0.5; margin: 20px; }
 #top-center { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dim); }
@@ -619,17 +619,20 @@ body.has-focus.strip-hidden #stage-strip {
 .chat-who.presenter { color: var(--accent); }
 .chat-who.viewer    { color: var(--dim); }
 .chat-time { font-size: 10px; color: var(--dim); opacity: 0.6; }
-.chat-text { font-size: 13px; color: var(--text); line-height: 1.45; word-break: break-word; }
+.chat-text { font-size: 13px; color: var(--text); line-height: 1.45; word-break: break-word; white-space: pre-wrap; }
 
-#chat-input-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--border); flex-shrink: 0; align-items: center; }
+#chat-input-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--border); flex-shrink: 0; align-items: flex-end; }
 #chat-input {
     flex: 1; padding: 8px 12px;
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
-    font: inherit; font-size: 13px; outline: none; min-width: 0;
+    font: inherit; font-size: 13px; line-height: 1.45; outline: none; min-width: 0;
     border-radius: var(--r-btn);
+    resize: none; overflow-y: auto; max-height: 96px;
+    scrollbar-width: none; /* Firefox */
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
+#chat-input::-webkit-scrollbar { display: none; } /* WebKit/Blink */
 #chat-input:hover  { border-color: var(--dim); }
 #chat-input:focus  { border-color: var(--accent); box-shadow: var(--ring-accent); }
 #chat-input:disabled { opacity: 0.4; cursor: default; }
@@ -1195,7 +1198,7 @@ body.has-focus.strip-hidden #stage-strip {
                     <div id="upload-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width 0.1s linear;"></div>
                 </div>
                 <div id="chat-input-row">
-                    <input type="text" id="chat-input" placeholder="Message..." maxlength="500" autocomplete="off" disabled>
+                    <textarea id="chat-input" rows="1" placeholder="Message..." maxlength="500" autocomplete="off" disabled></textarea>
                     <button id="chat-attach" disabled title="Attach file">
                         <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
