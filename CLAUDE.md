@@ -20,6 +20,7 @@ RUST_LOG=debug cargo test -- --nocapture # tests with logs
 cargo fmt                                # format
 cargo clippy --all-targets -- -D warnings
 cargo audit
+cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md
 ```
 
 Hot-reload during development (requires `watchexec-cli`):
