@@ -62,7 +62,6 @@ html { touch-action: manipulation; }
        so the two match. Semi-transparent surface + blur for a glassy overlay. */
     --pill-bg:     color-mix(in srgb, var(--surface) 72%, transparent);
     --pill-border: color-mix(in srgb, var(--text) 12%, transparent);
-    --pill-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
     --pill-blur:   12px;
 
     /* Motion */

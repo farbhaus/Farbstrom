@@ -79,7 +79,6 @@
     background: var(--pill-bg);
     border: 1px solid var(--pill-border);
     border-radius: var(--r-pill);
-    box-shadow: var(--pill-shadow);
     backdrop-filter: blur(var(--pill-blur));
     -webkit-backdrop-filter: blur(var(--pill-blur));
 }
