@@ -126,6 +126,7 @@ export type WsMessage =
       uploaderName: string;
     }
   | { type: 'file:removed'; id: string }
+  | { type: 'conference:unmute' }
   | { type: 'pointer:move'; participantId: string; name: string; x: number; y: number }
   | { type: 'pointer:hide'; participantId: string }
   | { type: 'focus:set'; tileId: TileId | null }

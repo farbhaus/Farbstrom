@@ -72,6 +72,17 @@
 .btn-tab.active { color: var(--text); border-bottom-color: var(--text); }
 .btn-tab:focus-visible { outline: none; box-shadow: var(--ring-accent); }
 
+/* ---- Floating nav pill (#186) ----
+   Shared glassy look for the admin navbar and viewer toolbar so the two match.
+   Positioning/contents stay page-local; this only carries the aesthetic. */
+.nav-pill {
+    background: var(--pill-bg);
+    border: 1px solid var(--pill-border);
+    border-radius: var(--r-pill);
+    backdrop-filter: blur(var(--pill-blur));
+    -webkit-backdrop-filter: blur(var(--pill-blur));
+}
+
 /* ---- Forms ---- */
 .form-row { margin-bottom: 18px; }
 .form-row label {

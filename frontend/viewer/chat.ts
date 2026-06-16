@@ -12,7 +12,7 @@ export function configureChat(opts: { send: (msg: WsClientMessage) => void }): v
 }
 
 export function setChatEnabled(enabled: boolean): void {
-  (document.getElementById('chat-input') as HTMLInputElement).disabled = !enabled;
+  (document.getElementById('chat-input') as HTMLTextAreaElement).disabled = !enabled;
   (document.getElementById('chat-attach') as HTMLButtonElement).disabled = !enabled;
   // chat-send tracks input+draft state; let syncSendButton make the call.
   syncSendButton();
@@ -332,7 +332,7 @@ async function clearDraft(opts: { deleteRemote: boolean }): Promise<void> {
 // The send button + chat-send only need to be lit when the chat is enabled
 // AND there's something to send (text or a draft).
 function syncSendButton(): void {
-  const input = document.getElementById('chat-input') as HTMLInputElement | null;
+  const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
   const sendBtn = document.getElementById('chat-send') as HTMLButtonElement | null;
   if (!input || !sendBtn) return;
   // If the input itself is disabled (chat not connected), leave the send
@@ -346,7 +346,7 @@ function syncSendButton(): void {
 }
 
 function sendChat(): void {
-  const input = document.getElementById('chat-input') as HTMLInputElement;
+  const input = document.getElementById('chat-input') as HTMLTextAreaElement;
   const text = input.value.trim();
   const draft = currentDraft;
   if (!text && !draft) return;
@@ -358,17 +358,37 @@ function sendChat(): void {
     document.getElementById('chat-draft-chip')?.remove();
   }
   input.value = '';
+  autoGrow(input);
   syncSendButton();
+}
+
+// Grow the composer with its content up to the CSS max-height, then scroll.
+// The textarea is border-box (global reset), but scrollHeight excludes the
+// border — so we add it back, otherwise the box shrinks ~1px on first input.
+function autoGrow(el: HTMLTextAreaElement): void {
+  const cs = getComputedStyle(el);
+  const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+  el.style.height = 'auto';
+  el.style.height = `${el.scrollHeight + border}px`;
 }
 
 export function initChat(): void {
   document.getElementById('chat-send')?.addEventListener('click', sendChat);
-  const input = document.getElementById('chat-input') as HTMLInputElement | null;
+  const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
   input?.addEventListener('keydown', (e) => {
-    if ((e as KeyboardEvent).key === 'Enter') sendChat();
+    const ev = e as KeyboardEvent;
+    // Enter sends; Shift+Enter falls through so the textarea inserts a newline.
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault();
+      sendChat();
+    }
   });
-  // Keep the send button's enabled state in sync with input + draft state.
-  input?.addEventListener('input', syncSendButton);
+  // Keep the send button's enabled state in sync with input + draft state,
+  // and grow the composer with multi-line content.
+  input?.addEventListener('input', () => {
+    if (input) autoGrow(input);
+    syncSendButton();
+  });
   document.getElementById('chat-attach')?.addEventListener('click', () => {
     (document.getElementById('file-input') as HTMLInputElement).click();
   });

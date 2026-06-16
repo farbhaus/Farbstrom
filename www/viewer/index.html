@@ -77,7 +77,6 @@ html, body { overflow: hidden; }
 .conf-prompt-box {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 12px; padding: 40px 36px 32px; width: 340px; text-align: center;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
 }
 .conf-prompt-icon { margin-bottom: 16px; color: var(--dim); }
 .conf-prompt-icon svg { width: 36px; height: 36px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -172,7 +171,7 @@ html, body { overflow: hidden; }
 }
 
 /* ---- App layout ---- */
-#app { display: none; flex-direction: column; height: 100vh; height: 100dvh; }
+#app { display: none; flex-direction: column; height: 100vh; height: 100dvh; position: relative; }
 #app.visible { display: flex; }
 
 /* ---- Top bar ---- */
@@ -182,8 +181,8 @@ html, body { overflow: hidden; }
     display: flex; align-items: center; padding: 0 16px;
 }
 #top-left { flex: 1; display: flex; align-items: center; }
-.brand-logo:not(.u-hidden) { height: 25px; opacity: 0.5; transition: opacity 0.15s; margin: 20px; display: flex }
-.brand-logo:hover { opacity: 0.8; }
+.brand-logo:not(.u-hidden) { height: 30px; opacity: 1; transition: opacity 0.15s; margin: 20px; display: flex }
+.brand-logo:hover { opacity: 1; }
 .brand-wordmark-sm { font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); opacity: 0.5; margin: 20px; }
 #top-center { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dim); }
 #ws-status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dim); }
@@ -216,12 +215,14 @@ html, body { overflow: hidden; }
     width: 0; overflow: hidden;
     margin: 0;
     background: var(--surface);
+    /* When closed (width:0) the surface bg would still paint the 2px border-box,
+       leaving a thin vertical strip beside the stage — clip it to the padding box. */
+    background-clip: padding-box;
     display: flex; flex-direction: column;
     transition: width 0.25s ease, margin 0.25s ease;
     border: 1px solid transparent;
     border-radius: var(--r-lg);
     z-index: 20;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 .side-panel.open { border-color: var(--border); }
 #right-panel.open { width: var(--panel-w); margin: 8px 8px 8px 0; }
@@ -377,7 +378,7 @@ html, body { overflow: hidden; }
 /* ---- Roster modal (anchored via clicking the top-bar participant count) ---- */
 #participant-count {
     cursor: pointer; user-select: none; position: relative;
-    padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--r-btn);
+    padding: 3px 10px; border: 1px solid var(--border); border-radius: var(--r-pill);
     transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 #participant-count:hover { color: var(--text); border-color: var(--dim); }
@@ -400,7 +401,6 @@ html, body { overflow: hidden; }
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--r-lg); width: 380px; max-width: calc(100vw - 32px);
     max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     overflow: hidden;
 }
 .roster-box-header {
@@ -508,23 +508,27 @@ body:not(.has-host) #roster-body .host-only { display: none; }
    so #stage's grid arranges the focused tile (col 1) and strip (col 2). */
 body.has-focus #stage {
     display: grid;
-    grid-template-columns: var(--strip-w) 1fr;
+    /* The strip column sizes to the strip's own width (animated below), so the
+       open/close animates a plain width like the chat panel — not the grid
+       track itself, which interpolates less smoothly. */
+    grid-template-columns: auto 1fr;
     grid-template-rows: 1fr;
     gap: 8px;
     align-content: stretch;
     justify-content: stretch;
-    transition: grid-template-columns 0.25s ease, gap 0.25s ease;
+    transition: gap 0.25s ease;
 }
 body.has-focus #stage-strip {
     grid-column: 1; grid-row: 1;
     display: flex;
+    width: var(--strip-w);
     padding: 8px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
     z-index: 20;
-    transition: padding 0.25s ease, opacity 0.25s ease, border-color 0.25s ease;
+    /* Same width/ease as the chat panel so the two panels animate identically. */
+    transition: width 0.25s ease, padding 0.25s ease, opacity 0.25s ease, border-color 0.25s ease;
     opacity: 1;
 }
 body.has-focus #stage > .tile[data-focused] {
@@ -547,7 +551,6 @@ body.has-focus #stage > #tile-share[data-focused] {
     max-width: 100%; max-height: 100%;
     place-self: center;
     background: var(--bg);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 body.has-focus #stage > #tile-stream[data-focused].focus-fit-w,
 body.has-focus #stage > #tile-share[data-focused].focus-fit-w {
@@ -582,10 +585,10 @@ body.has-focus #focus-btn .fb-icon-grid { display: block; }
    transition plays. The strip itself fades + un-pads to disguise the
    width-clip. */
 body.has-focus.strip-hidden #stage {
-    grid-template-columns: 0 1fr;
     gap: 0;
 }
 body.has-focus.strip-hidden #stage-strip {
+    width: 0;
     padding: 0;
     opacity: 0;
     border-color: transparent;
@@ -616,17 +619,20 @@ body.has-focus.strip-hidden #stage-strip {
 .chat-who.presenter { color: var(--accent); }
 .chat-who.viewer    { color: var(--dim); }
 .chat-time { font-size: 10px; color: var(--dim); opacity: 0.6; }
-.chat-text { font-size: 13px; color: var(--text); line-height: 1.45; word-break: break-word; }
+.chat-text { font-size: 13px; color: var(--text); line-height: 1.45; word-break: break-word; white-space: pre-wrap; }
 
-#chat-input-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--border); flex-shrink: 0; align-items: center; }
+#chat-input-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--border); flex-shrink: 0; align-items: flex-end; }
 #chat-input {
     flex: 1; padding: 8px 12px;
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
-    font: inherit; font-size: 13px; outline: none; min-width: 0;
+    font: inherit; font-size: 13px; line-height: 1.45; outline: none; min-width: 0;
     border-radius: var(--r-btn);
+    resize: none; overflow-y: auto; max-height: 96px;
+    scrollbar-width: none; /* Firefox */
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
+#chat-input::-webkit-scrollbar { display: none; } /* WebKit/Blink */
 #chat-input:hover  { border-color: var(--dim); }
 #chat-input:focus  { border-color: var(--accent); box-shadow: var(--ring-accent); }
 #chat-input:disabled { opacity: 0.4; cursor: default; }
@@ -702,22 +708,55 @@ body.has-focus.strip-hidden #stage-strip {
 .file-row-dl:hover { border-color: var(--dim); background: var(--surface2); }
 #files-empty { padding: var(--sp-3); font-size: 12px; color: var(--dim); text-align: center; }
 
-/* ---- Bottom toolbar ---- */
+/* ---- Bottom toolbar — in-flow, always-visible centered pill (#186) ----
+   Sits in the #app flex column (not over the stage): align-self centers it
+   horizontally while it reserves its own height, so the stage/tiles size to the
+   space left over. The .nav-pill class carries the shared glassy aesthetic. */
 #bottom-toolbar {
-    height: calc(var(--toolbar-h) + env(safe-area-inset-bottom, 0px)); flex-shrink: 0;
-    background: var(--surface); border-top: 1px solid var(--border);
+    align-self: center; flex-shrink: 0;
+    /* Match the 8px layout gutter: the stage's 8px bottom padding supplies the
+       gap above the pill (so top margin is 0, like the chat panel's), 8px to the
+       window edges. */
+    margin: 0 auto calc(8px + env(safe-area-inset-bottom, 0px));
+    max-width: calc(100% - 16px); z-index: var(--z-pill);
     display: flex; align-items: center; justify-content: center;
-    gap: 4px; padding: 0 16px; padding-bottom: env(safe-area-inset-bottom, 0px);
+    /* Match the tiles/columns corner radius (override .nav-pill's pill radius)
+       so the toolbar matches the rest of the layout on every viewport. */
+    border-radius: var(--r-lg);
+    /* Extra end padding so the first/last buttons aren't cramped against the ends. */
+    gap: 4px; padding: 6px 16px;
 }
 .toolbar-group { display: flex; gap: 4px; }
 .tb-sep { width: 1px; height: 28px; background: var(--border); margin: 0 8px; }
-#tb-break { display: none; }
+
+/* ⋯ More toggle + popup sheet: shown only in "compact" mode (mobile) where the
+   secondary controls are moved into the sheet so the pill stays one row. */
+#more-btn { display: none; }
+#more-btn svg { fill: currentColor; stroke: none; }
+#bottom-toolbar.compact #more-btn { display: flex; }
+#more-sheet {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    flex-wrap: wrap; justify-content: center; align-items: center;
+    gap: 6px; padding: 10px 12px; max-width: calc(100vw - 24px);
+    background: var(--pill-bg); border: 1px solid var(--pill-border);
+    /* Match the tiles/columns radius (mobile-only popup), not the pill radius. */
+    border-radius: var(--r-lg);
+    backdrop-filter: blur(var(--pill-blur)); -webkit-backdrop-filter: blur(var(--pill-blur));
+}
+#bottom-toolbar.compact.more-open #more-sheet { display: flex; }
+#more-sheet .tb-sep { display: none; }
+/* Compact pill drops its in-pill dividers (some bound a moved-out group). */
+#bottom-toolbar.compact > .tb-sep { display: none; }
+#more-btn.active { border-color: var(--accent); color: var(--accent); }
 
 .tb-btn {
     width: 42px; height: 42px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     background: var(--surface2); border: 1.5px solid var(--border);
-    border-radius: 8px; color: var(--dim); cursor: pointer;
+    /* Standard button radius, matching the rest of the layout (#186). */
+    border-radius: var(--r-btn); color: var(--dim); cursor: pointer;
     transition: border-color 0.15s, color 0.15s, background 0.15s;
     position: relative;
 }
@@ -787,26 +826,26 @@ body.has-focus.strip-hidden #stage-strip {
     .top-sep { display: none; }
     #leave-btn { margin-left: 0 !important; }
 
-    /* Toolbar — keep desktop button size; allow wrapping to a second row on
-       narrow viewports, with a little vertical padding and gap so the buttons
-       aren't jammed against the bar edges or each other. */
+    /* Mobile: the pill is a slim full-width bottom row of essentials (cam/mic/
+       screen, pointer, chat, fullscreen, ⋯); layout.ts moves the secondary
+       controls into #more-sheet (compact mode). */
     #bottom-toolbar {
-        height: auto; min-height: calc(var(--toolbar-h) + env(safe-area-inset-bottom, 0px));
-        flex-wrap: wrap;
+        /* Span the full width (less the 8px gutter each side) and spread the
+           essentials across it. Rounded-rect radius to match the tiles/columns
+           (a full-width stadium would look out of place). */
+        width: calc(100% - 16px);
+        justify-content: space-between;
         gap: 6px;
-        padding-top: 8px;
-        padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+        padding: 6px 16px;
     }
-    .toolbar-group { display: flex; gap: 4px; }
-    /* Force row break before player controls */
-    #tb-break { display: block; order: 9; flex-basis: 100%; height: 2px; }
-    #player-controls { order: 10; }
-    .tb-sep:has(+ #player-controls) { order: 10; display: none; }
-    #utility-controls { order: 11; }
-    .tb-sep:has(+ #utility-controls) { order: 11; }
+    /* Flatten the groups so every essential is a direct flex child and
+       space-between distributes them edge-to-edge. */
+    .toolbar-group { display: contents; }
+    /* Drop the in-pill dividers — the even spacing carries the rhythm. */
+    #bottom-toolbar > .tb-sep { display: none; }
+    #player-controls { gap: 4px; }
     #volume-slider { display: none; }
-    #seek-slider { width: 100px; }
-    .seek-time { display: none; }
+    #seek-slider { width: 120px; }
 
     /* Chat panel overlays the stage on mobile, anchored right so it
        expands/collapses toward the right edge. Keeps desktop's rounded
@@ -837,6 +876,8 @@ body.has-focus.strip-hidden #stage-strip {
     body.has-focus #stage-strip {
         grid-column: 1; grid-row: 1;
         flex-direction: row;
+        /* Full-width carousel on mobile — undo the desktop fixed strip width. */
+        width: auto;
         height: 104px;
         overflow-x: auto; overflow-y: hidden;
     }
@@ -857,133 +898,38 @@ body.has-focus.strip-hidden #stage-strip {
     .join-box, .waiting-box, #landing-screen .panel-box { width: calc(100vw - 32px); padding: 32px 24px; }
 }
 
-/* ---- Mobile-landscape side toolbars (#151) ---- */
-/* .side-toolbar are empty containers in regular layouts; populated by
-   setupLandscapeToolbar() only when the breakpoint matches. Hidden by default. */
-.side-toolbar { display: none; }
+/* Side pills are empty/hidden outside the landscape split. */
+.side-pill { display: none; }
 
-/* Mobile landscape — maximize stage area, and (when body.landscape-mobile is
-   active) split the toolbars into the vertical side bars (#151). */
+/* Mobile landscape — vertical space is scarce, so split the toolbar into two
+   floating vertical pills on the left/right edges (layout.ts moves the groups
+   in) and hide the bottom pill. */
 @media (max-height: 440px) and (orientation: landscape) {
     #top-bar { height: 36px; }
-    /* iOS reserves a bottom safe-area for the home indicator; the toolbar's
-       base rule pads that into its content box, which pushes buttons up
-       and breaks vertical centering. In landscape the indicator overlay
-       sits *under* the toolbar surface, so we can safely drop the inset. */
-    #bottom-toolbar {
-        flex-wrap: wrap;
-        height: var(--toolbar-h);
-        min-height: var(--toolbar-h);
-        padding-bottom: 0;
+    #volume-slider { display: none; }
+    #bottom-toolbar { display: none; }
+    /* Two vertical pills of stacked buttons, centered in the area BELOW the 36px
+       top bar — the +18px shifts the centre down by half the top bar so they
+       never overlap it. Edges sit 14px in for breathing room. */
+    .side-pill {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        /* Extra top/bottom padding so the end buttons clear the rounded corners. */
+        gap: 4px; padding: 12px 6px;
+        position: absolute; top: calc(50% + 18px); transform: translateY(-50%);
+        max-height: calc(100% - 52px); overflow-y: auto; z-index: var(--z-pill);
+        /* Match the tiles/columns radius, not the pill radius. */
+        border-radius: var(--r-lg);
     }
-
-    #right-panel.open { width: 280px; }
-
-    body.landscape-mobile #top-bar,
-    body.landscape-mobile #bottom-toolbar { display: none; }
-
-    body.landscape-mobile #app { flex-direction: row; }
-
-    body.landscape-mobile .side-toolbar {
-        display: flex; flex-direction: column;
-        align-items: center; justify-content: flex-start;
-        gap: 4px;
-        padding: 6px 3px;
-        overflow: hidden;
-        padding-top:    calc(6px + env(safe-area-inset-top, 0px));
-        padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
-        background: var(--surface);
-        flex-shrink: 0;
-        overflow-y: auto;
-        z-index: 5;
+    #left-toolbar  { left:  calc(14px + env(safe-area-inset-left, 0px)); }
+    #right-toolbar { right: calc(14px + env(safe-area-inset-right, 0px)); }
+    /* Inset the stage to exactly the pill's outer edge (14px offset + ~56px pill)
+       so the stage's own 8px padding is the only gap to the tiles — matching the
+       8px gutter used everywhere else. (Keeps sizeStage's math correct since it
+       sizes to #stage's now-narrower width.) */
+    #main-row {
+        padding-left:  calc(70px + env(safe-area-inset-left, 0px));
+        padding-right: calc(70px + env(safe-area-inset-right, 0px));
     }
-    /* Both bars hug the screen edge — no safe-area reserve. */
-    body.landscape-mobile #left-toolbar  {
-        border-right: 1px solid var(--border);
-        order: 0;
-        padding-left: 3px;
-    }
-    body.landscape-mobile #right-toolbar {
-        border-left:  1px solid var(--border);
-        order: 2;
-        padding-right: 3px;
-    }
-    body.landscape-mobile #main-row { order: 1; flex: 1; min-width: 0; }
-
-    /* Controls fill the full-height bar with even spacing (space-between), so
-       the first button tops out level with the outer lane's top items and the
-       last button bottoms out level with the outer lane's pinned button
-       (pointer left, gear right). gap is the minimum; overflow-y is the safety
-       net on a very short viewport. */
-    body.landscape-mobile .side-cluster {
-        display: flex; flex-direction: column;
-        align-items: center; justify-content: space-between; gap: 7px;
-        margin: 0;
-    }
-    /* Flatten the cam/mic/screen and play/mute groups so every button is its
-       own flex item — otherwise the tight sub-group jams together while the
-       single buttons spread, giving the uneven look. Flattened, space-between
-       distributes them all uniformly. */
-    body.landscape-mobile .side-cluster .toolbar-group { display: contents; }
-    /* No group dividers in the side bars — even spacing carries the rhythm. */
-    body.landscape-mobile .side-cluster > .tb-sep { display: none; }
-    /* Fill the full bar height so both lanes can distribute top-to-bottom:
-       align-items:stretch makes the control column and the outer lane full
-       height; the column spreads its buttons (space-between) and the lane pins
-       its top buttons up and the gear down. */
-    body.landscape-mobile .side-row {
-        display: flex; flex-direction: row;
-        align-items: stretch; justify-content: center;
-        gap: 7px;
-        flex: 1; min-height: 0;
-    }
-    /* Outer lane on the screen edge: status indicator stacked above its button
-       — connected dot + Participants (left), Live badge + Leave + gear (right).
-       Full bar height (the row stretches it), with the top buttons packed up
-       and the gear pinned to the bottom (margin-top:auto). The notch's mid band
-       — empty between them — tucks in harmlessly. */
-    body.landscape-mobile .side-outer {
-        display: flex; flex-direction: column;
-        align-items: center; gap: 7px;
-        flex-shrink: 0;
-    }
-    /* Pin the bottom button to the bottom of the lane: pointer (left), gear (right). */
-    body.landscape-mobile .side-outer #device-btn,
-    body.landscape-mobile .side-outer #pointer-btn { margin-top: auto; }
-    /* Widen Leave to the Live badge's width (the lane's widest item). */
-    body.landscape-mobile .side-outer #live-badge,
-    body.landscape-mobile .side-outer #leave-btn { align-self: stretch; }
-    /* Top-bar refugees relocated into the side bars. */
-    body.landscape-mobile .side-toolbar #ws-status,
-    body.landscape-mobile .side-toolbar #live-badge,
-    body.landscape-mobile .side-toolbar #participant-count,
-    body.landscape-mobile .side-toolbar #leave-btn {
-        font-size: 10px;
-        margin: 0;
-    }
-    /* #leave-btn has inline `margin-left: 8px`, `padding: 3px 10px` and
-       `font-size: 11px` (tuned for #top-right). Override with !important so
-       the button sits dead-centre and stays narrow enough not to widen the
-       side bar past its icon column. */
-    body.landscape-mobile .side-toolbar #leave-btn {
-        margin-left: 0 !important;
-        padding: 4px 6px !important;
-        font-size: 9px !important;
-    }
-    /* Keep the Live badge inside the slim column too. */
-    body.landscape-mobile .side-toolbar #live-badge {
-        padding: 2px 5px;
-        font-size: 8px;
-        letter-spacing: 0.04em;
-    }
-    /* Drop the "Connected" / "Connecting" text — the dot alone signals
-       status, and the label would force the side bar wider than its
-       button column. */
-    body.landscape-mobile .side-toolbar #ws-label { display: none; }
-    body.landscape-mobile #room-name-label { display: none; }
-    /* Seek group + volume don't fit a vertical column. */
-    body.landscape-mobile #seek-group { display: none !important; }
-    body.landscape-mobile #volume-slider { display: none; }
 }
 </style>
 </head>
@@ -1174,7 +1120,7 @@ body.has-focus.strip-hidden #stage-strip {
                 <span id="participant-num">0</span>
                 <span class="notif-dot" id="roster-dot"></span>
             </span>
-            <button id="leave-btn" title="Leave session" style="background:none;border:1px solid var(--border);color:var(--dim);border-radius:5px;padding:3px 10px;font:inherit;font-size:11px;cursor:pointer;margin-left:8px;">Leave</button>
+            <button id="leave-btn" title="Leave session" style="background:none;border:1px solid var(--border);color:var(--dim);border-radius:var(--r-pill);padding:3px 12px;font:inherit;font-size:11px;cursor:pointer;margin-left:8px;">Leave</button>
         </div>
     </div>
 
@@ -1252,7 +1198,7 @@ body.has-focus.strip-hidden #stage-strip {
                     <div id="upload-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width 0.1s linear;"></div>
                 </div>
                 <div id="chat-input-row">
-                    <input type="text" id="chat-input" placeholder="Message..." maxlength="500" autocomplete="off" disabled>
+                    <textarea id="chat-input" rows="1" placeholder="Message..." maxlength="500" autocomplete="off" disabled></textarea>
                     <button id="chat-attach" disabled title="Attach file">
                         <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
@@ -1271,8 +1217,12 @@ body.has-focus.strip-hidden #stage-strip {
 
     </div><!-- /main-row -->
 
-    <!-- Bottom toolbar -->
-    <div id="bottom-toolbar">
+    <!-- Bottom toolbar — floating, auto-hiding pill overlaying the stage (#186).
+         Desktop shows every control inline in the original order. On mobile the
+         secondary controls (focus, strip, player controls, devices, resync) are
+         moved into #more-sheet by layout.ts and revealed via the ⋯ button, so
+         the pill stays a slim single row of essentials. -->
+    <div id="bottom-toolbar" class="nav-pill">
         <div class="toolbar-group">
             <button class="tb-btn" id="cam-btn" title="Camera (Q)">
                 <svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
@@ -1302,7 +1252,6 @@ body.has-focus.strip-hidden #stage-strip {
                 <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             </button>
         </div>
-        <div id="tb-break"></div>
         <div class="tb-sep"></div>
         <div class="toolbar-group" id="player-controls">
             <button class="tb-btn" id="play-btn" title="Play/Pause" disabled>
@@ -1331,12 +1280,18 @@ body.has-focus.strip-hidden #stage-strip {
                 <svg viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
             </button>
         </div>
+        <!-- ⋯ More toggle + popup target (mobile only). -->
+        <button class="tb-btn" id="more-btn" title="More controls">
+            <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <div id="more-sheet"></div>
     </div>
 
-    <!-- Mobile-landscape side toolbars. Empty by default; populated by
-         setupLandscapeToolbar() in layout.ts when the breakpoint matches. -->
-    <div id="left-toolbar"  class="side-toolbar" aria-hidden="true"></div>
-    <div id="right-toolbar" class="side-toolbar" aria-hidden="true"></div>
+    <!-- Mobile-landscape side pills. Empty by default; layout.ts splits the
+         toolbar groups into these two floating vertical pills when the short
+         landscape breakpoint matches, freeing vertical space for the stage. -->
+    <div id="left-toolbar"  class="side-pill nav-pill" aria-hidden="true"></div>
+    <div id="right-toolbar" class="side-pill nav-pill" aria-hidden="true"></div>
 
 </div><!-- /app -->
 

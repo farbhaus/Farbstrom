@@ -56,6 +56,13 @@ html { touch-action: manipulation; }
     --r-btn: 8px;   /* buttons, inputs — matches viewer toolbar aesthetic */
     --r-lg:  10px;  /* cards, panels, tiles */
     --r-xl:  12px;
+    --r-pill: 999px; /* fully-rounded floating nav pills (#186) */
+
+    /* Floating nav pill (#186) — shared by the admin navbar and viewer toolbar
+       so the two match. Semi-transparent surface + blur for a glassy overlay. */
+    --pill-bg:     color-mix(in srgb, var(--surface) 72%, transparent);
+    --pill-border: color-mix(in srgb, var(--text) 12%, transparent);
+    --pill-blur:   12px;
 
     /* Motion */
     --dur-fast: 150ms;
@@ -66,6 +73,7 @@ html { touch-action: manipulation; }
 
     /* Z-index */
     --z-nav:     100;
+    --z-pill:    120;  /* floating nav pills — above content/panels, below overlays */
     --z-overlay: 150;
     --z-screen:  200;
     --z-modal:   300;
