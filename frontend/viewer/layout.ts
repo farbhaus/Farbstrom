@@ -312,13 +312,19 @@ function setupFullscreen(): void {
   document.addEventListener('webkitfullscreenchange', onFsChange);
 }
 
-// The bottom toolbar is a floating "disappearing" pill (#186): it fades out
-// after a few seconds of inactivity and reappears on pointer movement, touch,
-// or a keypress. Hiding is suppressed while the user is interacting with the
-// pill (hover / keyboard focus inside it) or while the chat panel is open, so
-// it never vanishes mid-action. CSS (#bottom-toolbar.toolbar-hidden) does the
-// actual fade.
+// The bottom toolbar is a floating "disappearing" pill (#186). On desktop it
+// behaves like a video player's controls: it appears only when the mouse
+// approaches the bottom edge (the hot zone) and tucks away otherwise, so moving
+// or clicking mid-video — e.g. while using the pointer tool or chatting — never
+// makes it flicker. On touch a tap toggles it. Hiding is suppressed while the
+// user is interacting with the pill (hover / focus inside it), the ⋯ sheet is
+// open, or the chat panel is open. CSS (#bottom-toolbar.toolbar-hidden) fades it.
 const PILL_IDLE_MS = 3000;
+// Reveal only when the mouse is within this band of the viewport bottom (where
+// the pill lives), so moving/clicking mid-video never summons it.
+const PILL_HOTZONE_PX = 140;
+// How quickly it tucks away once the cursor leaves the bottom band.
+const PILL_LEAVE_MS = 600;
 let pillHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 function pillEl(): HTMLElement | null {
@@ -397,7 +403,7 @@ function setupResponsiveToolbar(): void {
   mql.addEventListener?.('change', apply);
 }
 
-// Collapse the pill (and the ⋯ sheet) immediately — used on an outside tap.
+// Collapse the pill (and the ⋯ sheet) immediately — used on a touch outside tap.
 function hidePill(): void {
   const pill = pillEl();
   if (!pill) return;
@@ -405,6 +411,17 @@ function hidePill(): void {
   pill.classList.remove('more-open');
   document.getElementById('more-btn')?.classList.remove('active');
   pill.classList.add('toolbar-hidden');
+}
+
+// Hide after `delay`, unless the pill is still being used (re-arm at idle pace).
+function armHide(delay: number): void {
+  if (pillHideTimer) clearTimeout(pillHideTimer);
+  pillHideTimer = setTimeout(() => {
+    const p = pillEl();
+    if (!p) return;
+    if (pillPinned(p)) armHide(PILL_IDLE_MS); // still busy — keep it up
+    else p.classList.add('toolbar-hidden');
+  }, delay);
 }
 
 function revealPill(): void {
@@ -416,34 +433,43 @@ function revealPill(): void {
     return;
   }
   pill.classList.remove('toolbar-hidden');
-  pillHideTimer = setTimeout(() => {
-    const p = pillEl();
-    if (!p) return;
-    if (pillPinned(p)) revealPill(); // still busy — re-arm; hide once it's free
-    else p.classList.add('toolbar-hidden');
-  }, PILL_IDLE_MS);
+  armHide(PILL_IDLE_MS);
 }
 
 function setupPillAutohide(): void {
-  // Mouse movement (desktop) keeps the pill awake; touch relies on tap-toggle.
+  // Desktop: reveal only when the cursor is near the bottom edge (where the pill
+  // lives); leaving that band tucks it away. Mid-video movement never reveals it.
   document.addEventListener(
     'pointermove',
     (e) => {
-      if (e.pointerType === 'mouse') revealPill();
+      if (e.pointerType !== 'mouse') return;
+      const pill = pillEl();
+      if (!pill) return;
+      const inZone = e.clientY >= window.innerHeight - PILL_HOTZONE_PX;
+      if (inZone) revealPill();
+      else if (!pill.classList.contains('toolbar-hidden') && !pillPinned(pill)) {
+        armHide(PILL_LEAVE_MS);
+      }
     },
     { passive: true },
   );
-  document.addEventListener('keydown', () => revealPill());
-  // Tap/click: inside the pill keeps it up; outside toggles it off (or reveals
-  // it when already hidden), and always collapses the ⋯ sheet.
+  // Keyboard shortcuts reveal the pill — but not while typing in a field.
+  document.addEventListener('keydown', (e) => {
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    revealPill();
+  });
+  // Touch: a tap toggles the pill (inside keeps it up; outside hides, or reveals
+  // when hidden). Skipped while the pointer tool is active so annotation taps
+  // pass through to the overlay. Mouse taps do nothing — the hot zone governs.
   document.addEventListener(
     'pointerdown',
     (e) => {
+      if (e.pointerType === 'mouse') return;
+      if (viewerStore.get().pointerMode) return;
       const pill = pillEl();
       if (!pill) return;
-      if (pill.contains(e.target as Node)) {
-        revealPill();
-      } else if (pill.classList.contains('toolbar-hidden')) {
+      if (pill.contains(e.target as Node) || pill.classList.contains('toolbar-hidden')) {
         revealPill();
       } else {
         hidePill();
@@ -451,8 +477,7 @@ function setupPillAutohide(): void {
     },
     { passive: true },
   );
-  // Re-arm the idle countdown when the pointer leaves the pill (it was pinned
-  // by :hover while inside).
+  // Re-arm the idle countdown when the pointer leaves the pill.
   pillEl()?.addEventListener('mouseleave', () => revealPill());
   revealPill(); // start visible, begin the idle countdown
 }
