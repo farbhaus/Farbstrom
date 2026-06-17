@@ -80,6 +80,50 @@ async fn create_room_succeeds() {
     // Participant-audio defaults are ON unless the admin opts out.
     assert_eq!(body["noise_reduction"], 1);
     assert_eq!(body["echo_cancellation"], 1);
+    // Push-to-talk defaults OFF.
+    assert_eq!(body["push_to_talk"], 0);
+}
+
+#[tokio::test]
+async fn create_room_push_to_talk_round_trips() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let token = common::admin_token(&state);
+    let (name, val) = auth_header(&token);
+
+    // Opt the room into push-to-talk at creation.
+    let res = server
+        .post("/api/rooms")
+        .add_header(name.clone(), val.clone())
+        .json(&json!({
+            "name": "PTT Room",
+            "push_to_talk": true,
+        }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    let room_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["push_to_talk"], 1);
+    // Audio defaults are untouched (still ON).
+    assert_eq!(body["noise_reduction"], 1);
+
+    // Persisted.
+    let res = server
+        .get(&format!("/api/rooms/{}", room_id))
+        .add_header(name.clone(), val.clone())
+        .await;
+    assert_eq!(res.json::<Value>()["push_to_talk"], 1);
+
+    // Turning it back off via update leaves the audio settings alone.
+    let res = server
+        .put(&format!("/api/rooms/{}", room_id))
+        .add_header(name, val)
+        .json(&json!({ "push_to_talk": false }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["push_to_talk"], 0);
+    assert_eq!(body["noise_reduction"], 1);
 }
 
 #[tokio::test]

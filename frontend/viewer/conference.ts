@@ -3,7 +3,7 @@
 // (kick + mute). Co-located because tile rendering is tightly coupled to
 // LiveKit's track state.
 
-import { confirmModal } from '../shared/components.js';
+import { confirmModal, noticeModal } from '../shared/components.js';
 import { toast } from '../shared/utils.js';
 import { sizeStage } from './layout.js';
 import { disablePointerMode } from './pointer.js';
@@ -28,6 +28,17 @@ const echoCancelOn = (): boolean => {
   const v = localStorage.getItem(echoKey());
   return v === null ? viewerStore.get().echoDefault : v !== '0';
 };
+
+// Push-to-talk preference, slug-scoped like the audio toggles above. Absent →
+// fall back to the room's admin default (viewerStore.pttDefault); '1'/'0' →
+// explicit participant override.
+const pttKey = (): string => `viewer_ptt_${slug}`;
+const pttOn = (): boolean => {
+  const v = localStorage.getItem(pttKey());
+  return v === null ? viewerStore.get().pttDefault : v === '1';
+};
+// One-time-per-room flag for the push-to-talk entry notice.
+const pttNoticeKey = (): string => `viewer_ptt_notice_${slug}`;
 
 // Capture constraints applied whenever the mic track is (re)published.
 // voiceIsolation is the stronger, browser-native isolation that supersedes
@@ -331,9 +342,13 @@ export async function initLiveKit(): Promise<void> {
     }
   }
 
-  const { cameraOn, micOn } = viewerStore.get();
+  const { cameraOn, micOn, pttEnabled } = viewerStore.get();
   if (cameraOn) await room.localParticipant.setCameraEnabled(true);
-  if (micOn) await room.localParticipant.setMicrophoneEnabled(true, audioCaptureOpts());
+  // In push-to-talk mode the mic stays muted until the user holds the control,
+  // so don't auto-open it on join even if the saved pref wanted mic on — and
+  // reflect that muted reality in the store.
+  if (micOn && pttEnabled) viewerStore.set({ micOn: false });
+  else if (micOn) await room.localParticipant.setMicrophoneEnabled(true, audioCaptureOpts());
 
   updateSelfTile();
 }
@@ -643,29 +658,103 @@ async function toggleCamera(): Promise<void> {
   refreshConfButtons();
 }
 
-async function toggleMic(): Promise<void> {
+// Drive the local mic to a target state. Shared by the click toggle and the
+// push-to-talk press/release. `persistPref` records the cam+mic combo as the
+// join preference (PREF_KEY) — momentary PTT toggles skip it so they don't
+// rewrite the saved choice every keypress.
+async function setMicLive(on: boolean, persistPref = true): Promise<void> {
   stopMicBreathe(); // user acknowledged — clear any force-mute alert immediately
-  const { cameraOn, micOn } = viewerStore.get();
-  localStorage.setItem(PREF_KEY, cameraOn ? (!micOn ? 'both' : 'cam') : !micOn ? 'mic' : 'none');
-  const next = !micOn;
-  viewerStore.set({ micOn: next });
+  const { cameraOn, micOn: prev } = viewerStore.get();
+  if (persistPref) {
+    localStorage.setItem(PREF_KEY, cameraOn ? (on ? 'both' : 'cam') : on ? 'mic' : 'none');
+  }
+  viewerStore.set({ micOn: on });
   selfMuteInFlight = true;
   setConfBtns({ active: cameraOn, disabled: true }, { disabled: true });
   try {
     if (livekitRoom) {
-      await livekitRoom.localParticipant.setMicrophoneEnabled(next, audioCaptureOpts());
+      await livekitRoom.localParticipant.setMicrophoneEnabled(on, audioCaptureOpts());
       updateSelfTile();
-    } else if (next) {
+    } else if (on) {
       await initLiveKit();
     }
   } catch (err) {
     console.error('[conf mic]', err);
-    viewerStore.set({ micOn });
+    viewerStore.set({ micOn: prev });
     toast(deviceErrorMessage(err, 'mic'));
   } finally {
     selfMuteInFlight = false;
   }
   refreshConfButtons();
+}
+
+async function toggleMic(): Promise<void> {
+  await setMicLive(!viewerStore.get().micOn);
+}
+
+// ---- Push-to-talk ----
+// While PTT is enabled the mic control (button hold or `S` key hold) opens the
+// mic only for the duration of the hold. `pttHeld` guards re-entry: pointer
+// drift and keyboard auto-repeat both fire repeatedly while held.
+let pttHeld = false;
+
+export async function pttPress(): Promise<void> {
+  // PTT only makes sense once in the conference; otherwise there's no mic to open.
+  if (!viewerStore.get().pttEnabled || !livekitRoom) return;
+  if (pttHeld || viewerStore.get().micOn) return;
+  pttHeld = true;
+  await setMicLive(true, false);
+}
+
+export async function pttRelease(): Promise<void> {
+  if (!pttHeld) return;
+  pttHeld = false;
+  if (!viewerStore.get().pttEnabled || !livekitRoom) return;
+  await setMicLive(false, false);
+}
+
+// Reflect PTT vs. toggle mode in the mic button tooltip.
+function updateMicTooltip(): void {
+  const micBtn = document.getElementById('mic-btn');
+  if (micBtn) micBtn.title = viewerStore.get().pttEnabled ? 'Push to talk — hold (S)' : 'Microphone (S)';
+}
+
+// Re-evaluate PTT mode once the room default is known (seeded into the store at
+// join/resume in screens.ts). initConference() seeds an early default before
+// roomInfo has arrived, so showApp() calls this to apply the room's setting.
+export function syncPttMode(): void {
+  viewerStore.set({ pttEnabled: pttOn() });
+  updateMicTooltip();
+}
+
+// One-time-per-room explainer shown on room entry when push-to-talk is active,
+// so a participant whose mic is muted by the room default learns how to speak
+// and how to opt out. Resolves immediately (no modal) when PTT is off or the
+// notice has already been shown for this room.
+export async function maybeShowPttNotice(): Promise<void> {
+  if (!viewerStore.get().pttEnabled) return;
+  if (localStorage.getItem(pttNoticeKey())) return;
+  localStorage.setItem(pttNoticeKey(), '1');
+  // Inline copies of the toolbar mic + device-settings glyphs, self-styled
+  // (the notice <p> isn't a .tb-btn) and sized/aligned to the surrounding text.
+  const iconAttrs =
+    'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" ' +
+    'stroke-linejoin="round" style="width:1.05em;height:1.05em;vertical-align:-0.2em"';
+  const micIcon =
+    `<svg viewBox="0 0 24 24" ${iconAttrs}><rect x="9" y="1" width="6" height="11" rx="3"/>` +
+    '<path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/>' +
+    '<line x1="8" y1="23" x2="16" y2="23"/></svg>';
+  const gearIcon =
+    `<svg viewBox="0 0 24 24" ${iconAttrs}><circle cx="12" cy="12" r="3"/>` +
+    '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+  await noticeModal({
+    title: 'Push to talk is on',
+    messageHtml:
+      'Your microphone stays muted in this room until you choose to speak.\n\n' +
+      `Hold the <strong style="color: var(--accent)">S</strong> key — or press and hold ${micIcon} — to talk, then release to mute again.\n\n` +
+      `To turn off push-to-talk go to ${gearIcon} Device Settings.`,
+    buttonLabel: 'Got it',
+  });
 }
 
 // Host asked us to unmute. LiveKit can't force a remote mic back on, so the
@@ -837,6 +926,7 @@ async function openDevicePicker(): Promise<void> {
 
   (document.getElementById('device-noise') as HTMLInputElement).checked = noiseReductionOn();
   (document.getElementById('device-echo') as HTMLInputElement).checked = echoCancelOn();
+  (document.getElementById('device-ptt') as HTMLInputElement).checked = pttOn();
 }
 
 // ---- Presenter moderation ----
@@ -883,8 +973,30 @@ async function presenterMute(targetId: string): Promise<void> {
 // ---- Wire DOM ----
 
 export function initConference(): void {
+  viewerStore.set({ pttEnabled: pttOn() });
+  updateMicTooltip();
+
   document.getElementById('cam-btn')?.addEventListener('click', toggleCamera);
-  document.getElementById('mic-btn')?.addEventListener('click', toggleMic);
+  // Mic button: a plain toggle normally, press-and-hold in push-to-talk mode.
+  const micBtn = document.getElementById('mic-btn');
+  micBtn?.addEventListener('click', () => {
+    if (viewerStore.get().pttEnabled) return; // PTT drives the mic via pointer hold
+    void toggleMic();
+  });
+  micBtn?.addEventListener('pointerdown', (e) => {
+    if (!viewerStore.get().pttEnabled) return;
+    e.preventDefault(); // suppress the synthesized click so it doesn't toggle
+    void pttPress();
+  });
+  const pttPointerRelease = (): void => {
+    if (viewerStore.get().pttEnabled) void pttRelease();
+  };
+  micBtn?.addEventListener('pointerup', pttPointerRelease);
+  micBtn?.addEventListener('pointerleave', pttPointerRelease);
+  micBtn?.addEventListener('pointercancel', pttPointerRelease);
+  // Losing focus (alt-tab, OS prompt) can swallow the keyup/pointerup that would
+  // re-mute — release defensively so the mic never sticks open.
+  window.addEventListener('blur', () => void pttRelease());
   // Screen share can't work on iOS (every iOS browser is WebKit, and even those
   // that expose getDisplayMedia — e.g. Firefox iOS — reject it at call time).
   // Detect iOS directly rather than trusting feature detection, and also cover
@@ -1003,6 +1115,15 @@ export function initConference(): void {
   };
   document.getElementById('device-noise')?.addEventListener('change', (e) => void onAudioPrefChange(noiseKey())(e));
   document.getElementById('device-echo')?.addEventListener('change', (e) => void onAudioPrefChange(echoKey())(e));
+
+  document.getElementById('device-ptt')?.addEventListener('change', (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    localStorage.setItem(pttKey(), on ? '1' : '0');
+    viewerStore.set({ pttEnabled: on });
+    updateMicTooltip();
+    // Enabling PTT while the mic is live: drop straight to muted.
+    if (on && viewerStore.get().micOn) void setMicLive(false, false);
+  });
 
   // Presenter moderation, delegated at #app level — tiles live in #stage
   // (focused) or #stage-strip (unfocused). One listener handles both.

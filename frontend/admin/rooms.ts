@@ -214,6 +214,7 @@ function openRoomModal(id: string | null): void {
       !!r.noise_reduction;
     (document.getElementById('room-echo-cancellation') as HTMLInputElement).checked =
       !!r.echo_cancellation;
+    (document.getElementById('room-push-to-talk') as HTMLInputElement).checked = !!r.push_to_talk;
     const expiresInput = document.getElementById('room-expires') as HTMLInputElement;
     if (r.expires_at) {
       // expires_at is stored as UTC "YYYY-MM-DD HH:MM:SS" with no zone marker.
@@ -234,6 +235,7 @@ function openRoomModal(id: string | null): void {
     (document.getElementById('room-waiting') as HTMLInputElement).checked = false;
     (document.getElementById('room-noise-reduction') as HTMLInputElement).checked = true;
     (document.getElementById('room-echo-cancellation') as HTMLInputElement).checked = true;
+    (document.getElementById('room-push-to-talk') as HTMLInputElement).checked = false;
     (document.getElementById('room-expires') as HTMLInputElement).value = '';
     if (skSelect) skSelect.value = '';
     const clearRow = document.getElementById('clear-password-row');
@@ -263,6 +265,7 @@ async function saveRoom(): Promise<void> {
     .checked;
   const echo_cancellation = (document.getElementById('room-echo-cancellation') as HTMLInputElement)
     .checked;
+  const push_to_talk = (document.getElementById('room-push-to-talk') as HTMLInputElement).checked;
   const expiresRaw = (document.getElementById('room-expires') as HTMLInputElement).value;
   const expires_at = expiresRaw
     ? new Date(expiresRaw).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '')
@@ -284,6 +287,7 @@ async function saveRoom(): Promise<void> {
     waiting_room,
     noise_reduction,
     echo_cancellation,
+    push_to_talk,
     expires_at,
     stream_key_id: streamKeyId || null,
     ...(clearPassword ? { password: '' } : password ? { password } : {}),
