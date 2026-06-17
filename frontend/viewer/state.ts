@@ -31,10 +31,16 @@ export interface ViewerState {
   // toggles unless the participant has overridden them for this room.
   noiseDefault: boolean;
   echoDefault: boolean;
+  // Per-room admin default for push-to-talk. Seeds the participant's PTT mode
+  // unless they've overridden it for this room.
+  pttDefault: boolean;
   // Conference local state
   cameraOn: boolean;
   micOn: boolean;
   screenOn: boolean;
+  // Push-to-talk: when true the mic is muted by default and only goes live
+  // while the user holds the mic control (button or `S` key).
+  pttEnabled: boolean;
   // Roster from participants:update WS messages
   roster: RosterEntry[];
   // Panels
@@ -57,9 +63,11 @@ export const viewerStore = createStore<ViewerState>({
   streamKey: null,
   noiseDefault: true,
   echoDefault: true,
+  pttDefault: false,
   cameraOn: false,
   micOn: false,
   screenOn: false,
+  pttEnabled: false,
   roster: [],
   chatOpen: false,
   // Strip is "open" by default — entering focus mode shows it.

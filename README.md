@@ -84,14 +84,18 @@ is also shown in each button's hover tooltip.
 
 | Key | Action |
 |---|---|
-| `Q` | Toggle camera |
-| `W` | Toggle microphone |
-| `E` | Toggle pointer *(focus view only)* |
+| `A` | Toggle camera |
+| `S` | Toggle microphone |
+| `D` | Toggle pointer *(focus view only)* |
 | `F` | Enter/exit fullscreen |
 | `M` | Mute/unmute the stream |
 | `X` | Toggle focus view |
 | `C` | Toggle chat panel |
 | `V` | Toggle call strip *(focus view only)* |
+
+With **push-to-talk** enabled (Device Settings), `S` — and the mic toolbar button —
+become hold-to-talk: the mic stays muted and only goes live while you hold the key
+or button, re-muting on release.
 
 ## Ingest protocols
 

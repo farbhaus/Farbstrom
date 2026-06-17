@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     waiting_room  INTEGER NOT NULL DEFAULT 0,
     noise_reduction   INTEGER NOT NULL DEFAULT 1,
     echo_cancellation INTEGER NOT NULL DEFAULT 1,
+    push_to_talk      INTEGER NOT NULL DEFAULT 0,
     expires_at    DATETIME,
     status        TEXT NOT NULL DEFAULT 'pending',
     stream_key_id TEXT REFERENCES stream_keys(id) ON DELETE SET NULL,

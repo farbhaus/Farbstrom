@@ -122,6 +122,35 @@ async fn join_succeeds() {
     // Seeded rooms default both audio settings ON.
     assert_eq!(body["noise_reduction_default"], true);
     assert_eq!(body["echo_cancellation_default"], true);
+    // Push-to-talk defaults OFF.
+    assert_eq!(body["push_to_talk_default"], false);
+}
+
+#[tokio::test]
+async fn join_exposes_push_to_talk_default() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+
+    let room_id = common::seed_room(&state, "Loud Room", "loud-room-abc123");
+    // Admin made this a push-to-talk room.
+    state
+        .db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE rooms SET push_to_talk = 1 WHERE id = ?1",
+            rusqlite::params![room_id],
+        )
+        .unwrap();
+
+    let res = server
+        .post("/api/public/rooms/loud-room-abc123/join")
+        .json(&json!({ "name": "Alice" }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+
+    let body: Value = res.json();
+    assert_eq!(body["push_to_talk_default"], true);
 }
 
 #[tokio::test]

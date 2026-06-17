@@ -909,30 +909,40 @@ body.has-focus.strip-hidden #stage-strip {
    floating vertical pills on the left/right edges (layout.ts moves the groups
    in) and hide the bottom pill. */
 @media (max-height: 440px) and (orientation: landscape) {
-    #top-bar { height: 36px; }
+    /* Hide the top bar entirely (#192) — vertical space is scarce in landscape,
+       so reclaim it all for the pinned tile. Leave is reached via portrait. */
+    #top-bar { display: none; }
     #volume-slider { display: none; }
     #bottom-toolbar { display: none; }
-    /* Two vertical pills of stacked buttons, centered in the area BELOW the 36px
-       top bar — the +18px shifts the centre down by half the top bar so they
-       never overlap it. Edges sit 14px in for breathing room. */
+    /* Shrink the focus-mode call strip so the (more important) pinned tile stays
+       wider than it (#192). sizeFocusPanels() in layout.ts reads these tokens off
+       :root live, so overriding them here shrinks both the CSS and the JS sizing. */
+    :root {
+        --strip-w: 116px;
+        --strip-w-min: 96px;
+        --strip-w-max: 150px;
+    }
+    /* Two vertical pills of stacked buttons, centered over the full height now
+       that the top bar is gone. Edges sit close in to keep lateral spacing tight. */
     .side-pill {
         display: flex; flex-direction: column; align-items: center; justify-content: center;
         /* Extra top/bottom padding so the end buttons clear the rounded corners. */
         gap: 4px; padding: 12px 6px;
-        position: absolute; top: calc(50% + 18px); transform: translateY(-50%);
-        max-height: calc(100% - 52px); overflow-y: auto; z-index: var(--z-pill);
+        position: absolute; top: 50%; transform: translateY(-50%);
+        max-height: calc(100% - 16px); overflow-y: auto; z-index: var(--z-pill);
         /* Match the tiles/columns radius, not the pill radius. */
         border-radius: var(--r-lg);
     }
-    #left-toolbar  { left:  calc(14px + env(safe-area-inset-left, 0px)); }
-    #right-toolbar { right: calc(14px + env(safe-area-inset-right, 0px)); }
-    /* Inset the stage to exactly the pill's outer edge (14px offset + ~56px pill)
-       so the stage's own 8px padding is the only gap to the tiles — matching the
-       8px gutter used everywhere else. (Keeps sizeStage's math correct since it
-       sizes to #stage's now-narrower width.) */
+    #left-toolbar  { left:  calc(8px + env(safe-area-inset-left, 0px)); }
+    #right-toolbar { right: calc(8px + env(safe-area-inset-right, 0px)); }
+    /* Inset the stage to just past the pill's outer edge (8px offset + ~54px pill
+       + ~2px clearance) so the stage's own 8px padding is the only gap to the
+       tiles — matching the 8px gutter used everywhere else. Tighter than before
+       (was 70px at a 14px offset). Keeps sizeStage's math correct since it sizes
+       to #stage's now-narrower width. */
     #main-row {
-        padding-left:  calc(70px + env(safe-area-inset-left, 0px));
-        padding-right: calc(70px + env(safe-area-inset-right, 0px));
+        padding-left:  calc(64px + env(safe-area-inset-left, 0px));
+        padding-right: calc(64px + env(safe-area-inset-right, 0px));
     }
 }
 </style>
@@ -1061,6 +1071,12 @@ body.has-focus.strip-hidden #stage-strip {
             <label class="device-picker-check">
                 <input type="checkbox" id="device-echo" checked>
                 Echo cancellation
+            </label>
+        </div>
+        <div class="device-picker-row">
+            <label class="device-picker-check">
+                <input type="checkbox" id="device-ptt">
+                Push to talk (hold S / mic button)
             </label>
         </div>
         <div style="text-align:right;margin-top:16px">
@@ -1228,10 +1244,10 @@ body.has-focus.strip-hidden #stage-strip {
          the pill stays a slim single row of essentials. -->
     <div id="bottom-toolbar" class="nav-pill">
         <div class="toolbar-group">
-            <button class="tb-btn" id="cam-btn" title="Camera (Q)">
+            <button class="tb-btn" id="cam-btn" title="Camera (A)">
                 <svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
             </button>
-            <button class="tb-btn" id="mic-btn" title="Microphone (W)">
+            <button class="tb-btn" id="mic-btn" title="Microphone (S)">
                 <svg viewBox="0 0 24 24"><rect x="9" y="1" width="6" height="11" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
             </button>
             <button class="tb-btn" id="screen-btn" title="Share Screen">
@@ -1240,7 +1256,7 @@ body.has-focus.strip-hidden #stage-strip {
         </div>
         <div class="tb-sep"></div>
         <div class="toolbar-group">
-            <button class="tb-btn" id="pointer-btn" title="Pointer (E)">
+            <button class="tb-btn" id="pointer-btn" title="Pointer (D)">
                 <svg viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6" stroke-linecap="round"/></svg>
             </button>
             <button class="tb-btn" id="focus-btn" title="Toggle focus view (X)">

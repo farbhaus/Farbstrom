@@ -33,6 +33,15 @@ interface ConfirmOpts {
   danger?: boolean;
 }
 
+interface NoticeOpts {
+  title: string;
+  // Plain-text body (escaped). Use messageHtml instead for trusted markup.
+  message?: string;
+  // Trusted HTML body (caller-controlled, never user input) — wins over message.
+  messageHtml?: string;
+  buttonLabel?: string;
+}
+
 interface PromptOpts {
   title: string;
   message?: string;
@@ -86,6 +95,44 @@ export function confirmModal(opts: ConfirmOpts): Promise<boolean> {
       const t = e.target as HTMLElement;
       if (t === overlay || t.closest('[data-act="cancel"]')) done(false);
       else if (t.closest('[data-act="ok"]')) done(true);
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
+  });
+}
+
+// Single-button informational dialog (vs. confirmModal's two-button confirm).
+// Resolves when dismissed via the button, the ✕, the backdrop, Esc or Enter.
+export function noticeModal(opts: NoticeOpts): Promise<void> {
+  return new Promise((resolve) => {
+    const { overlay, modal } = buildOverlay();
+    modal.innerHTML = `
+      <div class="modal-header">
+        <span class="modal-title"></span>
+        <button class="btn btn-sm" data-act="ok">✕</button>
+      </div>
+      <p style="margin:4px 0 18px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-line"></p>
+      <div class="modal-footer">
+        <button class="btn btn-primary" data-act="ok"></button>
+      </div>`;
+    (modal.querySelector('.modal-title') as HTMLElement).textContent = opts.title;
+    const body = modal.querySelector('p') as HTMLElement;
+    if (opts.messageHtml !== undefined) body.innerHTML = opts.messageHtml;
+    else body.textContent = opts.message ?? '';
+    (modal.querySelector('[data-act="ok"].btn:not(.btn-sm)') as HTMLElement).textContent =
+      opts.buttonLabel ?? 'Got it';
+
+    const done = (): void => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve();
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' || e.key === 'Enter') done();
+    };
+    overlay.addEventListener('click', (e) => {
+      const t = e.target as HTMLElement;
+      if (t === overlay || t.closest('[data-act="ok"]')) done();
     });
     document.addEventListener('keydown', onKey);
     document.body.appendChild(overlay);

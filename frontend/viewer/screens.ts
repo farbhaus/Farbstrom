@@ -214,6 +214,7 @@ export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
         streamKey: savedSession.streamKey,
         noiseDefault: !!roomInfo.noise_reduction,
         echoDefault: !!roomInfo.echo_cancellation,
+        pttDefault: !!roomInfo.push_to_talk,
       });
 
       // Re-check admission on resume. A participant who refreshed while in
@@ -312,6 +313,7 @@ export async function doJoin(): Promise<RoomInfoOutcome> {
       streamKey: data.stream_key,
       noiseDefault: data.noise_reduction_default,
       echoDefault: data.echo_cancellation_default,
+      pttDefault: data.push_to_talk_default,
     });
 
     saveSession({

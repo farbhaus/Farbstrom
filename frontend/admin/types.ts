@@ -15,6 +15,7 @@ export interface Room {
   waiting_room: boolean | number;
   noise_reduction: boolean | number;
   echo_cancellation: boolean | number;
+  push_to_talk: boolean | number;
   expires_at: string | null;
   password_hash: string | null;
   presenter_key: string;
