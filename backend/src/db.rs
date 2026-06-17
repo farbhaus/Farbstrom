@@ -378,6 +378,20 @@ pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
         }
     }
 
+    // Per-room push-to-talk default (issue #188). Default OFF (DEFAULT 0) to
+    // preserve the always-toggle mic behavior for existing rooms — the inverse
+    // of the audio defaults above, so it gets its own block.
+    let has_ptt: bool = conn
+        .prepare("PRAGMA table_info(rooms)")
+        .expect("PRAGMA table_info(rooms) failed (push_to_talk check)")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("PRAGMA table_info(rooms) query_map failed (push_to_talk check)")
+        .any(|name| name.as_deref() == Ok("push_to_talk"));
+    if !has_ptt {
+        conn.execute_batch("ALTER TABLE rooms ADD COLUMN push_to_talk INTEGER NOT NULL DEFAULT 0")
+            .expect("Failed migration: add rooms.push_to_talk");
+    }
+
     migrate_session_files_library(&conn);
     repair_room_files_fk(&conn);
     migrate_session_files_room_id_setnull(&conn);

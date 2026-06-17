@@ -6,10 +6,12 @@ import { initRoster } from './roster.js';
 import {
   configureConference,
   initConference,
+  maybeShowPttNotice,
   refreshConfButtons,
   requestAutoFocus,
   showConfPrompt,
   syncConferenceTiles,
+  syncPttMode,
   disconnectLiveKit,
   updateFocusAspect,
 } from './conference.js';
@@ -197,8 +199,13 @@ function showApp(initialStatus?: RoomStatus): void {
   sizeStage();
   requestAutoFocus();
 
+  // Apply the room's push-to-talk default now that roomInfo/pttDefault are
+  // seeded, so the conf prompt's initLiveKit keeps the mic muted under PTT.
+  syncPttMode();
   connectWs();
-  showConfPrompt();
+  // Show the one-time PTT explainer (if applicable) before the cam/mic prompt
+  // so the two dialogs don't stack; resolves immediately when PTT is off.
+  void maybeShowPttNotice().finally(() => showConfPrompt());
 }
 
 function leaveRoom(): void {

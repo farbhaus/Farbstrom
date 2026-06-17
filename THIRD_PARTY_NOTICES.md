@@ -9154,7 +9154,7 @@ SOFTWARE.
 
 ## MIT License
 
-Used by: [bcrypt 0.19.1](https://github.com/Keats/rust-bcrypt)
+Used by: [bcrypt 0.19.2](https://github.com/Keats/rust-bcrypt)
 
 ```
 The MIT License (MIT)
