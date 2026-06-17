@@ -2381,7 +2381,7 @@ Used by: [diff 0.1.13](https://github.com/utkarshkukreti/diff.rs)
 
 ## Apache License 2.0
 
-Used by: [base32 0.5.1](https://github.com/andreasots/base32), [bytesize 2.3.1](https://github.com/bytesize-rs/bytesize), [crc32fast 1.5.0](https://github.com/srijs/rust-crc32fast), [fallible-iterator 0.3.0](https://github.com/sfackler/rust-fallible-iterator), [fallible-streaming-iterator 0.1.9](https://github.com/sfackler/fallible-streaming-iterator), [foreign-types-shared 0.1.1](https://github.com/sfackler/foreign-types), [foreign-types 0.3.2](https://github.com/sfackler/foreign-types), [hex 0.4.3](https://github.com/KokaKiwi/rust-hex), [openssl-macros 0.1.1](https://crates.io/crates/openssl-macros), [openssl 0.10.80](https://github.com/rust-openssl/rust-openssl), [pretty_assertions 1.4.1](https://github.com/rust-pretty-assertions/rust-pretty-assertions), [r2d2 0.8.10](https://github.com/sfackler/r2d2), [scheduled-thread-pool 0.2.7](https://github.com/sfackler/scheduled-thread-pool)
+Used by: [base32 0.5.1](https://github.com/andreasots/base32), [bytesize 2.3.1](https://github.com/bytesize-rs/bytesize), [crc32fast 1.5.0](https://github.com/srijs/rust-crc32fast), [fallible-iterator 0.3.0](https://github.com/sfackler/rust-fallible-iterator), [fallible-streaming-iterator 0.1.9](https://github.com/sfackler/fallible-streaming-iterator), [foreign-types-shared 0.1.1](https://github.com/sfackler/foreign-types), [foreign-types 0.3.2](https://github.com/sfackler/foreign-types), [hex 0.4.3](https://github.com/KokaKiwi/rust-hex), [openssl-macros 0.1.1](https://crates.io/crates/openssl-macros), [openssl 0.10.81](https://github.com/rust-openssl/rust-openssl), [pretty_assertions 1.4.1](https://github.com/rust-pretty-assertions/rust-pretty-assertions), [r2d2 0.8.10](https://github.com/sfackler/r2d2), [scheduled-thread-pool 0.2.7](https://github.com/sfackler/scheduled-thread-pool)
 
 ```
                                  Apache License
@@ -7776,7 +7776,7 @@ Used by: [quanta 0.12.6](https://github.com/metrics-rs/quanta)
 
 ## MIT License
 
-Used by: [openssl-sys 0.9.116](https://github.com/rust-openssl/rust-openssl)
+Used by: [openssl-sys 0.9.117](https://github.com/rust-openssl/rust-openssl)
 
 ```
 Copyright (c) 2014 Alex Crichton
