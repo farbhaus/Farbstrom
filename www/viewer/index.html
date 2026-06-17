@@ -171,7 +171,11 @@ html, body { overflow: hidden; }
 }
 
 /* ---- App layout ---- */
-#app { display: none; flex-direction: column; height: 100vh; height: 100dvh; position: relative; }
+/* Opaque base so the <html> branding image (applyBranding sets it on
+   documentElement, for the join/waiting screens) doesn't bleed through the
+   transparent band around the floating toolbar, which lives in #app *outside*
+   #main-row. The stage/main-row paint --bg too; this just covers the gaps. */
+#app { display: none; flex-direction: column; height: 100vh; height: 100dvh; position: relative; background: var(--bg); }
 #app.visible { display: flex; }
 
 /* ---- Top bar ---- */
