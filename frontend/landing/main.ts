@@ -1,4 +1,5 @@
 import { applyBranding } from '../shared/branding.js';
+import { initPrivacyNotice } from '../shared/privacy-notice.js';
 
 function goToRoom(): void {
   const input = document.getElementById('landing-input') as HTMLInputElement;
@@ -36,8 +37,11 @@ document.getElementById('landing-input')?.addEventListener('keydown', (e) => {
 // logo (or the fetch fails — applyBranding returns null).
 void applyBranding({
   logoEl: document.getElementById('brand-logo') as HTMLImageElement | null,
+  setTitle: true,
 }).then((data) => {
   if (!data?.hasLogo) {
     document.getElementById('brand-fallback')?.classList.remove('u-hidden');
   }
 });
+
+initPrivacyNotice();

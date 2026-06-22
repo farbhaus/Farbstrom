@@ -1,6 +1,7 @@
 // Viewer bootstrap. Stitches the modules together and runs init order.
 
 import { applyBranding } from '../shared/branding.js';
+import { initPrivacyNotice } from '../shared/privacy-notice.js';
 import { configureChat, initChat, refreshShowButtons } from './chat.js';
 import { initRoster } from './roster.js';
 import {
@@ -268,6 +269,8 @@ function init(): void {
       document.body.style.background = 'transparent';
     }
   });
+
+  initPrivacyNotice();
 
   // Wire all subsystems.
   configureChat({ send: wsSend });

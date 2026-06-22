@@ -1,4 +1,4 @@
-# Farbström — thin wrappers around the two compose files.
+# Farbstrom — thin wrappers around the two compose files.
 #
 #   make deploy   start on a deploy host (pulls the published image)
 #   make update   pull the newest image and recreate (live sessions survive)
@@ -34,7 +34,7 @@ logs:
 	docker compose $(BASE) logs -f
 
 status:
-	docker exec farbstroem supervisorctl status
+	docker exec farbstrom supervisorctl status
 
 down:
 	docker compose $(BASE) down

@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Farbström — Admin</title>
+<title>Farbstrom — Admin</title>
+<link rel="icon" type="image/svg+xml" href="/shared/favicon.svg">
+<link rel="icon" type="image/png" href="/shared/favicon.png">
+<link rel="apple-touch-icon" href="/shared/favicon.png">
 <link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/shared/components.css">
 <link rel="stylesheet" href="/shared/utils.css">
@@ -491,7 +494,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
 <div id="login-screen">
     <div class="login-box">
         <img id="login-logo" class="login-logo u-hidden" alt="">
-        <h1 id="login-title" class="u-hidden">Farbström</h1>
+        <h1 id="login-title" class="u-hidden">Farbstrom</h1>
         <form id="login-form">
             <div class="form-row">
                 <input type="password" id="password-input" placeholder="Password" autocomplete="current-password">
@@ -627,6 +630,21 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
         <div class="room-card">
             <div class="room-card-header">
                 <div class="room-card-info">
+                    <div class="room-card-name">Site Name</div>
+                    <div class="room-card-meta">Shown in the browser tab, the wordmark, and shared link previews. Leave blank for the default.</div>
+                </div>
+                <div class="room-card-actions">
+                    <button class="btn btn-sm" id="site-name-save-btn">Save</button>
+                </div>
+            </div>
+            <div class="room-card-body u-p-card-tight">
+                <input type="text" id="site-name-input" placeholder="Farbstrom" maxlength="64" style="width:100%;padding:6px 8px;font-size:13px">
+            </div>
+        </div>
+
+        <div class="room-card u-mt-3">
+            <div class="room-card-header">
+                <div class="room-card-info">
                     <div class="room-card-name">Logo</div>
                     <div class="room-card-meta">Shown in the top bar and on all overlay screens. PNG only. Max 5 MB.</div>
                 </div>
@@ -657,6 +675,24 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
                 <img id="bg-preview" src="" alt="Background preview" style="max-height:100px;max-width:100%;object-fit:cover;border-radius:6px;display:none;margin-bottom:4px;">
                 <span id="bg-empty" style="font-size:13px;color:var(--dim)">No custom background — using default.</span>
                 <input type="file" id="bg-file-input" accept="image/jpeg" class="u-hidden">
+            </div>
+        </div>
+
+        <div class="room-card u-mt-3">
+            <div class="room-card-header">
+                <div class="room-card-info">
+                    <div class="room-card-name">Favicon</div>
+                    <div class="room-card-meta">Browser-tab icon and shared link-preview icon. PNG or ICO. Max 5 MB.</div>
+                </div>
+                <div class="room-card-actions">
+                    <button class="btn btn-sm" id="favicon-upload-btn">Upload</button>
+                    <button class="btn btn-sm btn-danger" id="favicon-remove-btn">Remove</button>
+                </div>
+            </div>
+            <div class="room-card-body u-p-card-tight">
+                <img id="favicon-preview" src="" alt="Favicon preview" style="height:32px;width:32px;object-fit:contain;display:none;margin-bottom:4px">
+                <span id="favicon-empty" style="font-size:13px;color:var(--dim)">No custom favicon — using default.</span>
+                <input type="file" id="favicon-file-input" accept="image/png,image/x-icon,image/vnd.microsoft.icon,.ico" class="u-hidden">
             </div>
         </div>
 

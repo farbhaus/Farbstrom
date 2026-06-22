@@ -18,6 +18,7 @@ import {
   slug,
 } from './session.js';
 import { viewerStore } from './state.js';
+import { getBrandName } from '../shared/branding.js';
 import type { JoinResponse, RoomInfo } from './types.js';
 
 const API = '/api/public/rooms';
@@ -166,7 +167,7 @@ export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
       return { kind: 'show-landing' };
     }
     const roomInfo: RoomInfo = await res.json();
-    document.title = roomInfo.name + ' — Farbström';
+    document.title = roomInfo.name + ' — ' + getBrandName();
     const nameEl = el('join-room-name');
     if (nameEl) nameEl.textContent = roomInfo.name;
     if (!roomInfo.has_stream_key && nameEl) {

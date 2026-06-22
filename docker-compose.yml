@@ -3,9 +3,9 @@
 # `make deploy`). Local dev opts into docker-compose.dev.yml to build from source
 # and bind-mount ./www:  make dev  (or  -f docker-compose.yml -f docker-compose.dev.yml).
 services:
-  farbstroem:
-    image: farbhaus/farbstroem:${FARBSTROEM_TAG:-latest}
-    container_name: farbstroem
+  farbstrom:
+    image: farbhaus/farbstrom:${FARBSTROM_TAG:-latest}
+    container_name: farbstrom
     restart: unless-stopped
     ports:
       # WEB_BIND scopes who can reach the HTTP/HTTPS ports. Default 0.0.0.0

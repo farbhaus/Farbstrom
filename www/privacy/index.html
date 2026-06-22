@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Privacy &amp; Cookies</title>
+<link rel="icon" type="image/svg+xml" href="/shared/favicon.svg">
+<link rel="icon" type="image/png" href="/shared/favicon.png">
+<link rel="apple-touch-icon" href="/shared/favicon.png">
+<link rel="stylesheet" href="/shared/tokens.css">
+<link rel="stylesheet" href="/shared/components.css">
+<link rel="stylesheet" href="/shared/utils.css">
+<style>
+body {
+    display: flex;
+    justify-content: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 48px 20px;
+}
+.legal {
+    width: 100%;
+    max-width: 720px;
+}
+.brand-wordmark {
+    font-size: 15px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text); margin-bottom: 32px;
+}
+.legal h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+.legal .updated { font-size: 12px; color: var(--dim); margin-bottom: 32px; }
+.legal h2 { font-size: 15px; font-weight: 600; margin: 28px 0 8px; }
+.legal p, .legal li { font-size: 14px; line-height: 1.6; color: var(--dim); }
+.legal ul { margin: 8px 0 8px 20px; }
+.legal li { margin-bottom: 6px; }
+.legal code { font-family: monospace; font-size: 12px; color: var(--text); }
+.legal a { color: var(--accent); }
+.legal .back { display: inline-block; margin-top: 32px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="legal">
+    <div class="brand-wordmark">Farbstrom</div>
+    <h1>Privacy &amp; Cookies</h1>
+    <p class="updated">Functional storage only — no analytics, no tracking.</p>
+
+    <p>
+        This platform is a private streaming tool. It does <strong>not</strong> use analytics,
+        advertising, or any third-party tracking, and it sets no third-party cookies. The only
+        data stored in your browser is <em>strictly functional</em> — it exists so the app works
+        and remembers your choices on this device. None of it is sent to anyone other than the
+        server that runs this room.
+    </p>
+
+    <h2>What is stored on your device</h2>
+    <ul>
+        <li><strong>Session</strong> — a short-lived access token and your participant ID for the
+            room you are in, so you stay connected across a page refresh. Cleared when you close
+            the browser tab.</li>
+        <li><strong>Preferences</strong> — per-room settings such as your camera/microphone
+            choice, audio options, and push-to-talk, so they persist the next time you join the
+            same room.</li>
+        <li><strong>Convenience</strong> — your display name (and, if you tick the box, the room
+            password) so you don't have to re-enter them. You control this and can clear it at any
+            time.</li>
+    </ul>
+
+    <h2>Cookies</h2>
+    <p>
+        No tracking or advertising cookies are used. The items above are kept in your browser's
+        local and session storage, not in cookies, and are used only to operate the service.
+    </p>
+
+    <h2>Clearing your data</h2>
+    <p>
+        Session storage is cleared automatically when you close the tab. Anything kept between
+        visits can be removed at any time by clearing this site's data in your browser settings.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+        For privacy questions, contact the operator of this deployment (the team that shared the
+        room link with you).
+    </p>
+
+    <a class="back" href="/">&larr; Back</a>
+</div>
+
+<script type="module">
+  import { applyBranding } from '/dist/shared/branding.js';
+  // Theme the page (colors, favicon) and fill the wordmark with the brand name.
+  void applyBranding({ setTitle: false });
+</script>
+</body>
+</html>

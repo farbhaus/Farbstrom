@@ -21,10 +21,13 @@ async fn get_branding_status(State(state): State<Arc<AppState>>) -> Result<Json<
     let has_bg = tokio::fs::metadata(format!("{}/branding/bg", data_path))
         .await
         .is_ok();
+    let has_favicon = tokio::fs::metadata(format!("{}/branding/favicon", data_path))
+        .await
+        .is_ok();
 
-    // Include color palette in branding status for one-call loading
+    // Include color palette + site name in branding status for one-call loading
     let conn = state.db.get()?;
-    let colors = tokio::task::spawn_blocking(move || {
+    let (colors, site_name) = tokio::task::spawn_blocking(move || {
         let mut result = serde_json::Map::new();
         for &key in COLOR_KEYS {
             if let Ok(val) = conn.query_row(
@@ -35,7 +38,8 @@ async fn get_branding_status(State(state): State<Arc<AppState>>) -> Result<Json<
                 result.insert(key.to_string(), Value::String(val));
             }
         }
-        result
+        let site_name = read_site_name(&conn);
+        (result, site_name)
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -43,6 +47,8 @@ async fn get_branding_status(State(state): State<Arc<AppState>>) -> Result<Json<
     Ok(Json(json!({
         "hasLogo": has_logo,
         "hasBg": has_bg,
+        "hasFavicon": has_favicon,
+        "siteName": site_name,
         "colors": colors,
     })))
 }
@@ -51,7 +57,7 @@ async fn get_asset(
     State(state): State<Arc<AppState>>,
     Path(asset): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    if asset != "logo" && asset != "bg" {
+    if asset != "logo" && asset != "bg" && asset != "favicon" {
         return Err(AppError::NotFound("Asset not found".into()));
     }
 
@@ -97,7 +103,7 @@ async fn upload_asset(
     Path(asset): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
-    if asset != "logo" && asset != "bg" {
+    if asset != "logo" && asset != "bg" && asset != "favicon" {
         return Err(AppError::BadRequest("Invalid asset type".into()));
     }
 
@@ -119,13 +125,21 @@ async fn upload_asset(
             let allowed = match asset.as_str() {
                 "logo" => mime == "image/png",
                 "bg" => mime == "image/jpeg" || mime == "image/jpg",
+                // Favicon: raster only. SVG is excluded here too — it can embed
+                // <script> and is served same-origin. PNG or ICO covers every
+                // browser (modern picks PNG, legacy /favicon.ico picks ICO).
+                "favicon" => {
+                    mime == "image/png"
+                        || mime == "image/x-icon"
+                        || mime == "image/vnd.microsoft.icon"
+                }
                 _ => false,
             };
             if !allowed {
-                return Err(AppError::BadRequest(if asset == "logo" {
-                    "Logo must be a PNG".into()
-                } else {
-                    "Background must be a JPEG".into()
+                return Err(AppError::BadRequest(match asset.as_str() {
+                    "logo" => "Logo must be a PNG".into(),
+                    "favicon" => "Favicon must be a PNG or ICO".into(),
+                    _ => "Background must be a JPEG".into(),
                 }));
             }
             let data = field
@@ -165,7 +179,7 @@ async fn delete_asset(
     State(state): State<Arc<AppState>>,
     Path(asset): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    if asset != "logo" && asset != "bg" {
+    if asset != "logo" && asset != "bg" && asset != "favicon" {
         return Err(AppError::BadRequest("Invalid asset type".into()));
     }
 
@@ -192,6 +206,57 @@ const COLOR_KEYS: &[&str] = &[
     "color_danger",
     "color_green",
 ];
+
+/// Fallback brand name when no `site_name` setting is configured. Used for the
+/// browser title, the wordmark, and the link-preview (Open Graph) tags.
+pub const DEFAULT_SITE_NAME: &str = "Farbstrom";
+
+/// Read the configured brand name, falling back to [`DEFAULT_SITE_NAME`].
+/// Synchronous — call from a `spawn_blocking` context or a blocking handler.
+pub fn read_site_name(conn: &rusqlite::Connection) -> String {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = 'site_name'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|s| !s.trim().is_empty())
+    .unwrap_or_else(|| DEFAULT_SITE_NAME.to_string())
+}
+
+async fn save_site_name(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, AppError> {
+    // Trim and length-cap; this string is injected into HTML <meta>/<title>
+    // (escaped at render time) and shown as the wordmark, so keep it sane.
+    let name = body
+        .get("siteName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(64)
+        .collect::<String>();
+
+    let conn = state.db.get()?;
+    tokio::task::spawn_blocking(move || {
+        if name.is_empty() {
+            // Empty resets to the default brand name.
+            conn.execute("DELETE FROM settings WHERE key = 'site_name'", [])
+        } else {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('site_name', ?1)",
+                params![name],
+            )
+        }
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    Ok(Json(json!({ "ok": true })))
+}
 
 async fn get_colors(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
@@ -251,5 +316,6 @@ pub fn public_router() -> Router<Arc<AppState>> {
 pub fn admin_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/colors", post(save_colors))
+        .route("/site-name", post(save_site_name))
         .route("/{asset}", post(upload_asset).delete(delete_asset))
 }

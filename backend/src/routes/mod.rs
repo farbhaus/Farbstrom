@@ -5,6 +5,7 @@ pub mod branding;
 pub mod files;
 pub mod metrics;
 pub mod ome;
+pub mod pages;
 pub mod rate_limit;
 pub mod rooms;
 pub mod rooms_public;

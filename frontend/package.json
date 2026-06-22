@@ -1,8 +1,8 @@
 {
-  "name": "farbstroem-frontend",
+  "name": "farbstrom-frontend",
   "private": true,
   "version": "0.1.0",
-  "description": "TypeScript sources for the Farbström admin SPA. Output is plain ES modules served by the Rust backend.",
+  "description": "TypeScript sources for the Farbstrom admin SPA. Output is plain ES modules served by the Rust backend.",
   "type": "module",
   "scripts": {
     "build": "tsc",

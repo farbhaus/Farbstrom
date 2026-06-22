@@ -1,4 +1,4 @@
-//! Farbplay ⇄ Farbstroem room-link SRT integration (see GitHub #165). The
+//! Farbplay ⇄ Farbstrom room-link SRT integration (see GitHub #165). The
 //! waiting-room/kick admission gate is documented inline below.
 //!
 //! Native SRT viewers (Farbplay) connect from a shared room link
@@ -17,7 +17,7 @@
 //! Password is enforced at `join`, not here. Direct `srt://…` URLs (power users)
 //! bypass rooms entirely and are unaffected.
 //!
-//! Security caveat: in Farbstroem the OME stream name *is* the ingest stream key
+//! Security caveat: in Farbstrom the OME stream name *is* the ingest stream key
 //! (`OutputStreamName=${OriginStreamName}`), so the signed streamid necessarily
 //! contains `default/live/<key_token>` in plaintext. SignedPolicy here provides
 //! expiry / replay-limiting, **not** path secrecy — the key is already handed to

@@ -65,6 +65,8 @@ export interface StorageStats {
 export interface BrandingResponse {
   hasLogo: boolean;
   hasBg: boolean;
+  hasFavicon: boolean;
+  siteName?: string;
   colors?: Record<string, string>;
 }
 

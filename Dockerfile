@@ -1,12 +1,12 @@
-# Single-container build for Farbstroem
+# Single-container build for Farbstrom
 # Combines OvenMediaEngine, Valkey, LiveKit, Caddy, and the Rust backend.
 #
 # Component versions are PINNED here — these defaults are what CI bakes into the
 # published image, so a rebuild can't silently pull a new major. Override per
 # build with --build-arg (the local docker-compose.override.yml wires these from
 # .env: CADDY_TAG / LIVEKIT_TAG / OME_TAG / VALKEY_TAG). NOTE: deploy hosts that
-# PULL farbhaus/farbstroem get whatever CI baked — pin the whole image there with
-# FARBSTROEM_TAG; the *_TAG vars only affect a local/source build.
+# PULL farbhaus/farbstrom get whatever CI baked — pin the whole image there with
+# FARBSTROM_TAG; the *_TAG vars only affect a local/source build.
 ARG OME_VERSION=v0.20.5
 ARG LIVEKIT_VERSION=v1.12.0
 ARG CADDY_VERSION=2.11.3
@@ -59,7 +59,7 @@ FROM livekit/livekit-server:${LIVEKIT_VERSION} AS livekit-src
 # ------------------------------------------------------------------------------
 # Stage 6 — Final image (OME Ubuntu base, version-pinned)
 # ------------------------------------------------------------------------------
-FROM airensoft/ovenmediaengine:${OME_VERSION}
+FROM ovenmedialabs/ovenmediaengine:${OME_VERSION}
 
 # Runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

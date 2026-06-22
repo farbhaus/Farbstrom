@@ -4,8 +4,6 @@ name: Docker Build (single-container)
 # OME + LiveKit + Valkey under supervisord) from the repo-root Dockerfile. The
 # image is self-contained — it compiles the Rust backend and the TypeScript
 # frontend internally, so deploy hosts need neither the source nor a toolchain.
-#
-# The backend-only image (docker.yml) is kept for main's multi-container path.
 
 on:
   push:
@@ -29,7 +27,7 @@ on:
       - '.github/workflows/docker-single.yml'
 
 env:
-  IMAGE: farbhaus/farbstroem
+  IMAGE: farbhaus/farbstrom
 
 jobs:
   build:

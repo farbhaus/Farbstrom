@@ -2,7 +2,7 @@
 #
 # Named `docker-compose.dev.yml` (not `…override.yml`) on purpose: deploy hosts
 # run a plain `docker compose up -d` and get ONLY the base file (pulls the
-# published farbhaus/farbstroem image), with no way to accidentally build from
+# published farbhaus/farbstrom image), with no way to accidentally build from
 # source. Developers opt into this overlay explicitly.
 #
 # It builds the image from source and bind-mounts ./www so frontend edits
@@ -16,7 +16,7 @@
 # Tip: `export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml` makes a
 # bare `docker compose …` pick up both for the rest of your shell session.
 services:
-  farbstroem:
+  farbstrom:
     build:
       context: .
       # Honor the component pins from .env for local source builds. (Defaults

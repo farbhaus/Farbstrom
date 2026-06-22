@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# deploy.sh — one-click production deployment for Farbström.
+# deploy.sh — one-click production deployment for Farbstrom.
 #
 # From a clean checkout to a running TLS deployment in one command:
 #   ./deploy.sh stream.yourdomain.com      (run with bash, not sh)
 #
-# Designed for a CLEAN VPS where ONLY Farbström runs. It installs missing
+# Designed for a CLEAN VPS where ONLY Farbstrom runs. It installs missing
 # prerequisites (Docker + Compose, openssl) on apt-based hosts,
 # generates secrets into .env, opens the firewall, and brings the stack up by
 # pulling the published single-container image (which bakes in the frontend, so
@@ -24,7 +24,7 @@
 #        --yes / -y            skip confirmation prompts
 #        --update              reuse .env, pull newest image, recreate (no secret
 #                              rotation, so live sessions survive); rollback by
-#                              pinning FARBSTROEM_TAG=sha-<short> in .env first
+#                              pinning FARBSTROM_TAG=sha-<short> in .env first
 #        --behind-proxy HOST   container serves plain HTTP on 127.0.0.1:HTTP_PORT;
 #                              an external proxy (e.g. host Caddy) terminates TLS
 #                              and forwards HOST → it. Skips firewall + the 80/443
@@ -146,7 +146,7 @@ http_ports_busy() {
 # being held by our container is expected, not a foreign-service conflict).
 stack_running() {
   $DOCKER compose -f docker-compose.yml ps --status running --services 2>/dev/null \
-    | grep -qx farbstroem
+    | grep -qx farbstrom
 }
 
 # ensure_image — make the single-container image available locally under the ref
@@ -159,12 +159,12 @@ ensure_image() {
   if $DOCKER compose -f docker-compose.yml pull 2>/dev/null; then
     return
   fi
-  # `|| true` is load-bearing: FARBSTROEM_TAG is usually commented out, so grep
+  # `|| true` is load-bearing: FARBSTROM_TAG is usually commented out, so grep
   # finds nothing and exits non-zero — under `set -euo pipefail` that would
   # silently abort the script on this assignment.
   local tag image
-  tag="$( { grep -E '^FARBSTROEM_TAG=' .env 2>/dev/null || true; } | cut -d= -f2-)"
-  image="farbhaus/farbstroem:${tag:-latest}"
+  tag="$( { grep -E '^FARBSTROM_TAG=' .env 2>/dev/null || true; } | cut -d= -f2-)"
+  image="farbhaus/farbstrom:${tag:-latest}"
   info "No published image for this platform/tag — building from source ($image)"
   $DOCKER build -t "$image" .
 }
@@ -178,7 +178,7 @@ wait_healthy() {
   local timeout="${1:-90}" elapsed=0 status
   info "Waiting for the container to become healthy (up to ${timeout}s)…"
   while (( elapsed < timeout )); do
-    status="$($DOCKER inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' farbstroem 2>/dev/null || echo missing)"
+    status="$($DOCKER inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' farbstrom 2>/dev/null || echo missing)"
     case "$status" in
       healthy) info "Container is healthy."; return 0 ;;
       none)    info "Container has no healthcheck — skipping health wait."; return 0 ;;
@@ -186,7 +186,7 @@ wait_healthy() {
     sleep 3; elapsed=$((elapsed + 3))
   done
   echo "FATAL: container did not become healthy within ${timeout}s. Recent logs:" >&2
-  $DOCKER compose -f docker-compose.yml logs --tail 40 farbstroem >&2 2>/dev/null || true
+  $DOCKER compose -f docker-compose.yml logs --tail 40 farbstrom >&2 2>/dev/null || true
   return 1
 }
 
@@ -252,9 +252,9 @@ if [[ $INIT_ENV_ONLY -eq 0 ]]; then
 fi
 
 # --- update mode ------------------------------------------------------------
-# Pull the newest image (or the FARBSTROEM_TAG pinned in .env) and recreate.
+# Pull the newest image (or the FARBSTROM_TAG pinned in .env) and recreate.
 # Secrets are untouched, so live sessions survive. Rollback = pin a previous
-# FARBSTROEM_TAG=sha-<short> in .env, then re-run --update.
+# FARBSTROM_TAG=sha-<short> in .env, then re-run --update.
 if [[ $UPDATE -eq 1 ]]; then
   [[ -f .env ]] || die "--update needs an existing .env (run a normal deploy first)."
   info "Pulling newest image"
@@ -293,7 +293,7 @@ fi
 # --behind-proxy (the external proxy is SUPPOSED to hold them; the container
 # binds 127.0.0.1:HTTP_PORT instead).
 if [[ $INIT_ENV_ONLY -eq 0 && -z "$BEHIND_PROXY" ]] && http_ports_busy && ! stack_running; then
-  die "ports 80/443 are already in use — standalone deploy expects a fresh VPS where only Farbström runs.
+  die "ports 80/443 are already in use — standalone deploy expects a fresh VPS where only Farbstrom runs.
        Free 80/443, or if this host already runs a reverse proxy, deploy behind it:
        ./deploy.sh --behind-proxy $DOMAIN"
 fi
@@ -425,7 +425,7 @@ wait_healthy || die "deploy failed — the container is not healthy (see logs ab
 # --- summary ----------------------------------------------------------------
 echo
 echo "============================================================"
-echo " Farbström deployed: https://$DOMAIN"
+echo " Farbstrom deployed: https://$DOMAIN"
 echo "============================================================"
 if [[ -n "$ADMIN_PASSWORD" ]]; then
   echo
@@ -462,7 +462,7 @@ else
    - Update later:  ./deploy.sh --update
    - Check health:
        $DOCKER compose -f docker-compose.yml ps
-       $DOCKER compose -f docker-compose.yml logs -f farbstroem
+       $DOCKER compose -f docker-compose.yml logs -f farbstrom
 
 EOF
 fi

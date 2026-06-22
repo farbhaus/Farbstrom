@@ -61,6 +61,16 @@ export async function loadBranding(): Promise<void> {
   if (bgEmpty) bgEmpty.style.display = data.hasBg ? 'none' : '';
   if (data.hasBg && bgPreview) bgPreview.src = '/api/branding/bg?' + Date.now();
 
+  const faviconPreview = document.getElementById('favicon-preview') as HTMLImageElement | null;
+  const faviconEmpty = document.getElementById('favicon-empty');
+  if (faviconPreview) faviconPreview.style.display = data.hasFavicon ? '' : 'none';
+  if (faviconEmpty) faviconEmpty.style.display = data.hasFavicon ? 'none' : '';
+  if (data.hasFavicon && faviconPreview)
+    faviconPreview.src = '/api/branding/favicon?' + Date.now();
+
+  const siteNameInput = document.getElementById('site-name-input') as HTMLInputElement | null;
+  if (siteNameInput) siteNameInput.value = data.siteName ?? '';
+
   if (data.colors) {
     for (const f of COLOR_FIELDS) {
       const val = data.colors[`color_${f}`] || COLOR_DEFAULTS[f];
@@ -71,20 +81,42 @@ export async function loadBranding(): Promise<void> {
   }
 }
 
-async function uploadBrandingAsset(asset: 'logo' | 'bg'): Promise<void> {
+type BrandAsset = 'logo' | 'bg' | 'favicon';
+
+const ASSET_LABEL: Record<BrandAsset, string> = {
+  logo: 'Logo',
+  bg: 'Background',
+  favicon: 'Favicon',
+};
+
+// Mirror the backend allowlist so a wrong type fails with an inline message
+// instead of a 400. SVG is rejected everywhere (it can carry inline scripts).
+function assetTypeOk(asset: BrandAsset, type: string): boolean {
+  switch (asset) {
+    case 'logo':
+      return type === 'image/png';
+    case 'bg':
+      return type === 'image/jpeg' || type === 'image/jpg';
+    case 'favicon':
+      return (
+        type === 'image/png' || type === 'image/x-icon' || type === 'image/vnd.microsoft.icon'
+      );
+  }
+}
+
+const ASSET_TYPE_ERR: Record<BrandAsset, string> = {
+  logo: 'Logo must be a PNG',
+  bg: 'Background must be a JPEG',
+  favicon: 'Favicon must be a PNG or ICO',
+};
+
+async function uploadBrandingAsset(asset: BrandAsset): Promise<void> {
   const input = getInput(`${asset}-file-input`);
   const file = input.files?.[0];
   if (!file) return;
-  // Mirror the backend allowlist so a wrong type fails with an inline message
-  // instead of a 400. Logo: PNG only. Background: JPEG only. SVG is rejected
-  // (it can carry inline scripts). The backend remains the real gate.
-  const okType =
-    asset === 'logo'
-      ? file.type === 'image/png'
-      : file.type === 'image/jpeg' || file.type === 'image/jpg';
-  if (!okType) {
+  if (!assetTypeOk(asset, file.type)) {
     input.value = '';
-    toast(asset === 'logo' ? 'Logo must be a PNG' : 'Background must be a JPEG');
+    toast(ASSET_TYPE_ERR[asset]);
     return;
   }
   const fd = new FormData();
@@ -96,19 +128,18 @@ async function uploadBrandingAsset(asset: 'logo' | 'bg'): Promise<void> {
   });
   input.value = '';
   if (res.ok) {
-    toast(`${asset === 'logo' ? 'Logo' : 'Background'} updated`);
+    toast(`${ASSET_LABEL[asset]} updated`);
     void loadBranding();
   } else {
     toast('Upload failed');
   }
 }
 
-async function removeBrandingAsset(asset: 'logo' | 'bg'): Promise<void> {
-  const what = asset === 'logo' ? 'logo' : 'background image';
+async function removeBrandingAsset(asset: BrandAsset): Promise<void> {
   if (
     !(await confirmModal({
-      title: `Remove ${what === 'logo' ? 'Logo' : 'Background Image'}`,
-      message: `The custom ${what} will be removed and the default restored.`,
+      title: `Remove ${ASSET_LABEL[asset]}`,
+      message: `The custom ${ASSET_LABEL[asset].toLowerCase()} will be removed and the default restored.`,
       confirmLabel: 'Remove',
       danger: true,
     }))
@@ -120,6 +151,20 @@ async function removeBrandingAsset(asset: 'logo' | 'bg'): Promise<void> {
     void loadBranding();
   } else {
     toast('Remove failed');
+  }
+}
+
+async function saveSiteName(): Promise<void> {
+  const siteName = getInput('site-name-input').value.trim();
+  const res = await apiFetch('/api/admin/branding/site-name', {
+    method: 'POST',
+    body: JSON.stringify({ siteName }),
+  });
+  if (res && res.ok) {
+    toast('Site name saved');
+    void loadBranding();
+  } else {
+    toast('Save failed');
   }
 }
 
@@ -200,6 +245,18 @@ export function initBranding(): void {
   document
     .getElementById('bg-remove-btn')
     ?.addEventListener('click', () => removeBrandingAsset('bg'));
+
+  document
+    .getElementById('favicon-upload-btn')
+    ?.addEventListener('click', () => getInput('favicon-file-input').click());
+  document
+    .getElementById('favicon-file-input')
+    ?.addEventListener('change', () => uploadBrandingAsset('favicon'));
+  document
+    .getElementById('favicon-remove-btn')
+    ?.addEventListener('click', () => removeBrandingAsset('favicon'));
+
+  document.getElementById('site-name-save-btn')?.addEventListener('click', saveSiteName);
 }
 
 // Apply saved branding colors before any UI renders. Called once on load.
@@ -216,9 +273,10 @@ export function applyBrandingColorsOnce(): void {
     .catch(() => {});
 }
 
-// On the login screen, show the uploaded custom logo, or the default
-// "Farbström" wordmark when none. Both start hidden in the HTML so neither
-// flashes before /api/branding resolves; exactly one is revealed here.
+// On the login screen, show the uploaded custom logo, or the brand-name
+// wordmark when none. Both start hidden in the HTML so neither flashes before
+// /api/branding resolves; exactly one is revealed here. Also points the favicon
+// at a custom brand icon when one is set.
 export function applyLoginLogoOnce(): void {
   const logo = document.getElementById('login-logo') as HTMLImageElement | null;
   const title = document.getElementById('login-title');
@@ -226,6 +284,16 @@ export function applyLoginLogoOnce(): void {
   fetch('/api/branding')
     .then((r) => (r.ok ? r.json() : null))
     .then((data: BrandingResponse | null) => {
+      if (data?.siteName && title) title.textContent = data.siteName;
+      if (data?.hasFavicon) {
+        document
+          .querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]')
+          .forEach((l) => l.remove());
+        const link = document.createElement('link');
+        link.rel = 'icon';
+        link.href = '/api/branding/favicon?' + Date.now();
+        document.head.appendChild(link);
+      }
       if (data?.hasLogo && logo) {
         logo.src = '/api/branding/logo?' + Date.now();
         logo.classList.remove('u-hidden');

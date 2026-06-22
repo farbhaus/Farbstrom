@@ -1,4 +1,4 @@
-/* Farbstroem design tokens — single source of truth.
+/* Farbstrom design tokens — single source of truth.
    Overridable at runtime by /api/branding via utils.js applyBranding(). */
 
 *, *::before, *::after {

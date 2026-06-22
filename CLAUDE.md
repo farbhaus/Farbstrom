@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-Farbstroem is a private low-latency streaming platform for color-grading review sessions. It combines OvenMediaEngine (OME) for broadcast ingest/delivery, LiveKit for participant voice/video, and a Rust/Axum backend for API and session management. The frontend is TypeScript compiled with `tsc` (no bundler, no runtime npm deps) emitted as plain ES modules.
+Farbstrom is a private low-latency streaming platform for color-grading review sessions. It combines OvenMediaEngine (OME) for broadcast ingest/delivery, LiveKit for participant voice/video, and a Rust/Axum backend for API and session management. The frontend is TypeScript compiled with `tsc` (no bundler, no runtime npm deps) emitted as plain ES modules.
 
 ## Commands
 
@@ -31,8 +31,8 @@ watchexec -r -e rs -- cargo run
 ### Full stack (single-container — repo root)
 
 The whole stack — Caddy, the Rust backend, OvenMediaEngine, LiveKit, and Valkey
-— ships as **one** image (`farbhaus/farbstroem`) run by `supervisord`. There is a
-single compose service, `farbstroem`.
+— ships as **one** image (`farbhaus/farbstrom`) run by `supervisord`. There is a
+single compose service, `farbstrom`.
 
 ```bash
 # Local dev — opt into docker-compose.dev.yml (build from source + ./www mount).
@@ -44,19 +44,18 @@ make down
 
 # Deploy hosts — a plain `docker compose up -d` uses ONLY the base file and
 # pulls the published image (no accidental source build). Equivalent: make deploy.
-docker compose up -d                     # start (pulls farbhaus/farbstroem)
+docker compose up -d                     # start (pulls farbhaus/farbstrom)
 make update                              # pull newest image + recreate
 ```
 
-The image (`farbhaus/farbstroem`) is published to Docker Hub by
+The image (`farbhaus/farbstrom`) is published to Docker Hub by
 `.github/workflows/docker-single.yml` on every push to `main` (tags `:latest`
 and `:sha-<short>`) and on a `v*` release tag (adds `:vX.Y.Z` + `:X.Y` for
 reproducible prod pinning), linux/amd64. It is self-contained — the Dockerfile compiles
 the Rust backend AND the TypeScript frontend internally, so deploy hosts need
 neither the source nor a Node/Rust toolchain. Deploy hosts pin a tag via
-`FARBSTROEM_TAG` in `.env`. Requires repo secrets `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN`. (`docker.yml` still publishes the backend-only image
-`farbhaus/farbstroem-backend` for `main`'s legacy multi-container compose.)
+`FARBSTROM_TAG` in `.env`. Requires repo secrets `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN`.
 
 One-command production deploy to a fresh VPS: `./deploy.sh your.domain.com`.
 
@@ -123,7 +122,7 @@ Browser (viewer page) — one origin, fronted by Caddy:
   └─ WebSocket — chat, presence       (Caddy /* → localhost:4001)
 ```
 
-**Single container (`farbstroem`), processes under supervisord** (start order):
+**Single container (`farbstrom`), processes under supervisord** (start order):
 Valkey → backend (`user=app`) → OvenMediaEngine + LiveKit → Caddy (TLS + routing).
 Caddy/OME/LiveKit run as root (privileged ports / TURN); the backend and Valkey
 drop to unprivileged users. `entrypoint.sh` generates `livekit.yaml`, chowns
@@ -131,11 +130,6 @@ drop to unprivileged users. `entrypoint.sh` generates `livekit.yaml`, chowns
 to `SITE_ADDRESS`); the Caddyfile
 ([`caddy/Caddyfile`](caddy/Caddyfile)) and supervisor config
 ([`supervisord.conf`](supervisord.conf)) are baked into the image.
-
-> Legacy: `main` still carries the 5-service `docker-compose.yml`
-> (`stream-caddy`/`stream-backend`/`stream-ome`/`stream-livekit`/`stream-valkey`)
-> and the backend-only image. This branch supersedes it with the single
-> container; the multi-container path is kept only for `main` compatibility.
 
 ## Backend structure
 
@@ -209,7 +203,7 @@ Conventions:
 
 **Moderation audit.** Kick and mute are logged via `tracing::info!` with `room_slug`, `actor_id`, `target_id` for after-the-fact audits. If LiveKit `remove_participant` fails the backend retries once after 250 ms and `error!`s on the second failure — the DB `is_kicked=1` flag and WS force-close happen first, so UI state is correct even when LiveKit is momentarily unreachable.
 
-**Farbplay room-link SRT playback** (`src/routes/watch.rs`, GitHub #165). `GET /api/watch/:slug?participantId=&token=` lets the native SRT viewer (Farbplay) connect from a room link instead of a raw `srt://` URL. The flow mirrors the browser viewer: Farbplay first `POST /api/public/rooms/:slug/join`s to become a `participants` row (password is checked there, not here), waits on the existing admission SSE (`…/waiting/events/:pid`) if the room has a waiting room, then calls this **admission-gated** endpoint. It returns `{srt: {host, port, streamid, latency}, ttlSeconds, title}` where `streamid` is `default/live/<key_token>?policy=<b64url>&signature=<b64url-hmac-sha1>`, signed with `OME_SIGNED_POLICY_SECRET` and expiring after ~30 s (`url_expire`). **OME signs the `srt://`-prefixed URL** (`srt://default/live/<key>?policy=…`, scheme + vhost as host), so the backend must HMAC that form even though the client sends only the path. OME validates it via the `<SignedPolicy>` block (scoped to the SRT publisher only). The signed streamid is minted **only for an admitted, non-kicked participant**: missing `participantId`/`token` or kicked/not-yet-admitted → **403**; unknown participant / wrong token / wrong slug / ended / expired / no stream key → **404**. A kicked viewer therefore can't reconnect (the backstop behind the SSE self-disconnect; no server-side SRT sever today — contract O1/O2). **Security caveat:** this gives expiry/replay-limiting, *not* secrecy — Farbstroem's OME stream name *is* the ingest stream key (`OutputStreamName=${OriginStreamName}`), so the key is in the streamid in plaintext (and is already handed to web viewers on join). Decoupling the playback identity from the ingest key is a separate follow-up.
+**Farbplay room-link SRT playback** (`src/routes/watch.rs`, GitHub #165). `GET /api/watch/:slug?participantId=&token=` lets the native SRT viewer (Farbplay) connect from a room link instead of a raw `srt://` URL. The flow mirrors the browser viewer: Farbplay first `POST /api/public/rooms/:slug/join`s to become a `participants` row (password is checked there, not here), waits on the existing admission SSE (`…/waiting/events/:pid`) if the room has a waiting room, then calls this **admission-gated** endpoint. It returns `{srt: {host, port, streamid, latency}, ttlSeconds, title}` where `streamid` is `default/live/<key_token>?policy=<b64url>&signature=<b64url-hmac-sha1>`, signed with `OME_SIGNED_POLICY_SECRET` and expiring after ~30 s (`url_expire`). **OME signs the `srt://`-prefixed URL** (`srt://default/live/<key>?policy=…`, scheme + vhost as host), so the backend must HMAC that form even though the client sends only the path. OME validates it via the `<SignedPolicy>` block (scoped to the SRT publisher only). The signed streamid is minted **only for an admitted, non-kicked participant**: missing `participantId`/`token` or kicked/not-yet-admitted → **403**; unknown participant / wrong token / wrong slug / ended / expired / no stream key → **404**. A kicked viewer therefore can't reconnect (the backstop behind the SSE self-disconnect; no server-side SRT sever today — contract O1/O2). **Security caveat:** this gives expiry/replay-limiting, *not* secrecy — Farbstrom's OME stream name *is* the ingest stream key (`OutputStreamName=${OriginStreamName}`), so the key is in the streamid in plaintext (and is already handed to web viewers on join). Decoupling the playback identity from the ingest key is a separate follow-up.
 
 ## CI
 

@@ -1,4 +1,4 @@
-# Farbstroem
+# Farbstrom
 
 Private low-latency streaming platform for color-grading review sessions. Combines an [OvenMediaEngine](https://github.com/AirenSoft/OvenMediaEngine) broadcast pipeline with a [LiveKit](https://github.com/livekit/livekit) SFU for participant voice/video, plus chat, shared pointer, and session file sharing.
 
@@ -9,7 +9,7 @@ flowchart TB
     Encoder["Encoder<br/>OBS · hardware"]
     Browser["Browser<br/>OvenPlayer · LiveKit SDK · WebSocket"]
 
-    subgraph host["Single container — farbhaus/farbstroem (supervisord)"]
+    subgraph host["Single container — farbhaus/farbstrom (supervisord)"]
         Caddy["Caddy<br/>TLS + routing"]
         Backend["backend<br/>Rust/Axum + SQLite"]
         OME["OvenMediaEngine"]
@@ -29,12 +29,12 @@ flowchart TB
     LK --- Valkey
 ```
 
-The whole stack ships as **one image** (`farbhaus/farbstroem`); the five processes run under `supervisord` and reach each other over `localhost`. Caddy owns the single TLS origin and routes by path.
+The whole stack ships as **one image** (`farbhaus/farbstrom`); the five processes run under `supervisord` and reach each other over `localhost`. Caddy owns the single TLS origin and routes by path.
 
 | Process | Source | Purpose |
 |---|---|---|
 | Caddy | `caddy:2` binary | TLS + routing (`/live/*` → OME, `/livekit/*` → LiveKit, everything else → backend) |
-| OvenMediaEngine | `airensoft/ovenmediaengine` base image | Broadcast ingest (SRT/RTMP/WHIP) + viewer delivery (WebRTC/LLHLS) |
+| OvenMediaEngine | `ovenmedialabs/ovenmediaengine` base image | Broadcast ingest (SRT/RTMP/WHIP) + viewer delivery (WebRTC/LLHLS) |
 | backend | built from source (`backend/`), runs as `app` | Rust/Axum API, WebSocket hub, SQLite, static file serving |
 | LiveKit | `livekit/livekit-server` binary | SFU for participant conference |
 | Valkey | built from source, runs as `valkey` | Required by LiveKit (Valkey is the BSD-3 fork of Redis 7.2) |
@@ -185,7 +185,7 @@ so a plain `docker compose up -d` is always the deploy path (pulls the published
 
 ## Production deployment
 
-One command on a **fresh VPS where only Farbstroem runs**:
+One command on a **fresh VPS where only Farbstrom runs**:
 
 ```bash
 sudo ./deploy.sh stream.yourdomain.com
@@ -202,7 +202,7 @@ That's it. The script installs missing prerequisites (Docker + Compose, openssl)
 
 | Flag | Effect |
 |---|---|
-| `--update` | Pull the newest image and recreate (secrets untouched — live sessions survive). Roll back by pinning `FARBSTROEM_TAG=sha-<short>` (or `vX.Y.Z`) in `.env` first, then `--update`. |
+| `--update` | Pull the newest image and recreate (secrets untouched — live sessions survive). Roll back by pinning `FARBSTROM_TAG=sha-<short>` (or `vX.Y.Z`) in `.env` first, then `--update`. |
 | `--behind-proxy HOST` | Deploy behind an external TLS proxy: the container serves plain HTTP on `127.0.0.1:8880`, presets `SITE_ADDRESS=:80` / `PUBLIC_HOST=HOST` / `WEB_BIND=127.0.0.1`, and skips the firewall + 80/443 free-port check. |
 | `--init-env [HOST]` | Generate/refresh `.env` and exit without starting anything (openssl-only; no Docker needed). |
 | `--regenerate` | Rewrite `.env` from scratch (rotates secrets) |
@@ -210,13 +210,13 @@ That's it. The script installs missing prerequisites (Docker + Compose, openssl)
 
 The script waits for the container's healthcheck before reporting success, and on a clean box stops early if something already holds 80/443 (use `--behind-proxy` to deploy behind an existing front proxy instead).
 
-**Even simpler — zero-checkout bootstrap.** Both the repo and the `farbhaus/farbstroem` image are public, so a fresh host needs no git clone:
+**Even simpler — zero-checkout bootstrap.** Both the repo and the `farbhaus/farbstrom` image are public, so a fresh host needs no git clone:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/farbhaus/Farbstrom/main/install.sh | bash -s -- stream.yourdomain.com
 ```
 
-`install.sh` fetches just `docker-compose.yml`, `.env.example`, and `deploy.sh` into `/opt/farbstroem` and hands off to `deploy.sh`; everything after `--` is forwarded (e.g. `--behind-proxy …`).
+`install.sh` fetches just `docker-compose.yml`, `.env.example`, and `deploy.sh` into `/opt/farbstrom` and hands off to `deploy.sh`; everything after `--` is forwarded (e.g. `--behind-proxy …`).
 
 ### Manual / advanced configuration
 
@@ -267,7 +267,7 @@ Firewall ports (the script opens these via ufw/firewalld when active): tcp `80 4
 ├── caddy/Caddyfile             Caddy config (SITE_ADDRESS envar-driven), baked into the image
 ├── ome/                        OvenMediaEngine config (Server.xml)
 ├── www/                        Static HTML/CSS + compiled JS (dist/, built into the image)
-├── docker-compose.yml          Base (deploy: pulls farbhaus/farbstroem) — plain `docker compose up -d`
+├── docker-compose.yml          Base (deploy: pulls farbhaus/farbstrom) — plain `docker compose up -d`
 ├── docker-compose.dev.yml      Opt-in dev overlay (build from source + ./www mount) — `make dev`
 ├── Makefile                    Thin wrappers: make deploy / dev / update / logs / status / down
 ├── deploy.sh                   Production deploy: standalone, --behind-proxy, --update, --init-env
@@ -286,7 +286,7 @@ Integration tests live in `backend/tests/` and use [`axum-test`](https://crates.
 
 ## License
 
-Farbstroem is licensed under the **GNU Affero General Public License v3.0**
+Farbstrom is licensed under the **GNU Affero General Public License v3.0**
 (AGPL-3.0) — see [LICENSE](LICENSE). In short: you are free to use, study,
 modify, and self-host it, but if you run a modified version as a network
 service you must make your modified source available to its users.
@@ -298,7 +298,7 @@ bundled dependencies are collected in
 
 ## Acknowledgements
 
-Farbstroem is built on the work of these open-source projects:
+Farbstrom is built on the work of these open-source projects:
 
 - [OvenMediaEngine](https://github.com/AirenSoft/OvenMediaEngine) — broadcast ingest/delivery engine (AGPL-3.0)
 - [OvenPlayer](https://github.com/AirenSoft/OvenPlayer) — LLHLS/WebRTC player (MIT)

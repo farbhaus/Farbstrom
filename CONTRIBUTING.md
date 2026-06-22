@@ -1,10 +1,10 @@
-# Contributing to Farbstroem
+# Contributing to Farbstrom
 
-Thanks for your interest in improving Farbstroem.
+Thanks for your interest in improving Farbstrom.
 
 ## License of contributions
 
-Farbstroem is released under the **GNU Affero General Public License v3.0**
+Farbstrom is released under the **GNU Affero General Public License v3.0**
 (see [LICENSE](LICENSE)). By contributing, you agree that your contributions
 are licensed under the same AGPL-3.0 terms.
 
@@ -69,7 +69,7 @@ npm run typecheck
 
 ## Third-party notices
 
-Farbstroem bundles open-source dependencies whose attribution notices are
+Farbstrom bundles open-source dependencies whose attribution notices are
 collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), regenerated
 with [`cargo-about`](https://github.com/EmbarkStudios/cargo-about):
 

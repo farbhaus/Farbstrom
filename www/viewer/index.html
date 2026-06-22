@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Farbström</title>
+<title>Farbstrom</title>
+<link rel="icon" type="image/svg+xml" href="/shared/favicon.svg">
+<link rel="icon" type="image/png" href="/shared/favicon.png">
+<link rel="apple-touch-icon" href="/shared/favicon.png">
 <script src="https://cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5/dist/hls.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.19/dist/livekit-client.umd.min.js"></script>
@@ -953,7 +956,7 @@ body.has-focus.strip-hidden #stage-strip {
 <div id="landing-screen" class="hidden">
     <div class="panel-box">
         <img src="" alt="" class="screen-logo u-hidden">
-        <div class="brand-wordmark brand-fallback u-hidden">Farbström</div>
+        <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="landing-title">Welcome</div>
         <div class="landing-sub">It appears you forgot the room link for your project. Please enter your room link below or ask your host for the correct URL.</div>
         <div class="form-row">
@@ -961,6 +964,7 @@ body.has-focus.strip-hidden #stage-strip {
         </div>
         <button class="btn btn-primary btn-lg btn-block" id="landing-btn">Go to Room</button>
         <p class="landing-error" id="landing-error"></p>
+        <div class="panel-foot"><a href="/privacy">Privacy &amp; Cookies</a></div>
     </div>
 </div>
 
@@ -968,7 +972,7 @@ body.has-focus.strip-hidden #stage-strip {
 <div id="join-screen" class="screen hidden">
     <div class="join-box">
         <img src="" alt="" class="screen-logo u-hidden">
-        <div class="brand-wordmark brand-fallback u-hidden">Farbström</div>
+        <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="join-room-name" id="join-room-name">Loading...</div>
         <form id="join-form">
             <div class="form-row">
@@ -982,6 +986,7 @@ body.has-focus.strip-hidden #stage-strip {
             <button type="submit" class="join-btn" id="join-btn">Join Session</button>
         </form>
         <p class="join-error" id="join-error"></p>
+        <div class="panel-foot"><a href="/privacy">Privacy &amp; Cookies</a></div>
     </div>
 </div>
 
@@ -1016,7 +1021,7 @@ body.has-focus.strip-hidden #stage-strip {
 <div id="left-screen" class="screen hidden">
     <div class="waiting-box">
         <img src="" alt="Logo" class="screen-logo brand-logo u-hidden">
-        <div class="brand-wordmark-sm brand-fallback u-hidden">Farbström</div>
+        <div class="brand-wordmark-sm brand-fallback u-hidden">Farbstrom</div>
         <div class="waiting-name" id="left-room-name"></div>
         <div class="waiting-msg">You left the session.</div>
         <button class="join-btn u-mt-4" id="left-rejoin-btn">Rejoin</button>
@@ -1126,7 +1131,7 @@ body.has-focus.strip-hidden #stage-strip {
     <div id="top-bar">
         <div id="top-left">
             <img src="" alt="" class="brand-logo u-hidden">
-            <div class="brand-wordmark-sm brand-fallback u-hidden">Farbström</div>
+            <div class="brand-wordmark-sm brand-fallback u-hidden">Farbstrom</div>
         </div>
         <div id="top-center">
             <span id="room-name-label"></span>

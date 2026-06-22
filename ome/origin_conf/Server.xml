@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <Server version="8">
-    <Name>Farbstroem</Name>
+    <Name>Farbstrom</Name>
     <Type>origin</Type>
     <IP>*</IP>
     <PrivacyProtection>false</PrivacyProtection>

@@ -218,7 +218,7 @@ async fn passkey_register_start(
 
     let (ccr, reg) = state
         .webauthn
-        .start_passkey_registration(admin_user_id(), "admin", "Farbström Admin", Some(exclude))
+        .start_passkey_registration(admin_user_id(), "admin", "Farbstrom Admin", Some(exclude))
         .map_err(|e| AppError::Internal(format!("WebAuthn: {e}")))?;
 
     let id = Uuid::new_v4();

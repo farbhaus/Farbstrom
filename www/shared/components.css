@@ -1,4 +1,4 @@
-/* Farbstroem shared components — lifted from admin's best-evolved versions.
+/* Farbstrom shared components — lifted from admin's best-evolved versions.
    Page-specific layout stays in each page's local <style>. */
 
 /* ---- Buttons ---- */
@@ -237,3 +237,32 @@
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--r-lg);
 }
+
+/* ---- Functional-storage notice (one-time, dismissible) ---- */
+.privacy-notice {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: var(--z-modal);
+    display: flex; align-items: center; gap: 16px;
+    flex-wrap: wrap;
+    padding: 12px 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.25);
+}
+.privacy-notice-text {
+    flex: 1; min-width: 200px;
+    font-size: 12px; line-height: 1.5;
+    color: var(--dim);
+}
+.privacy-notice-text a { color: var(--accent); }
+.privacy-notice-btn { flex-shrink: 0; }
+
+/* Small muted footer link inside entry panels (landing, join). */
+.panel-foot {
+    margin-top: 24px;
+    text-align: center;
+    font-size: 12px;
+}
+.panel-foot a { color: var(--dim); }
+.panel-foot a:hover { color: var(--text); }

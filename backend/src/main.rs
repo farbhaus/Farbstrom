@@ -117,9 +117,21 @@ async fn main() {
         )
         .nest_service("/shared", ServeDir::new("/www/shared"))
         .nest_service("/dist", ServeDir::new("/www/dist"))
-        .route_service("/", ServeFile::new("/www/landing/index.html"))
-        .fallback_service(
-            ServeDir::new("/www/viewer").fallback(ServeFile::new("/www/viewer/index.html")),
+        // Legacy /favicon.ico probes (browsers that ignore <link rel="icon">):
+        // serve the shipped default rather than falling through to the SPA HTML.
+        .route_service("/favicon.ico", ServeFile::new("/www/shared/favicon.png"))
+        // Privacy / functional-cookie disclosure (static; themed via JS branding).
+        .route_service("/privacy", ServeFile::new("/www/privacy/index.html"))
+        // Landing + viewer go through handlers that inject brand-aware
+        // link-preview (Open Graph) tags; the viewer handler is the SPA
+        // catch-all for /watch/{slug} and any other unmatched path. These need
+        // AppState, so they live in a state-applied sub-router that is merged in
+        // (its fallback becomes the app's fallback).
+        .merge(
+            axum::Router::new()
+                .route("/", get(routes::pages::serve_landing))
+                .fallback(get(routes::pages::serve_viewer))
+                .with_state(state.clone()),
         )
         // The SPA is served as un-hashed plain ES modules / HTML. Without an
         // explicit Cache-Control, browsers apply *heuristic* caching from
