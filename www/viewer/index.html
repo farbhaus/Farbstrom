@@ -135,6 +135,8 @@ html, body { overflow: hidden; }
     text-transform: none; letter-spacing: normal; font-weight: 400;
 }
 .device-picker-check input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.device-privacy-note { margin-top: 16px; font-size: 11px; line-height: 1.5; color: var(--dim); text-align: left; }
+.device-privacy-note a { color: var(--accent); }
 
 /* ---- "Show" button next to "Get" on shared files (presenter-only) ---- */
 .file-row-show {
@@ -964,7 +966,7 @@ body.has-focus.strip-hidden #stage-strip {
         </div>
         <button class="btn btn-primary btn-lg btn-block" id="landing-btn">Go to Room</button>
         <p class="landing-error" id="landing-error"></p>
-        <div class="panel-foot"><a href="/privacy">Privacy &amp; Cookies</a></div>
+        <div class="panel-foot"><a href="/privacy" target="_blank" rel="noopener">Privacy &amp; Cookies</a></div>
     </div>
 </div>
 
@@ -986,7 +988,7 @@ body.has-focus.strip-hidden #stage-strip {
             <button type="submit" class="join-btn" id="join-btn">Join Session</button>
         </form>
         <p class="join-error" id="join-error"></p>
-        <div class="panel-foot"><a href="/privacy">Privacy &amp; Cookies</a></div>
+        <div class="panel-foot"><a href="/privacy" target="_blank" rel="noopener">Privacy &amp; Cookies</a></div>
     </div>
 </div>
 
@@ -1083,6 +1085,10 @@ body.has-focus.strip-hidden #stage-strip {
                 <input type="checkbox" id="device-ptt">
                 Push to talk (hold S / mic button)
             </label>
+        </div>
+        <div class="device-privacy-note">
+            This site uses only functional browser storage (no tracking or third-party cookies) to
+            keep you in your room and remember your preferences. <a href="/privacy" target="_blank" rel="noopener">Learn more</a>.
         </div>
         <div style="text-align:right;margin-top:16px">
             <button class="conf-prompt-btn" id="device-picker-close" style="width:auto;padding:8px 24px">Done</button>

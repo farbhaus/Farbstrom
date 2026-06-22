@@ -27,12 +27,16 @@ export interface ApplyBrandingOptions {
   /** Set document.title to the configured brand name (landing page only —
    *  the viewer sets a per-room title itself via getBrandName()). */
   setTitle?: boolean;
+  /** Skip applying the background image (e.g. the text-heavy privacy page). */
+  skipBg?: boolean;
 }
 
-// Configured brand name, defaulting to the shipped fallback until /api/branding
-// resolves. Pages that build their own title (e.g. the viewer's per-room title)
-// read this so the brand half reflects the deployment's branding.
-let brandName = 'Farbstrom';
+// Configured brand name. Seeded synchronously from the server-injected
+// <meta name="brand-name"> so callers that build a title immediately on load
+// (e.g. the viewer's per-room title) get the right value without waiting on the
+// /api/branding fetch (which would otherwise race and fall back to the default).
+let brandName =
+  document.querySelector('meta[name="brand-name"]')?.getAttribute('content') || 'Farbstrom';
 export function getBrandName(): string {
   return brandName;
 }
@@ -78,7 +82,7 @@ export async function applyBranding(opts: ApplyBrandingOptions = {}): Promise<Br
       opts.logoEl.classList.remove('u-hidden');
     }
 
-    if (data.hasBg) {
+    if (data.hasBg && !opts.skipBg) {
       const target = opts.bgTarget || document.body;
       target.style.backgroundImage = 'url(/api/branding/bg)';
       target.style.backgroundSize = 'cover';

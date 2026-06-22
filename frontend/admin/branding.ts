@@ -55,6 +55,16 @@ export async function loadBranding(): Promise<void> {
     }
   }
 
+  // Brand name: visible in the header wordmark (when no logo) and the tab title,
+  // so a Site Name change takes effect immediately.
+  const siteName = data.siteName || 'Farbstrom';
+  document.title = `${siteName} — Admin`;
+  const brandName = document.getElementById('brand-name');
+  if (brandName) {
+    brandName.textContent = siteName;
+    brandName.classList.toggle('u-hidden', data.hasLogo);
+  }
+
   const bgPreview = document.getElementById('bg-preview') as HTMLImageElement | null;
   const bgEmpty = document.getElementById('bg-empty');
   if (bgPreview) bgPreview.style.display = data.hasBg ? '' : 'none';

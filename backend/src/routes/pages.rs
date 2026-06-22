@@ -87,7 +87,8 @@ async fn serve_page(
         esc(&site_name),
     );
     let meta = format!(
-        "<meta property=\"og:title\" content=\"{t}\">\n\
+        "<meta name=\"brand-name\" content=\"{sn}\">\n\
+         <meta property=\"og:title\" content=\"{t}\">\n\
          <meta property=\"og:description\" content=\"{d}\">\n\
          <meta property=\"og:type\" content=\"website\">\n\
          <meta property=\"og:site_name\" content=\"{sn}\">\n\

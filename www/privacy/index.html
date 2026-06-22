@@ -89,7 +89,8 @@ body {
 <script type="module">
   import { applyBranding } from '/dist/shared/branding.js';
   // Theme the page (colors, favicon) and fill the wordmark with the brand name.
-  void applyBranding({ setTitle: false });
+  // Skip the background image — this is a text-heavy legal page.
+  void applyBranding({ setTitle: false, skipBg: true });
 </script>
 </body>
 </html>

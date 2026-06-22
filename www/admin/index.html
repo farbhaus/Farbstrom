@@ -42,6 +42,12 @@ nav {
     position: fixed; top: 22px; left: 32px; z-index: var(--z-pill);
 }
 .brand img { height: 30px; display: block; }
+/* Branding tab: pair cards (Site Name + Favicon, Logo + Background) side by side,
+   stretched to equal height so each row stays tidy. */
+.branding-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
+.branding-grid > .room-card { display: flex; flex-direction: column; }
+.branding-grid > .room-card > .room-card-body { flex: 1; }
+@media (max-width: 700px) { .branding-grid { grid-template-columns: 1fr; } }
 /* Sign out: a normal small button fixed to the top-right corner (mirrors the logo). */
 #logout-btn { position: fixed; top: 22px; right: 32px; z-index: var(--z-pill); }
 .nav-tabs { display: flex; gap: 4px; }
@@ -513,6 +519,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
      of the page (mobile, scrolling with content). -->
 <div id="brand-corner" class="brand u-hidden">
     <img id="brand-logo" alt="" class="u-hidden">
+    <span id="brand-name" class="u-hidden">Farbstrom</span>
 </div>
 <button class="btn btn-sm u-hidden" id="logout-btn" title="Sign out">
     <svg class="tab-icon" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -627,72 +634,76 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
             <span class="section-title">Branding</span>
         </div>
 
-        <div class="room-card">
-            <div class="room-card-header">
-                <div class="room-card-info">
-                    <div class="room-card-name">Site Name</div>
-                    <div class="room-card-meta">Shown in the browser tab, the wordmark, and shared link previews. Leave blank for the default.</div>
+        <div class="branding-grid">
+            <div class="room-card">
+                <div class="room-card-header">
+                    <div class="room-card-info">
+                        <div class="room-card-name">Site Name</div>
+                        <div class="room-card-meta">Shown in the browser tab, the wordmark, and shared link previews. Leave blank for the default.</div>
+                    </div>
+                    <div class="room-card-actions">
+                        <button class="btn btn-sm" id="site-name-save-btn">Save</button>
+                    </div>
                 </div>
-                <div class="room-card-actions">
-                    <button class="btn btn-sm" id="site-name-save-btn">Save</button>
+                <div class="room-card-body u-p-card-tight">
+                    <input type="text" id="site-name-input" class="input" placeholder="Farbstrom" maxlength="64" style="width:100%">
                 </div>
             </div>
-            <div class="room-card-body u-p-card-tight">
-                <input type="text" id="site-name-input" placeholder="Farbstrom" maxlength="64" style="width:100%;padding:6px 8px;font-size:13px">
+
+            <div class="room-card">
+                <div class="room-card-header">
+                    <div class="room-card-info">
+                        <div class="room-card-name">Favicon</div>
+                        <div class="room-card-meta">Browser-tab icon and shared link-preview icon. PNG or ICO. Max 5 MB.</div>
+                    </div>
+                    <div class="room-card-actions">
+                        <button class="btn btn-sm" id="favicon-upload-btn">Upload</button>
+                        <button class="btn btn-sm btn-danger" id="favicon-remove-btn">Remove</button>
+                    </div>
+                </div>
+                <div class="room-card-body u-p-card-tight">
+                    <img id="favicon-preview" src="" alt="Favicon preview" style="height:32px;width:32px;object-fit:contain;display:none;margin-bottom:4px">
+                    <span id="favicon-empty" style="font-size:13px;color:var(--dim)">No custom favicon — using default.</span>
+                    <input type="file" id="favicon-file-input" accept="image/png,image/x-icon,image/vnd.microsoft.icon,.ico" class="u-hidden">
+                </div>
             </div>
         </div>
 
-        <div class="room-card u-mt-3">
-            <div class="room-card-header">
-                <div class="room-card-info">
-                    <div class="room-card-name">Logo</div>
-                    <div class="room-card-meta">Shown in the top bar and on all overlay screens. PNG only. Max 5 MB.</div>
+        <div class="branding-grid u-mt-3">
+            <div class="room-card">
+                <div class="room-card-header">
+                    <div class="room-card-info">
+                        <div class="room-card-name">Logo</div>
+                        <div class="room-card-meta">Shown in the top bar and on all overlay screens. PNG only. Max 5 MB.</div>
+                    </div>
+                    <div class="room-card-actions">
+                        <button class="btn btn-sm" id="logo-upload-btn">Upload</button>
+                        <button class="btn btn-sm btn-danger" id="logo-remove-btn">Remove</button>
+                    </div>
                 </div>
-                <div class="room-card-actions">
-                    <button class="btn btn-sm" id="logo-upload-btn">Upload</button>
-                    <button class="btn btn-sm btn-danger" id="logo-remove-btn">Remove</button>
+                <div class="room-card-body u-p-card-tight">
+                    <img id="logo-preview" src="" alt="Logo preview" style="max-height:48px;display:none;opacity:0.8;margin-bottom:4px;">
+                    <span id="logo-empty" style="font-size:13px;color:var(--dim)">No custom logo — using default.</span>
+                    <input type="file" id="logo-file-input" accept="image/png" class="u-hidden">
                 </div>
             </div>
-            <div class="room-card-body u-p-card-tight">
-                <img id="logo-preview" src="" alt="Logo preview" style="max-height:48px;display:none;opacity:0.8;margin-bottom:4px;">
-                <span id="logo-empty" style="font-size:13px;color:var(--dim)">No custom logo — using default.</span>
-                <input type="file" id="logo-file-input" accept="image/png" class="u-hidden">
-            </div>
-        </div>
 
-        <div class="room-card u-mt-3">
-            <div class="room-card-header">
-                <div class="room-card-info">
-                    <div class="room-card-name">Background Image</div>
-                    <div class="room-card-meta">Shown on the join, waiting, and kicked screens. JPEG only. Max 5 MB.</div>
+            <div class="room-card">
+                <div class="room-card-header">
+                    <div class="room-card-info">
+                        <div class="room-card-name">Background Image</div>
+                        <div class="room-card-meta">Shown on the join, waiting, and kicked screens. JPEG only. Max 5 MB.</div>
+                    </div>
+                    <div class="room-card-actions">
+                        <button class="btn btn-sm" id="bg-upload-btn">Upload</button>
+                        <button class="btn btn-sm btn-danger" id="bg-remove-btn">Remove</button>
+                    </div>
                 </div>
-                <div class="room-card-actions">
-                    <button class="btn btn-sm" id="bg-upload-btn">Upload</button>
-                    <button class="btn btn-sm btn-danger" id="bg-remove-btn">Remove</button>
+                <div class="room-card-body u-p-card-tight">
+                    <img id="bg-preview" src="" alt="Background preview" style="max-height:100px;max-width:100%;object-fit:cover;border-radius:6px;display:none;margin-bottom:4px;">
+                    <span id="bg-empty" style="font-size:13px;color:var(--dim)">No custom background — using default.</span>
+                    <input type="file" id="bg-file-input" accept="image/jpeg" class="u-hidden">
                 </div>
-            </div>
-            <div class="room-card-body u-p-card-tight">
-                <img id="bg-preview" src="" alt="Background preview" style="max-height:100px;max-width:100%;object-fit:cover;border-radius:6px;display:none;margin-bottom:4px;">
-                <span id="bg-empty" style="font-size:13px;color:var(--dim)">No custom background — using default.</span>
-                <input type="file" id="bg-file-input" accept="image/jpeg" class="u-hidden">
-            </div>
-        </div>
-
-        <div class="room-card u-mt-3">
-            <div class="room-card-header">
-                <div class="room-card-info">
-                    <div class="room-card-name">Favicon</div>
-                    <div class="room-card-meta">Browser-tab icon and shared link-preview icon. PNG or ICO. Max 5 MB.</div>
-                </div>
-                <div class="room-card-actions">
-                    <button class="btn btn-sm" id="favicon-upload-btn">Upload</button>
-                    <button class="btn btn-sm btn-danger" id="favicon-remove-btn">Remove</button>
-                </div>
-            </div>
-            <div class="room-card-body u-p-card-tight">
-                <img id="favicon-preview" src="" alt="Favicon preview" style="height:32px;width:32px;object-fit:contain;display:none;margin-bottom:4px">
-                <span id="favicon-empty" style="font-size:13px;color:var(--dim)">No custom favicon — using default.</span>
-                <input type="file" id="favicon-file-input" accept="image/png,image/x-icon,image/vnd.microsoft.icon,.ico" class="u-hidden">
             </div>
         </div>
 

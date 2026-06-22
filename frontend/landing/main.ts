@@ -1,5 +1,4 @@
 import { applyBranding } from '../shared/branding.js';
-import { initPrivacyNotice } from '../shared/privacy-notice.js';
 
 function goToRoom(): void {
   const input = document.getElementById('landing-input') as HTMLInputElement;
@@ -43,5 +42,3 @@ void applyBranding({
     document.getElementById('brand-fallback')?.classList.remove('u-hidden');
   }
 });
-
-initPrivacyNotice();
