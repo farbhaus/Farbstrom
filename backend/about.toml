@@ -1,5 +1,5 @@
-# Configuration for cargo-about — generates THIRD_PARTY_NOTICES.md.
-#   cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md
+# Configuration for cargo-about — generates docs/THIRD_PARTY_NOTICES.md.
+#   cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
 #
 # `accepted` lists every license we have reviewed and allow in the dependency
 # tree. cargo-about fails if a crate's license is not on this list, which makes

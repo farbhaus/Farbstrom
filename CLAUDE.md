@@ -20,7 +20,7 @@ RUST_LOG=debug cargo test -- --nocapture # tests with logs
 cargo fmt                                # format
 cargo clippy --all-targets -- -D warnings
 cargo audit
-cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md
+cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
 ```
 
 Hot-reload during development (requires `watchexec-cli`):
@@ -211,11 +211,12 @@ GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
 - **audit** — `cargo audit` (advisory DB check).
 - **frontend** — `npm run typecheck`.
-- **licenses** — regenerates `THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
+- **licenses** — regenerates `docs/THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
 
 ## Useful reference docs
 
-- `README.md` — architecture diagram, tech stack, ingest protocols
+- `README.md` — what Farbstrom is and what it does
+- `docs/DEPLOYMENT.md` — architecture diagram, tech stack, ingest protocols, deployment/ops
 
 ## Recommended tests to add
 
