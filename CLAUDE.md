@@ -143,8 +143,10 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/auth.rs` — JWT (HS256, 7d) + bcrypt helpers
 - `src/livekit.rs` — hand-rolled LiveKit client: AccessToken JWT minting + RoomService HTTP
 - `src/ws.rs` — WebSocket hub, broadcast channels per room
+- `src/presence.rs` — in-memory presence registry for native SRT (Farbplay) viewers; their admission SSE connection is the heartbeat (browser viewers use the WS in `ws.rs` instead)
 - `src/tasks.rs` — background pollers: OME stream status, room expiry, file cleanup
-- `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `auth`, `admin_settings`, `rate_limit`
+- `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename)
+- `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages)
 - `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, WebAuthn RP builder
 - `tests/common/mod.rs` — shared test fixtures (in-memory DB, app setup)
 
