@@ -5,7 +5,7 @@ Thanks for your interest in improving Farbstrom.
 ## License of contributions
 
 Farbstrom is released under the **GNU Affero General Public License v3.0**
-(see [LICENSE](LICENSE)). By contributing, you agree that your contributions
+(see [LICENSE](../LICENSE)). By contributing, you agree that your contributions
 are licensed under the same AGPL-3.0 terms.
 
 ## Developer Certificate of Origin (DCO)
@@ -52,7 +52,7 @@ The full text you are certifying:
 
 ## Development setup
 
-See the root [README.md](README.md) for the project. Before opening a pull
+See the root [README.md](../README.md) for the project. Before opening a pull
 request, please make sure the CI gates pass locally:
 
 ```bash
@@ -75,7 +75,7 @@ with [`cargo-about`](https://github.com/EmbarkStudios/cargo-about):
 
 ```bash
 cd backend
-cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md
+cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
 ```
 
 Run this whenever dependencies change.

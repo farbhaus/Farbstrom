@@ -20,7 +20,7 @@ RUST_LOG=debug cargo test -- --nocapture # tests with logs
 cargo fmt                                # format
 cargo clippy --all-targets -- -D warnings
 cargo audit
-cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md
+cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
 ```
 
 Hot-reload during development (requires `watchexec-cli`):
@@ -143,8 +143,10 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/auth.rs` — JWT (HS256, 7d) + bcrypt helpers
 - `src/livekit.rs` — hand-rolled LiveKit client: AccessToken JWT minting + RoomService HTTP
 - `src/ws.rs` — WebSocket hub, broadcast channels per room
+- `src/presence.rs` — in-memory presence registry for native SRT (Farbplay) viewers; their admission SSE connection is the heartbeat (browser viewers use the WS in `ws.rs` instead)
 - `src/tasks.rs` — background pollers: OME stream status, room expiry, file cleanup
-- `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `auth`, `admin_settings`, `rate_limit`
+- `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename)
+- `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages)
 - `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, WebAuthn RP builder
 - `tests/common/mod.rs` — shared test fixtures (in-memory DB, app setup)
 
@@ -211,11 +213,12 @@ GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
 - **audit** — `cargo audit` (advisory DB check).
 - **frontend** — `npm run typecheck`.
-- **licenses** — regenerates `THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
+- **licenses** — regenerates `docs/THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
 
 ## Useful reference docs
 
-- `README.md` — architecture diagram, tech stack, ingest protocols
+- `README.md` — what Farbstrom is and what it does
+- `docs/DEPLOYMENT.md` — architecture diagram, tech stack, ingest protocols, deployment/ops
 
 ## Recommended tests to add
 

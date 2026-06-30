@@ -70,7 +70,7 @@ jobs:
     # Fails if THIRD_PARTY_NOTICES.md is stale relative to the current
     # dependency tree, so attribution stays current as deps change.
     # Regenerate locally with:
-    #   cd backend && cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md
+    #   cd backend && cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -86,13 +86,13 @@ jobs:
           curl -fsSL https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.0/cargo-about-0.9.0-x86_64-unknown-linux-musl.tar.gz \
             | tar -xz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-about'
       - name: Regenerate third-party notices
-        run: cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md
+        run: cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
         working-directory: backend
       - name: Verify notices are up to date
         run: |
-          if ! git diff --quiet -- THIRD_PARTY_NOTICES.md; then
-            echo "::error::THIRD_PARTY_NOTICES.md is out of date. Regenerate it with:"
-            echo "  cd backend && cargo about generate about.hbs -o ../THIRD_PARTY_NOTICES.md"
-            git --no-pager diff -- THIRD_PARTY_NOTICES.md
+          if ! git diff --quiet -- docs/THIRD_PARTY_NOTICES.md; then
+            echo "::error::docs/THIRD_PARTY_NOTICES.md is out of date. Regenerate it with:"
+            echo "  cd backend && cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md"
+            git --no-pager diff -- docs/THIRD_PARTY_NOTICES.md
             exit 1
           fi
