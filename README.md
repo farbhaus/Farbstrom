@@ -1,66 +1,61 @@
 # Farbstrom
 
-Private low-latency streaming platform for color-grading review sessions.
+Farbstrom is a secure, private, ultra-low-latency streaming and video conference platform, designed for realtime color accurate review sessions.
 
 [![Documentation](https://img.shields.io/badge/docs-farbhaus.pt%2Ffarbstrom-2563eb)](https://docs.farbhaus.pt/farbstrom/)
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 > 📖 **Full user manual → <https://docs.farbhaus.pt/farbstrom/>**
 
-## What is Farbstrom
-
-Farbstrom streams a colorist's grade to remote reviewers in near real time, with little quality loss, while everyone talks over voice and video. You run it on your own server, so the footage stays on infrastructure you control.
-
-The colorist or studio runs the session as presenter. Reviewers (directors, DPs, clients) join from a browser to watch and give feedback. There's nothing to install.
-
 ## What it can do
 
-- Low-latency video in the browser, including HDR.
-- Voice and video conference, screen sharing, and a watch-only mode for people who just want to look.
-- Presenter and viewer roles. Only an admin can make someone a presenter.
-- Chat, file sharing, and a shared pointer for pointing at an exact spot on screen.
-- Kick and mute for moderation, plus optional room passwords and waiting rooms.
-- Scheduled rooms with an expiry time, and a per-room choice of delivery mode.
-- Custom branding (logo and colors) per deployment.
-- An optional native SRT viewer (Farbplay) that joins from a room link for full-quality HDR playback.
+- Stream sub-second ultra-low-latency video.
+- Voice and video conference, including screen sharing.
+- Session persistant chat and file sharing.
+- Shared pointer for so that everyone agrees on what is being discussed.
+- Host and participants roles. Host can moderate with admit, mute and kick priveleges.
 
-<img width="1920" height="1100" alt="1" src="https://github.com/user-attachments/assets/820d33de-1370-49be-9d23-c5a955fd644c" />
-<img width="1920" height="1100" alt="2" src="https://github.com/user-attachments/assets/423c95db-77f3-4e69-b01f-896a959d1917" />
-<img width="1920" height="1100" alt="3" src="https://github.com/user-attachments/assets/01d2391b-380e-4651-a42b-0bc9fed061a4" />
-<img width="1920" height="1100" alt="4" src="https://github.com/user-attachments/assets/19a7933d-ab91-4530-962f-2b35db0c206c" />
-<img width="1920" height="1100" alt="5" src="https://github.com/user-attachments/assets/55be556b-3c87-4279-bfee-8a42bd1bf5eb" />
-<img width="1920" height="1100" alt="6" src="https://github.com/user-attachments/assets/a6e9c95c-7f28-4f8c-b4e1-de7fdd32dcb3" />
-<img width="1920" height="1100" alt="7" src="https://github.com/user-attachments/assets/1d77247b-d5e4-4498-80e1-338ee9044aec" />
-<img width="1920" height="1100" alt="8" src="https://github.com/user-attachments/assets/ac715448-671a-4394-99c0-05390fe0637c" />
-<img width="1920" height="1100" alt="9" src="https://github.com/user-attachments/assets/7418bb42-905c-4875-b5d5-937bcf0eee48" />
-<img width="1920" height="1100" alt="10" src="https://github.com/user-attachments/assets/c74b0a23-2cbd-4a9d-9e4b-09bef8e98f15" />
-<img width="1920" height="1100" alt="11" src="https://github.com/user-attachments/assets/596351a9-ff52-4d71-bbff-c883014dd18c" />
+Farbstrom Admins have access to a fully fledged suite of tools to manage, create and share rooms with hosts and participants 
+in addition there is stream monitoring, file management, custom branding options as well login security management.
+
+A unique concept of Fabstrom is the ability to assign different streamkeys to rooms on the fly allowing for flexible planning and organising of remote sessions
+
+Finally there is *Farbplay* a macOS & iOS/iPadOS Player App for sub-second high quality HDR playback in development. 
+
+**Admin Page**
+<img width="1600" height="928" alt="rooms-tab" src="https://github.com/user-attachments/assets/75f93a37-3234-43ed-9e7a-edef7aba7e43" />
+<img width="1000" height="1061" alt="room-modal" src="https://github.com/user-attachments/assets/aded6276-3dac-4967-bbe2-720581aa37bf" />
+<img width="1600" height="928" alt="stream-keys" src="https://github.com/user-attachments/assets/11e9322b-6616-4b10-aed0-cb023e6b458f" />
+<img width="1600" height="928" alt="files-tab" src="https://github.com/user-attachments/assets/83bb8a56-5211-4240-ba23-bfea723c6e0f" />
+<img width="1600" height="928" alt="dashboard" src="https://github.com/user-attachments/assets/056b105a-27e6-4863-a967-e611b96b7654" />
+<img width="1600" height="928" alt="branding" src="https://github.com/user-attachments/assets/03777288-18b9-4db5-bac8-d1b1ea994752" />
+<img width="1600" height="928" alt="settings" src="https://github.com/user-attachments/assets/e76b29db-188a-45a2-92b8-1361379b30bd" />
+
+**Room**
+<img width="1600" height="928" alt="chat-panel" src="https://github.com/user-attachments/assets/9d1fb03f-e668-470b-bc79-60429075d9c3" />
+<img width="1600" height="925" alt="pointer" src="https://github.com/user-attachments/assets/42825c5e-74ab-4ddc-9766-92521728a5ab" />
+<img width="1600" height="928" alt="chat-panel" src="https://github.com/user-attachments/assets/55add4ce-2c42-496e-a202-f2774c4bda8d" />
+<img width="1600" height="928" alt="screen-sharing" src="https://github.com/user-attachments/assets/b0c6fcd8-9eef-488e-b477-1ac672b81e5f" />
 
 ## Documentation
 
-The full user manual is at **<https://docs.farbhaus.pt/farbstrom/>**. It covers getting started, the admin guide (rooms, stream keys, files, dashboard, branding, settings), encoder setup for OBS and the Blackmagic Web Presenter, and using a room (conference, devices, chat, files, layout, pointer, HDR review, keyboard shortcuts).
+The full user manual is at **<https://docs.farbhaus.pt/farbstrom/>**. It covers a quickstart guide and includes complete documentation of the admin page and room features, as well as encoder setup for OBS and the Blackmagic Web Presenter.
 
-Self-hosting and configuration is in [DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Deployment information can be found in [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Quickstart
 
-On a fresh VPS that only runs Farbstrom, one command installs the prerequisites, generates secrets, gets a Let's Encrypt cert, and prints the admin password once:
-
-```bash
-sudo ./deploy.sh stream.yourdomain.com
-```
-
-You don't even need to clone the repo first:
+Here is a one line command to deploy Farbstrom on a fresh VPS or VM, all you have to do is replace the domain with your own:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/farbhaus/Farbstrom/main/install.sh | bash -s -- stream.yourdomain.com
 ```
+Alternatively, ff you just want to try things out:
 
-`sudo ./deploy.sh localhost` runs the whole stack locally if you just want a look. Flags, running behind an existing TLS proxy, manual `.env` setup, and local frontend development are all in [DEPLOYMENT.md](docs/DEPLOYMENT.md).
+```bash
+git clone https://github.com/farbhaus/Farbstrom && sudo ./deploy.sh localhost
+```
 
-## Built with
-
-Everything runs in a single container: OvenMediaEngine for broadcast ingest and delivery, LiveKit for participant voice/video, a Rust/Axum backend, and Caddy for TLS and routing. The architecture diagram and full breakdown are in [DEPLOYMENT.md](docs/DEPLOYMENT.md#architecture).
+This will run the whole stack locally if you just want a look. Flags, running behind an existing TLS proxy, manual `.env` setup, and local frontend development are all in [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## License
 
