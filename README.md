@@ -2,10 +2,6 @@
 
 Farbstrom is a secure, private, ultra-low-latency streaming and video conference platform, designed for realtime color accurate review sessions.
 
-[![Documentation](https://img.shields.io/badge/docs-farbhaus.pt%2Ffarbstrom-2563eb)](https://docs.farbhaus.pt/farbstrom/)
-
-> 📖 **Full user manual → <https://docs.farbhaus.pt/farbstrom/>**
-
 ## What it can do
 
 - Stream sub-second ultra-low-latency video.
@@ -26,17 +22,12 @@ Finally there is *Farbplay*, a macOS & iOS/iPadOS Player App for sub-second high
 <table>
   <tr>
     <td><a href="https://github.com/user-attachments/assets/75f93a37-3234-43ed-9e7a-edef7aba7e43"><img alt="rooms-tab" width="380" src="https://github.com/user-attachments/assets/75f93a37-3234-43ed-9e7a-edef7aba7e43" /></a></td>
-    <td><a href="https://github.com/user-attachments/assets/aded6276-3dac-4967-bbe2-720581aa37bf"><img alt="room-modal" width="380" src="https://github.com/user-attachments/assets/aded6276-3dac-4967-bbe2-720581aa37bf" /></a></td>
-  </tr>
-  <tr>
     <td><a href="https://github.com/user-attachments/assets/11e9322b-6616-4b10-aed0-cb023e6b458f"><img alt="stream-keys" width="380" src="https://github.com/user-attachments/assets/11e9322b-6616-4b10-aed0-cb023e6b458f" /></a></td>
     <td><a href="https://github.com/user-attachments/assets/83bb8a56-5211-4240-ba23-bfea723c6e0f"><img alt="files-tab" width="380" src="https://github.com/user-attachments/assets/83bb8a56-5211-4240-ba23-bfea723c6e0f" /></a></td>
   </tr>
   <tr>
+     <td><a href="https://github.com/user-attachments/assets/03777288-18b9-4db5-bac8-d1b1ea994752"><img alt="branding" width="380" src="https://github.com/user-attachments/assets/03777288-18b9-4db5-bac8-d1b1ea994752" /></a></td>
     <td><a href="https://github.com/user-attachments/assets/056b105a-27e6-4863-a967-e611b96b7654"><img alt="dashboard" width="380" src="https://github.com/user-attachments/assets/056b105a-27e6-4863-a967-e611b96b7654" /></a></td>
-    <td><a href="https://github.com/user-attachments/assets/03777288-18b9-4db5-bac8-d1b1ea994752"><img alt="branding" width="380" src="https://github.com/user-attachments/assets/03777288-18b9-4db5-bac8-d1b1ea994752" /></a></td>
-  </tr>
-  <tr>
     <td><a href="https://github.com/user-attachments/assets/e76b29db-188a-45a2-92b8-1361379b30bd"><img alt="settings" width="380" src="https://github.com/user-attachments/assets/e76b29db-188a-45a2-92b8-1361379b30bd" /></a></td>
   </tr>
 </table>
@@ -47,8 +38,6 @@ Finally there is *Farbplay*, a macOS & iOS/iPadOS Player App for sub-second high
   <tr>
     <td><a href="https://github.com/user-attachments/assets/9d1fb03f-e668-470b-bc79-60429075d9c3"><img alt="chat-panel" width="380" src="https://github.com/user-attachments/assets/9d1fb03f-e668-470b-bc79-60429075d9c3" /></a></td>
     <td><a href="https://github.com/user-attachments/assets/42825c5e-74ab-4ddc-9766-92521728a5ab"><img alt="pointer" width="380" src="https://github.com/user-attachments/assets/42825c5e-74ab-4ddc-9766-92521728a5ab" /></a></td>
-  </tr>
-  <tr>
     <td><a href="https://github.com/user-attachments/assets/b0c6fcd8-9eef-488e-b477-1ac672b81e5f"><img alt="screen-sharing" width="380" src="https://github.com/user-attachments/assets/b0c6fcd8-9eef-488e-b477-1ac672b81e5f" /></a></td>
   </tr>
 </table>
