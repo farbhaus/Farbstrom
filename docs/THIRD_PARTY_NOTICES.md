@@ -8722,7 +8722,7 @@ SOFTWARE.
 
 ## MIT License
 
-Used by: [totp-rs 5.7.1](https://github.com/constantoine/totp-rs)
+Used by: [totp-rs 5.7.2](https://github.com/constantoine/totp-rs)
 
 ```
 MIT License
