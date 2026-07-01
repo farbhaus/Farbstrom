@@ -392,6 +392,32 @@ pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
             .expect("Failed migration: add rooms.push_to_talk");
     }
 
+    // Per-room scheduled start (issue #200). Nullable — existing rooms have no
+    // start gate. A future starts_at holds joiners until the poller admits them.
+    let has_starts_at: bool = conn
+        .prepare("PRAGMA table_info(rooms)")
+        .expect("PRAGMA table_info(rooms) failed (starts_at check)")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("PRAGMA table_info(rooms) query_map failed (starts_at check)")
+        .any(|name| name.as_deref() == Ok("starts_at"));
+    if !has_starts_at {
+        conn.execute_batch("ALTER TABLE rooms ADD COLUMN starts_at DATETIME")
+            .expect("Failed migration: add rooms.starts_at");
+    }
+
+    // Stream-key block flag: a kicked live stream sets this so the admission
+    // webhook denies the encoder's auto-reconnect until an admin clears it.
+    let has_blocked: bool = conn
+        .prepare("PRAGMA table_info(stream_keys)")
+        .expect("PRAGMA table_info(stream_keys) failed (blocked check)")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("PRAGMA table_info(stream_keys) query_map failed (blocked check)")
+        .any(|name| name.as_deref() == Ok("blocked"));
+    if !has_blocked {
+        conn.execute_batch("ALTER TABLE stream_keys ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
+            .expect("Failed migration: add stream_keys.blocked");
+    }
+
     migrate_session_files_library(&conn);
     repair_room_files_fk(&conn);
     migrate_session_files_room_id_setnull(&conn);

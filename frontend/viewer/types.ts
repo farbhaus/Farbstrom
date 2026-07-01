@@ -4,7 +4,7 @@
 // row_to_json; camelCase fields are explicit JSON.
 
 export type Role = 'presenter' | 'viewer';
-export type RoomStatus = 'pending' | 'live' | 'ended';
+export type RoomStatus = 'pending' | 'scheduled' | 'live' | 'ended';
 export type DeliveryMode = 'webrtc' | 'llhls' | 'srt';
 // A tile in the unified viewer stage. 'stream' is the unified OvenPlayer
 // stage tile (live broadcast OR a presenter-displayed file), 'share' is
@@ -24,6 +24,7 @@ export interface DisplayFileState {
 export interface RoomInfo {
   name: string;
   status: RoomStatus;
+  starts_at: string | null;
   delivery_mode: DeliveryMode;
   has_password: boolean;
   has_stream_key: boolean;
@@ -41,6 +42,7 @@ export interface JoinResponse {
   delivery_mode: DeliveryMode;
   stream_key: string | null;
   status: RoomStatus;
+  starts_at: string | null;
   admitted: boolean;
   waiting_room: boolean;
   noise_reduction_default: boolean;

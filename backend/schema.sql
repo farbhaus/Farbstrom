@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     noise_reduction   INTEGER NOT NULL DEFAULT 1,
     echo_cancellation INTEGER NOT NULL DEFAULT 1,
     push_to_talk      INTEGER NOT NULL DEFAULT 0,
+    starts_at     DATETIME,
     expires_at    DATETIME,
     status        TEXT NOT NULL DEFAULT 'pending',
     stream_key_id TEXT REFERENCES stream_keys(id) ON DELETE SET NULL,
@@ -22,6 +23,10 @@ CREATE TABLE IF NOT EXISTS stream_keys (
     name        TEXT NOT NULL,
     key_token   TEXT UNIQUE NOT NULL,
     room_id     TEXT REFERENCES rooms(id) ON DELETE SET NULL,
+    -- Set to 1 when an admin kicks the live stream. The admission webhook denies
+    -- ingest for a blocked key, so a kicked encoder can't auto-reconnect; an
+    -- admin clears it via "Allow ingest" in the Streamkeys tab.
+    blocked     INTEGER NOT NULL DEFAULT 0,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

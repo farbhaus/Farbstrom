@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    routing::{get, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use base64::Engine;
@@ -40,14 +40,21 @@ async fn list_keys(
     let conn = state.db.get()?;
     let keys = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
-            "SELECT sk.id, sk.name, sk.key_token, sk.created_at, \
+            "SELECT sk.id, sk.name, sk.key_token, sk.blocked, sk.created_at, \
              GROUP_CONCAT(r.name, ', ') as room_names \
              FROM stream_keys sk \
              LEFT JOIN rooms r ON r.stream_key_id = sk.id \
              GROUP BY sk.id \
              ORDER BY sk.created_at DESC",
         )?;
-        let cols = &["id", "name", "key_token", "created_at", "room_names"];
+        let cols = &[
+            "id",
+            "name",
+            "key_token",
+            "blocked",
+            "created_at",
+            "room_names",
+        ];
         let rows = stmt
             .query_map([], |row| row_to_json(row, cols))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -136,6 +143,29 @@ async fn update_key(
     Ok(Json(row))
 }
 
+// POST /:id/unblock — clear a stream kick so the encoder may ingest again.
+async fn unblock_key(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db.get()?;
+    tokio::task::spawn_blocking(move || {
+        let changes = conn.execute(
+            "UPDATE stream_keys SET blocked = 0 WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        if changes == 0 {
+            return Err(AppError::NotFound("Stream key not found".into()));
+        }
+        Ok::<_, AppError>(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
 async fn delete_key(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
@@ -162,4 +192,5 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_keys).post(create_key))
         .route("/{id}", put(update_key).delete(delete_key))
+        .route("/{id}/unblock", post(unblock_key))
 }

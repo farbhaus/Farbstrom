@@ -34,41 +34,56 @@ function renderKeys(): void {
   const proto = location.protocol === 'https:' ? 'https' : 'http';
   const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
 
+  // Build every URL from a token so the masked variant (issue #204) reuses the
+  // exact same shape — only the embedded key differs.
+  const urlsFor = (tok: string): Record<string, string> => ({
+    key: tok,
+    srt: `srt://${INGEST_HOST}:9999?streamid=default/live/${tok}`,
+    rtmp: `rtmp://${INGEST_HOST}:1935/live`,
+    whip: `${proto}://${INGEST_HOST}/live/${tok}?direction=whip`,
+    webrtc: `${wsproto}://${INGEST_HOST}/live/${tok}`,
+    llhls: `${proto}://${INGEST_HOST}/live/${tok}/llhls.m3u8`,
+    srtPlay: `srt://${INGEST_HOST}:9998?streamid=default/live/${tok}/playlist`,
+  });
+  const maskToken = (tok: string): string => '••••••••' + tok.slice(-4);
+
   container.innerHTML = keys
     .map((k) => {
-      const srtUrl = `srt://${INGEST_HOST}:9999?streamid=default/live/${k.key_token}`;
-      const rtmpServer = `rtmp://${INGEST_HOST}:1935/live`;
-      const whipUrl = `${proto}://${INGEST_HOST}/live/${k.key_token}?direction=whip`;
-      const webrtcUrl = `${wsproto}://${INGEST_HOST}/live/${k.key_token}`;
-      const llhlsUrl = `${proto}://${INGEST_HOST}/live/${k.key_token}/llhls.m3u8`;
-      const srtPlayUrl = `srt://${INGEST_HOST}:9998?streamid=default/live/${k.key_token}/playlist`;
+      const full = urlsFor(k.key_token);
+      const masked = urlsFor(maskToken(k.key_token));
 
-      const row = (label: string, value: string, labelStyle = ''): string => `
+      // Rendered masked; the copy handler and Reveal toggle read data-full.
+      const row = (label: string, field: string): string => `
         <div class="url-row">
-          <span class="url-label" ${labelStyle ? `style="${labelStyle}"` : ''}>${esc(label)}</span>
-          <input readonly class="url-input" style="font-family:monospace;font-size:11px" value="${esc(value)}">
+          <span class="url-label">${esc(label)}</span>
+          <input readonly class="url-input" data-full="${esc(full[field])}" data-masked="${esc(masked[field])}" style="font-family:monospace;font-size:11px" value="${esc(masked[field])}">
         </div>`;
 
+      const blocked = !!k.blocked;
       return `
-      <div class="key-card">
+      <div class="key-card" data-revealed="false">
         <div class="key-card-header">
           <div class="key-card-name">${esc(k.name)}</div>
+          ${blocked ? '<span class="badge badge-ended">Blocked</span>' : ''}
           ${k.room_names ? `<div class="key-card-rooms">Used in: ${esc(k.room_names)}</div>` : ''}
+          ${blocked ? `<button class="btn btn-sm btn-primary" data-action="unblock-key" data-id="${esc(k.id)}" title="Re-allow ingest for this key after a stream kick">Allow ingest</button>` : ''}
+          <button class="btn btn-sm" data-action="reveal-key">Reveal</button>
           <button class="btn btn-sm btn-danger" data-action="delete-key" data-id="${esc(k.id)}">Delete</button>
         </div>
         <div class="key-card-body">
-          ${row('Stream Key', k.key_token)}
-          ${row('SRT', srtUrl)}
-          ${row('RTMP', rtmpServer)}
-          <div class="url-row">
-            <span class="url-label"></span>
-            <input readonly class="url-input" style="font-family:monospace;font-size:11px" value="${esc(k.key_token)}">
-          </div>
-          ${row('WHIP', whipUrl)}
-          <hr class="url-divider">
-          ${row('WebRTC', webrtcUrl, 'color:var(--accent)')}
-          ${row('LLHLS', llhlsUrl, 'color:var(--accent)')}
-          ${row('SRT', srtPlayUrl, 'color:var(--accent)')}
+          ${row('Stream Key', 'key')}
+          <details class="url-group" open>
+            <summary>Streaming URLs (ingest)</summary>
+            ${row('SRT', 'srt')}
+            ${row('RTMP', 'rtmp')}
+            ${row('WHIP', 'whip')}
+          </details>
+          <details class="url-group">
+            <summary>Playback URLs</summary>
+            ${row('WebRTC', 'webrtc')}
+            ${row('LLHLS', 'llhls')}
+            ${row('SRT', 'srtPlay')}
+          </details>
         </div>
       </div>`;
     })
@@ -97,6 +112,16 @@ async function saveKey(): Promise<void> {
   closeModal('key-modal');
   toast('Stream key created');
   onChange();
+}
+
+async function unblockKey(id: string): Promise<void> {
+  const res = await apiFetch(`/api/stream-keys/${id}/unblock`, { method: 'POST' });
+  if (res && res.ok) {
+    toast('Ingest re-enabled');
+    onChange();
+  } else {
+    toast('Failed to re-enable ingest');
+  }
 }
 
 async function deleteKey(id: string): Promise<void> {
@@ -133,5 +158,23 @@ export function handleKeyAction(action: string, target: HTMLElement): void {
   if (action === 'delete-key') {
     const id = target.getAttribute('data-id') || '';
     void deleteKey(id);
+    return;
+  }
+  if (action === 'unblock-key') {
+    const id = target.getAttribute('data-id') || '';
+    void unblockKey(id);
+    return;
+  }
+  if (action === 'reveal-key') {
+    // Toggle every masked field in this card (issue #204). Copy still yields
+    // the full value regardless — the copy handler prefers data-full.
+    const card = target.closest('.key-card') as HTMLElement | null;
+    if (!card) return;
+    const reveal = card.dataset.revealed !== 'true';
+    card.dataset.revealed = String(reveal);
+    card.querySelectorAll<HTMLInputElement>('input.url-input').forEach((inp) => {
+      inp.value = (reveal ? inp.dataset.full : inp.dataset.masked) || '';
+    });
+    target.textContent = reveal ? 'Hide' : 'Reveal';
   }
 }

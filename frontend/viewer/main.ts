@@ -39,6 +39,7 @@ import {
   showKicked,
   showLanding,
   showLeft,
+  showScheduledScreen,
   showWaitingScreen,
   stopAdmissionPoll,
   type RoomInfoOutcome,
@@ -176,6 +177,7 @@ function showApp(initialStatus?: RoomStatus): void {
   stopAdmissionPoll();
   document.getElementById('join-screen')?.classList.add('hidden');
   document.getElementById('waiting-screen')?.classList.add('hidden');
+  document.getElementById('scheduled-screen')?.classList.add('hidden');
   document.getElementById('app')?.classList.add('visible');
 
   const roomInfo = getState().roomInfo;
@@ -223,6 +225,10 @@ function dispatchOutcome(o: RoomInfoOutcome): void {
       break;
     case 'show-waiting':
       showWaitingScreen(o.waitingName || '');
+      pollAdmission();
+      break;
+    case 'show-scheduled':
+      showScheduledScreen(o.startsAt ?? null, o.waitingName || '');
       pollAdmission();
       break;
     case 'show-kicked':

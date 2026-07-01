@@ -16,6 +16,7 @@ export interface Room {
   noise_reduction: boolean | number;
   echo_cancellation: boolean | number;
   push_to_talk: boolean | number;
+  starts_at: string | null;
   expires_at: string | null;
   password_hash: string | null;
   presenter_key: string;
@@ -27,12 +28,14 @@ export interface StreamKey {
   id: string;
   name: string;
   key_token: string;
+  blocked?: boolean | number;
   room_names?: string;
 }
 
 export interface Participant {
   id: string;
   name: string;
+  role?: string;
 }
 
 export interface AssignedRoom {

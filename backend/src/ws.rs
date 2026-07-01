@@ -10,7 +10,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info};
@@ -35,6 +35,18 @@ pub struct WsParticipant {
 }
 
 static WS_ROOMS: LazyLock<WsRooms> = LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+/// Snapshot of participant IDs with a live WebSocket connection in `slug`
+/// (browser viewers + presenters). Unioned with `presence::present_ids`
+/// (native SRT/Farbplay viewers, which never open a WS) this yields the full
+/// set of currently-connected participants — used by the admin roster (#201).
+pub async fn connected_ids(slug: &str) -> HashSet<String> {
+    let rooms = WS_ROOMS.read().await;
+    rooms
+        .get(slug)
+        .map(|room| room.keys().cloned().collect())
+        .unwrap_or_default()
+}
 
 // Current host-pinned focus per room. Held in memory only — late joiners
 // receive the current value on auth, but a server restart resets it.
