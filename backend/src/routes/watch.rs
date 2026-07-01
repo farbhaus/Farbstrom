@@ -22,6 +22,11 @@
 //! contains `default/live/<key_token>` in plaintext. SignedPolicy here provides
 //! expiry / replay-limiting, **not** path secrecy — the key is already handed to
 //! web viewers on join. See #165 and the credential-separation follow-up.
+//!
+//! When `SRT_PLAYBACK_PASSPHRASE` is configured, this endpoint also returns the
+//! passphrase + pbkeylen so Farbplay can AES-encrypt the SRT playback leg. That
+//! protects the *media payload* from a passive network eavesdropper; the
+//! streamid (with the key) is SRT handshake metadata and is not covered.
 
 use axum::{
     extract::{Path, Query, State},
@@ -168,13 +173,21 @@ async fn watch(
         expire_ms,
     )?;
 
+    // SRT playback details. When playback encryption is configured, hand the
+    // passphrase + pbkeylen to Farbplay so it can decrypt (issue: SRT encryption).
+    let mut srt = json!({
+        "host": state.config.srt_public_host,
+        "port": state.config.srt_public_port,
+        "streamid": streamid,
+        "latency": state.config.srt_latency_ms,
+    });
+    if let Some(ref passphrase) = state.config.srt_playback_passphrase {
+        srt["passphrase"] = json!(passphrase);
+        srt["pbkeylen"] = json!(state.config.srt_pbkeylen);
+    }
+
     Ok(Json(json!({
-        "srt": {
-            "host": state.config.srt_public_host,
-            "port": state.config.srt_public_port,
-            "streamid": streamid,
-            "latency": state.config.srt_latency_ms,
-        },
+        "srt": srt,
         "ttlSeconds": TTL_SECONDS,
         "title": room_name,
     })))

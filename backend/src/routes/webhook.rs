@@ -87,17 +87,19 @@ async fn webhook_handler(
     // live.
     let events = state.events.clone();
     let conn = state.db.get()?;
-    let (key_known, slugs) = tokio::task::spawn_blocking(move || {
-        let key_known = conn
+    let (key_known, blocked, slugs) = tokio::task::spawn_blocking(move || {
+        let block_state: Option<i64> = conn
             .query_row(
-                "SELECT 1 FROM stream_keys WHERE key_token = ?1",
+                "SELECT blocked FROM stream_keys WHERE key_token = ?1",
                 params![stream_key],
-                |_| Ok(()),
+                |row| row.get(0),
             )
-            .optional()?
-            .is_some();
-        if !key_known {
-            return Ok::<_, rusqlite::Error>((false, Vec::new()));
+            .optional()?;
+        let key_known = block_state.is_some();
+        let blocked = block_state == Some(1);
+        // Unknown or admin-blocked keys never go live — bail before touching rooms.
+        if !key_known || blocked {
+            return Ok::<_, rusqlite::Error>((key_known, blocked, Vec::new()));
         }
 
         // Find rooms with this stream key and mark them live.
@@ -120,7 +122,7 @@ async fn webhook_handler(
             )?;
             slugs.push(slug.clone());
         }
-        Ok((true, slugs))
+        Ok((true, false, slugs))
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
@@ -130,6 +132,16 @@ async fn webhook_handler(
         tracing::warn!(
             action = "admission_denied",
             "ingest rejected: unknown stream key"
+        );
+        return Ok(Json(json!({ "allowed": false })));
+    }
+
+    // Deny a key an admin kicked — this is what stops the encoder's immediate
+    // auto-reconnect after a stream kick, until the admin clears the block.
+    if blocked {
+        tracing::warn!(
+            action = "admission_denied",
+            "ingest rejected: stream key blocked"
         );
         return Ok(Json(json!({ "allowed": false })));
     }

@@ -1,5 +1,5 @@
 import { apiFetch } from './auth.js';
-import { confirmModal } from '../shared/components.js';
+import { closeModal, confirmModal, openModal } from '../shared/components.js';
 import {
   esc,
   fmtBitRate,
@@ -16,6 +16,7 @@ import type { MetricsResponse, OmeData } from './types.js';
 let metricsData: MetricsResponse | null = null;
 let omeData: OmeData | null = null;
 let dashTickerId: ReturnType<typeof setInterval> | null = null;
+let previewPlayer: OvenPlayerInstance | null = null;
 
 let getActiveTab: () => string = () => '';
 let onStreamKicked: () => void = () => {};
@@ -185,7 +186,8 @@ function renderOme(): void {
             }</div>
           </div>
           <span class="badge badge-source">${esc(sourceType)}</span>
-          <button class="btn btn-sm btn-danger" data-action="kick-stream" data-name="${esc(s.name)}">Kick</button>
+          <button class="btn btn-sm" data-action="preview-stream" data-name="${esc(s.name)}" data-label="${esc(s.key_name || s.room_name || displayName)}">Preview</button>
+          <button class="btn btn-sm btn-danger" data-action="kick-stream" data-name="${esc(s.name)}" data-label="${esc(s.key_name || s.room_name || displayName)}">Kick</button>
         </div>
         <div class="stream-card-body">
           <div class="stream-stat"><span class="stat-label">Video</span><span>${videoStr}</span></div>
@@ -197,11 +199,51 @@ function renderOme(): void {
     .join('');
 }
 
-async function kickStream(name: string): Promise<void> {
+// Live-stream preview lightbox (issue #204). The OME stream name is the ingest
+// key token (OutputStreamName=${OriginStreamName}), so it doubles as the
+// playback path — same URL shape the streamkeys tab and viewer use. `label` is
+// the human-friendly key/room name for the title (never the raw token). WebRTC
+// first with an LLHLS fallback so it plays regardless of the room's mode.
+function openStreamPreview(name: string, label: string): void {
+  const host = location.host;
+  const proto = location.protocol === 'https:' ? 'https' : 'http';
+  const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
+  closeStreamPreview();
+  openModal('stream-preview-modal');
+  const titleEl = document.getElementById('stream-preview-title');
+  if (titleEl) titleEl.textContent = label ? `Stream Preview — ${label}` : 'Stream Preview';
+  previewPlayer = OvenPlayer.create('stream-preview-player', {
+    autoStart: true,
+    autoFallback: true,
+    mute: true,
+    sources: [
+      { type: 'webrtc', file: `${wsproto}://${host}/live/${name}` },
+      { type: 'll-hls', file: `${proto}://${host}/live/${name}/llhls.m3u8` },
+    ],
+    webrtcConfig: { timeoutMaxRetry: 3, connectionTimeout: 8000 },
+    hlsConfig: { liveSyncDuration: 1, liveMaxLatencyDuration: 2, maxLiveSyncPlaybackRate: 1 },
+  });
+}
+
+function closeStreamPreview(): void {
+  if (previewPlayer) {
+    try {
+      previewPlayer.remove();
+    } catch {
+      /* player already torn down */
+    }
+    previewPlayer = null;
+  }
+  const container = document.getElementById('stream-preview-player');
+  if (container) container.innerHTML = '';
+  closeModal('stream-preview-modal');
+}
+
+async function kickStream(name: string, label: string): Promise<void> {
   if (
     !(await confirmModal({
       title: 'Kick Stream',
-      message: `Kick stream "${name}"?\nThis will disconnect the encoder immediately.`,
+      message: `Kick stream "${label || name}"?\nThis disconnects the encoder and blocks the key from reconnecting. Re-enable it later with "Allow ingest" in the Streamkeys tab.`,
       confirmLabel: 'Kick',
       danger: true,
     }))
@@ -223,11 +265,20 @@ export function renderOmeIfReady(): void {
 
 export function initDashboard(): void {
   document.getElementById('ome-refresh-btn')?.addEventListener('click', () => void loadOme());
+  document
+    .getElementById('stream-preview-close')
+    ?.addEventListener('click', closeStreamPreview);
+  document
+    .getElementById('stream-preview-dismiss')
+    ?.addEventListener('click', closeStreamPreview);
 }
 
 export function handleDashboardAction(action: string, target: HTMLElement): void {
+  const name = target.getAttribute('data-name') || '';
+  const label = target.getAttribute('data-label') || '';
   if (action === 'kick-stream') {
-    const name = target.getAttribute('data-name') || '';
-    void kickStream(name);
+    void kickStream(name, label);
+  } else if (action === 'preview-stream') {
+    openStreamPreview(name, label);
   }
 }

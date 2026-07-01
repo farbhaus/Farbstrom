@@ -9,9 +9,13 @@ let rooms: Room[] = [];
 let keys: StreamKey[] = [];
 let waitingMap: Record<string, Participant[]> = {};
 let kickedMap: Record<string, Participant[]> = {};
+let rosterMap: Record<string, Participant[]> = {};
 let editingRoomId: string | null = null;
 let enterRoomId: string | null = null;
 let lastListsSnap = '';
+// Room ids whose Participants panel the admin has manually expanded. Preserved
+// across the fast-poll re-renders so toggling sticks (issue #201).
+const openPanels = new Set<string>();
 
 let onChange: () => void = () => {};
 
@@ -30,26 +34,33 @@ export function setOnChange(fn: () => void): void {
 async function fetchParticipantLists(): Promise<{
   waiting: Record<string, Participant[]>;
   kicked: Record<string, Participant[]>;
+  roster: Record<string, Participant[]>;
 }> {
   const snap = rooms.slice();
-  const withWaiting = snap.filter((r) => r.waiting_room && r.status !== 'ended');
+  // Fetch waiting for every active room, not just waiting-room ones: a
+  // scheduled room (issue #200) holds joiners (is_admitted=0) with no manual
+  // waiting room, and they surface through the same /waiting endpoint.
   const activeRooms = snap.filter((r) => r.status !== 'ended');
   const fetchList = async (path: string): Promise<Participant[]> => {
     const r = await apiFetch(path);
     if (!r || !r.ok) return [];
     return r.json().catch(() => []);
   };
-  const [waitingResults, kickedResults] = await Promise.all([
+  const [waitingResults, kickedResults, rosterResults] = await Promise.all([
     Promise.all(
-      withWaiting.map(async (r) => [r.id, await fetchList(`/api/rooms/${r.id}/waiting`)] as const),
+      activeRooms.map(async (r) => [r.id, await fetchList(`/api/rooms/${r.id}/waiting`)] as const),
     ),
     Promise.all(
       activeRooms.map(async (r) => [r.id, await fetchList(`/api/rooms/${r.id}/kicked`)] as const),
+    ),
+    Promise.all(
+      activeRooms.map(async (r) => [r.id, await fetchList(`/api/rooms/${r.id}/roster`)] as const),
     ),
   ]);
   return {
     waiting: Object.fromEntries(waitingResults),
     kicked: Object.fromEntries(kickedResults),
+    roster: Object.fromEntries(rosterResults),
   };
 }
 
@@ -60,7 +71,8 @@ export async function loadRooms(): Promise<void> {
   const lists = await fetchParticipantLists();
   waitingMap = lists.waiting;
   kickedMap = lists.kicked;
-  lastListsSnap = JSON.stringify([waitingMap, kickedMap]);
+  rosterMap = lists.roster;
+  lastListsSnap = JSON.stringify([waitingMap, kickedMap, rosterMap]);
   renderRooms();
 }
 
@@ -70,10 +82,11 @@ export async function loadRooms(): Promise<void> {
 export async function refreshParticipantLists(): Promise<void> {
   if (!rooms.length) return;
   const lists = await fetchParticipantLists();
-  const snap = JSON.stringify([lists.waiting, lists.kicked]);
+  const snap = JSON.stringify([lists.waiting, lists.kicked, lists.roster]);
   if (snap === lastListsSnap) return;
   waitingMap = lists.waiting;
   kickedMap = lists.kicked;
+  rosterMap = lists.roster;
   lastListsSnap = snap;
   renderRooms();
 }
@@ -90,17 +103,29 @@ function renderRooms(): void {
     .map((r) => {
       const viewerUrl = `${VIEWER_BASE}/${r.slug}`;
       const hostUrl = `${VIEWER_BASE}/${r.slug}#role=presenter&pk=${r.presenter_key}`;
+      const starts = fmtDateTime(r.starts_at);
       const expires = fmtDateTime(r.expires_at);
       const keyLabel = r.stream_key_name || '—';
 
       const metaParts = [`/${r.slug}`];
       if (keyLabel !== '—') metaParts.push(`Key: ${esc(keyLabel)}`);
+      if (starts) metaParts.push(`Starts ${starts}`);
       if (expires) metaParts.push(`Expires ${expires}`);
 
       const waitingPeople = waitingMap[r.id] || [];
       const waitingCount = waitingPeople.length;
-      const showWaiting = !!r.waiting_room && r.status !== 'ended';
+      const rosterPeople = rosterMap[r.id] || [];
+      const rosterCount = rosterPeople.length;
       const kicked = kickedMap[r.id] || [];
+      const showPanel = r.status !== 'ended';
+      // Auto-expand when someone is waiting so pending admits are never hidden;
+      // otherwise honour the admin's manual toggle (issue #201).
+      const panelOpen = waitingCount > 0 || openPanels.has(r.id);
+      const countParts: string[] = [];
+      if (rosterCount) countParts.push(`${rosterCount} in`);
+      if (waitingCount) countParts.push(`${waitingCount} waiting`);
+      if (kicked.length) countParts.push(`${kicked.length} blocked`);
+      const countsLabel = countParts.join(' · ') || 'No one yet';
 
       return `
       <div class="room-card" data-id="${esc(r.id)}" data-slug="${esc(r.slug)}">
@@ -138,46 +163,68 @@ function renderRooms(): void {
         </div>
 
         ${
-          showWaiting
+          showPanel
             ? `
-        <div class="waiting-section">
-          <div class="waiting-section-header">
-            <span class="waiting-section-title">Waiting Room${waitingCount > 0 ? ` (${waitingCount})` : ''}</span>
-            ${waitingCount > 0 ? `<button class="btn btn-sm" data-action="admit-all" data-id="${esc(r.id)}">Admit All</button>` : ''}
-          </div>
-          ${
-            waitingPeople.length
-              ? waitingPeople
-                  .map(
-                    (p) => `
+        <div class="participants-panel">
+          <button class="participants-toggle" data-action="toggle-participants" data-id="${esc(r.id)}" aria-expanded="${panelOpen}">
+            <span class="chevron${panelOpen ? ' open' : ''}">▸</span>
+            <span class="participants-title">Participants</span>
+            <span class="participants-counts">${countsLabel}</span>
+          </button>
+          <div class="participants-body${panelOpen ? '' : ' u-hidden'}">
+            <div class="participants-group">
+              <div class="participants-group-title">In room${rosterCount > 0 ? ` (${rosterCount})` : ''}</div>
+              ${
+                rosterPeople.length
+                  ? rosterPeople
+                      .map(
+                        (p) => `
+              <div class="participant-row">
+                <span>${esc(p.name)}${p.role === 'presenter' ? ' <span class="role-tag">host</span>' : ''}</span>
+              </div>`,
+                      )
+                      .join('')
+                  : `<span class="waiting-empty">No one connected.</span>`
+              }
+            </div>
+            ${
+              waitingCount > 0
+                ? `
+            <div class="participants-group">
+              <div class="participants-group-header">
+                <span class="participants-group-title">Waiting (${waitingCount})</span>
+                <button class="btn btn-sm" data-action="admit-all" data-id="${esc(r.id)}">Admit All</button>
+              </div>
+              ${waitingPeople
+                .map(
+                  (p) => `
               <div class="participant-row">
                 <span>${esc(p.name)}</span>
                 <button class="btn btn-sm" data-action="admit-one" data-room="${esc(r.id)}" data-pid="${esc(p.id)}">Admit</button>
               </div>`,
-                  )
-                  .join('')
-              : `<span class="waiting-empty">No one waiting.</span>`
-          }
-        </div>`
-            : ''
-        }
-
-        ${
-          kicked.length
-            ? `
-        <div class="waiting-section">
-          <div class="waiting-section-header">
-            <span class="waiting-section-title" style="color:var(--danger)">Kicked (${kicked.length})</span>
+                )
+                .join('')}
+            </div>`
+                : ''
+            }
+            ${
+              kicked.length
+                ? `
+            <div class="participants-group">
+              <div class="participants-group-title" style="color:var(--danger)">Blocked (${kicked.length})</div>
+              ${kicked
+                .map(
+                  (p) => `
+              <div class="participant-row">
+                <span>${esc(p.name)}</span>
+                <button class="btn btn-sm" data-action="unkick-one" data-room="${esc(r.id)}" data-pid="${esc(p.id)}">Unblock</button>
+              </div>`,
+                )
+                .join('')}
+            </div>`
+                : ''
+            }
           </div>
-          ${kicked
-            .map(
-              (p) => `
-            <div class="participant-row">
-              <span>${esc(p.name)}</span>
-              <button class="btn btn-sm" data-action="unkick-one" data-room="${esc(r.id)}" data-pid="${esc(p.id)}">Unblock</button>
-            </div>`,
-            )
-            .join('')}
         </div>`
             : ''
         }
@@ -187,6 +234,20 @@ function renderRooms(): void {
 }
 
 // ---- Room modal ----
+
+// starts_at / expires_at are stored as UTC "YYYY-MM-DD HH:MM:SS" (no zone
+// marker). Convert both ways for the datetime-local input, which speaks local
+// wall-clock time.
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso.replace(' ', 'T') + 'Z');
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function localInputToIso(v: string): string | null {
+  return v ? new Date(v).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '') : null;
+}
 
 function openRoomModal(id: string | null): void {
   editingRoomId = id;
@@ -215,16 +276,12 @@ function openRoomModal(id: string | null): void {
     (document.getElementById('room-echo-cancellation') as HTMLInputElement).checked =
       !!r.echo_cancellation;
     (document.getElementById('room-push-to-talk') as HTMLInputElement).checked = !!r.push_to_talk;
-    const expiresInput = document.getElementById('room-expires') as HTMLInputElement;
-    if (r.expires_at) {
-      // expires_at is stored as UTC "YYYY-MM-DD HH:MM:SS" with no zone marker.
-      // Force UTC parse, then format the local-time wall clock for datetime-local.
-      const d = new Date(r.expires_at.replace(' ', 'T') + 'Z');
-      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
-      expiresInput.value = local.toISOString().slice(0, 16);
-    } else {
-      expiresInput.value = '';
-    }
+    (document.getElementById('room-starts') as HTMLInputElement).value = isoToLocalInput(
+      r.starts_at,
+    );
+    (document.getElementById('room-expires') as HTMLInputElement).value = isoToLocalInput(
+      r.expires_at,
+    );
     if (skSelect) skSelect.value = r.stream_key_id || '';
     const clearRow = document.getElementById('clear-password-row');
     if (clearRow) clearRow.style.display = r.password_hash ? '' : 'none';
@@ -236,6 +293,7 @@ function openRoomModal(id: string | null): void {
     (document.getElementById('room-noise-reduction') as HTMLInputElement).checked = true;
     (document.getElementById('room-echo-cancellation') as HTMLInputElement).checked = true;
     (document.getElementById('room-push-to-talk') as HTMLInputElement).checked = false;
+    (document.getElementById('room-starts') as HTMLInputElement).value = '';
     (document.getElementById('room-expires') as HTMLInputElement).value = '';
     if (skSelect) skSelect.value = '';
     const clearRow = document.getElementById('clear-password-row');
@@ -266,10 +324,12 @@ async function saveRoom(): Promise<void> {
   const echo_cancellation = (document.getElementById('room-echo-cancellation') as HTMLInputElement)
     .checked;
   const push_to_talk = (document.getElementById('room-push-to-talk') as HTMLInputElement).checked;
-  const expiresRaw = (document.getElementById('room-expires') as HTMLInputElement).value;
-  const expires_at = expiresRaw
-    ? new Date(expiresRaw).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '')
-    : null;
+  const starts_at = localInputToIso(
+    (document.getElementById('room-starts') as HTMLInputElement).value,
+  );
+  const expires_at = localInputToIso(
+    (document.getElementById('room-expires') as HTMLInputElement).value,
+  );
   const streamKeyId = (document.getElementById('room-stream-key') as HTMLSelectElement).value;
 
   if (!name) {
@@ -288,6 +348,7 @@ async function saveRoom(): Promise<void> {
     noise_reduction,
     echo_cancellation,
     push_to_talk,
+    starts_at,
     expires_at,
     stream_key_id: streamKeyId || null,
     ...(clearPassword ? { password: '' } : password ? { password } : {}),
@@ -466,6 +527,21 @@ export function handleRoomAction(action: string, target: HTMLElement): void {
       const room = target.getAttribute('data-room') || '';
       const pid = target.getAttribute('data-pid') || '';
       void unkickOne(room, pid);
+      break;
+    }
+    case 'toggle-participants': {
+      // Toggle the panel in-place (no re-render) and persist the open state in
+      // openPanels so the fast-poll re-render keeps it (issue #201).
+      const body = target
+        .closest('.room-card')
+        ?.querySelector<HTMLElement>('.participants-body');
+      if (!body) break;
+      const willOpen = body.classList.contains('u-hidden');
+      body.classList.toggle('u-hidden', !willOpen);
+      target.querySelector('.chevron')?.classList.toggle('open', willOpen);
+      target.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) openPanels.add(id);
+      else openPanels.delete(id);
       break;
     }
     case 'copy': {

@@ -171,11 +171,12 @@ function initTabs(): void {
 }
 
 function initDelegatedClicks(): void {
-  // Click-to-copy for any readonly url-input field.
+  // Click-to-copy for any readonly url-input field. Prefer data-full so a
+  // masked stream key (issue #204) still copies the real value.
   document.addEventListener('click', (e) => {
     const el = (e.target as HTMLElement).closest<HTMLInputElement>('input.url-input');
     if (!el || !el.readOnly) return;
-    copyToClipboard(el.value);
+    copyToClipboard(el.dataset.full ?? el.value);
   });
 
   // Single delegated handler dispatches all data-action clicks to the right module.
@@ -196,9 +197,12 @@ function initDelegatedClicks(): void {
         copyToClipboard(target.getAttribute('data-value') || '');
         return;
       case 'delete-key':
+      case 'reveal-key':
+      case 'unblock-key':
         handleKeyAction(action, target);
         return;
       case 'kick-stream':
+      case 'preview-stream':
         handleDashboardAction(action, target);
         return;
       case 'edit-room':
@@ -209,6 +213,7 @@ function initDelegatedClicks(): void {
       case 'admit-all':
       case 'admit-one':
       case 'unkick-one':
+      case 'toggle-participants':
         handleRoomAction(action, target);
         return;
     }

@@ -66,7 +66,7 @@ async fn list_rooms(
     let rooms = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
             "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.expires_at, r.status, r.stream_key_id, r.created_at, \
+             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
              r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
              (SELECT COUNT(*) FROM participants p \
               WHERE p.room_id = r.id AND p.is_admitted = 0 AND p.is_kicked = 0) as waiting_count, \
@@ -84,6 +84,7 @@ async fn list_rooms(
             "noise_reduction",
             "echo_cancellation",
             "push_to_talk",
+            "starts_at",
             "expires_at",
             "status",
             "stream_key_id",
@@ -117,7 +118,7 @@ async fn get_room(
     let room = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
             "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.expires_at, r.status, r.stream_key_id, r.created_at, \
+             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
              r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
              sk.key_token, sk.name as stream_key_name \
              FROM rooms r \
@@ -133,6 +134,7 @@ async fn get_room(
             "noise_reduction",
             "echo_cancellation",
             "push_to_talk",
+            "starts_at",
             "expires_at",
             "status",
             "stream_key_id",
@@ -167,6 +169,7 @@ struct CreateRoomBody {
     noise_reduction: Option<bool>,
     echo_cancellation: Option<bool>,
     push_to_talk: Option<bool>,
+    starts_at: Option<String>,
     expires_at: Option<String>,
     stream_key_id: Option<String>,
 }
@@ -196,6 +199,7 @@ async fn create_room(
     // Push-to-talk defaults OFF — preserve the always-toggle mic behavior unless
     // the admin opts the room into it (issue #188).
     let push_to_talk: i32 = i32::from(body.push_to_talk.unwrap_or(false));
+    let starts_at = body.starts_at.map(|s| normalize_datetime(&s));
     let expires_at = body.expires_at.map(|s| normalize_datetime(&s));
     let stream_key_id = body.stream_key_id;
 
@@ -215,11 +219,16 @@ async fn create_room(
     let room = {
         let id = id.clone();
         tokio::task::spawn_blocking(move || {
+            // status: a future starts_at schedules the room (issue #200) so
+            // joiners are held until the start poller admits them. ?11 is
+            // starts_at, reused in the CASE so the DB clock is the single
+            // source of truth for the future/past comparison.
             conn.execute(
                 "INSERT INTO rooms (id, name, slug, password_hash, presenter_key, \
                  delivery_mode, waiting_room, noise_reduction, echo_cancellation, push_to_talk, \
-                 expires_at, stream_key_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 starts_at, expires_at, stream_key_id, status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
+                 CASE WHEN ?11 IS NOT NULL AND ?11 > CURRENT_TIMESTAMP THEN 'scheduled' ELSE 'pending' END)",
                 rusqlite::params![
                     id,
                     name,
@@ -231,13 +240,14 @@ async fn create_room(
                     noise_reduction,
                     echo_cancellation,
                     push_to_talk,
+                    starts_at,
                     expires_at,
                     stream_key_id,
                 ],
             )?;
             let mut stmt = conn.prepare(
                 "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-                 r.expires_at, r.status, r.stream_key_id, r.created_at, \
+                 r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
                  r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
                  sk.key_token, sk.name as stream_key_name \
                  FROM rooms r \
@@ -253,7 +263,8 @@ async fn create_room(
                 "noise_reduction",
                 "echo_cancellation",
                 "push_to_talk",
-                "expires_at",
+                "starts_at",
+            "expires_at",
                 "status",
                 "stream_key_id",
                 "created_at",
@@ -355,6 +366,16 @@ async fn update_room(
         }
     }
 
+    // starts_at: null clears, string sets, absent keeps (issue #200).
+    if body.get("starts_at").is_some() {
+        let val = body
+            .get("starts_at")
+            .and_then(|v| v.as_str())
+            .map(normalize_datetime);
+        set_clauses.push(format!("starts_at = ?{}", set_clauses.len() + 1));
+        params.push(Box::new(val));
+    }
+
     // expires_at: null clears, string sets, absent keeps
     if body.get("expires_at").is_some() {
         let val = body
@@ -392,14 +413,37 @@ async fn update_room(
         }
     }
 
-    // The OME poller only flips live -> pending for rooms that still JOIN a
-    // stream key, so detaching the key from a live room would otherwise leave
-    // it (and the admin "live" badge) stuck at 'live' forever. No bind param,
-    // and pushed last so it doesn't shift the `?N` numbering above. The CASE
-    // guard leaves ended/scheduled rooms untouched.
-    if reset_live_on_detach {
-        set_clauses
-            .push("status = CASE WHEN status = 'live' THEN 'pending' ELSE status END".into());
+    // Status recompute — one clause covering two concerns, because saveRoom
+    // sends both starts_at and stream_key_id on every save and SQLite forbids
+    // assigning `status` twice:
+    //   (a) issue #200: a future starts_at schedules the room; clearing it (or
+    //       a past value) releases a 'scheduled' room back to 'pending'.
+    //   (b) detaching the key from a live room must flip it to 'pending' — the
+    //       OME poller only demotes rooms that still JOIN a stream key, so it
+    //       would otherwise stay stuck 'live'.
+    // References the OLD `status` column (SET expressions see pre-update row
+    // values) and the NEW starts_at via a fresh bind param. Pushed last, after
+    // every other param-bearing clause; the final id index is params.len()+1.
+    let sets_starts = body.get("starts_at").is_some();
+    if sets_starts || reset_live_on_detach {
+        let mut case = String::from("status = CASE WHEN status = 'ended' THEN 'ended' ");
+        if sets_starts {
+            let val = body
+                .get("starts_at")
+                .and_then(|v| v.as_str())
+                .map(normalize_datetime);
+            let idx = params.len() + 1;
+            case.push_str(&format!(
+                "WHEN ?{idx} IS NOT NULL AND ?{idx} > CURRENT_TIMESTAMP THEN 'scheduled' \
+                 WHEN status = 'scheduled' THEN 'pending' "
+            ));
+            params.push(Box::new(val));
+        }
+        if reset_live_on_detach {
+            case.push_str("WHEN status = 'live' THEN 'pending' ");
+        }
+        case.push_str("ELSE status END");
+        set_clauses.push(case);
     }
 
     if set_clauses.is_empty() {
@@ -408,7 +452,7 @@ async fn update_room(
         let room = tokio::task::spawn_blocking(move || {
             let mut stmt = conn.prepare(
                 "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-                 r.expires_at, r.status, r.stream_key_id, r.created_at, \
+                 r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
                  r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
                  sk.key_token, sk.name as stream_key_name \
                  FROM rooms r \
@@ -424,7 +468,8 @@ async fn update_room(
                 "noise_reduction",
                 "echo_cancellation",
                 "push_to_talk",
-                "expires_at",
+                "starts_at",
+            "expires_at",
                 "status",
                 "stream_key_id",
                 "created_at",
@@ -466,7 +511,7 @@ async fn update_room(
 
         let mut stmt = conn.prepare(
             "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.expires_at, r.status, r.stream_key_id, r.created_at, \
+             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
              r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
              sk.key_token, sk.name as stream_key_name \
              FROM rooms r \
@@ -482,6 +527,7 @@ async fn update_room(
             "noise_reduction",
             "echo_cancellation",
             "push_to_talk",
+            "starts_at",
             "expires_at",
             "status",
             "stream_key_id",
@@ -605,13 +651,13 @@ async fn reactivate_room(
             ));
         }
         conn.execute(
-            "UPDATE rooms SET status = 'pending', ended_at = NULL, expires_at = NULL \
+            "UPDATE rooms SET status = 'pending', ended_at = NULL, expires_at = NULL, starts_at = NULL \
              WHERE id = ?1",
             rusqlite::params![id],
         )?;
         let mut stmt = conn.prepare(
             "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.expires_at, r.status, r.stream_key_id, r.created_at, \
+             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
              r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
              sk.key_token, sk.name as stream_key_name \
              FROM rooms r \
@@ -627,6 +673,7 @@ async fn reactivate_room(
             "noise_reduction",
             "echo_cancellation",
             "push_to_talk",
+            "starts_at",
             "expires_at",
             "status",
             "stream_key_id",
@@ -847,7 +894,7 @@ async fn rotate_presenter_key(
     let room = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
             "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.expires_at, r.status, r.stream_key_id, r.created_at, \
+             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
              r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
              sk.key_token, sk.name as stream_key_name \
              FROM rooms r \
@@ -863,6 +910,7 @@ async fn rotate_presenter_key(
             "noise_reduction",
             "echo_cancellation",
             "push_to_talk",
+            "starts_at",
             "expires_at",
             "status",
             "stream_key_id",
@@ -911,6 +959,58 @@ async fn get_waiting(
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
     Ok(Json(participants))
+}
+
+// GET /:id/roster - currently-connected admitted participants (issue #201).
+// Admitted, non-kicked participant rows persist after disconnect, so the DB
+// list is scoped to the live presence set (browser/presenter WS connections
+// ∪ native SRT SSE presence) — otherwise every past viewer would show.
+async fn get_roster(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<Value>>, AppError> {
+    let conn = state.db.get()?;
+    let id_clone = id.clone();
+    let (slug, admitted): (String, Vec<Value>) = tokio::task::spawn_blocking(move || {
+        let slug: String = conn
+            .query_row(
+                "SELECT slug FROM rooms WHERE id = ?1",
+                rusqlite::params![id_clone],
+                |row| row.get(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => AppError::NotFound("Room not found".into()),
+                _ => AppError::Internal(e.to_string()),
+            })?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, role, joined_at FROM participants \
+             WHERE room_id = ?1 AND is_admitted = 1 AND is_kicked = 0 \
+             ORDER BY joined_at ASC",
+        )?;
+        let cols = &["id", "name", "role", "joined_at"];
+        let rows = stmt
+            .query_map(rusqlite::params![id_clone], |row| row_to_json(row, cols))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok::<_, AppError>((slug, rows))
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    // Intersect with the live presence set.
+    let mut present = crate::ws::connected_ids(&slug).await;
+    present.extend(crate::presence::present_ids(&slug));
+    let roster: Vec<Value> = admitted
+        .into_iter()
+        .filter(|p| {
+            p.get("id")
+                .and_then(|v| v.as_str())
+                .map(|pid| present.contains(pid))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    Ok(Json(roster))
 }
 
 // POST /:id/admit/:participantId - admit one participant
@@ -1048,6 +1148,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/enter", post(enter_room))
         .route("/{id}/rotate-presenter-key", post(rotate_presenter_key))
         .route("/{id}/waiting", get(get_waiting))
+        .route("/{id}/roster", get(get_roster))
         .route("/{id}/admit/{participantId}", post(admit_participant))
         .route("/{id}/admit-all", post(admit_all))
         .route("/{id}/kicked", get(get_kicked))

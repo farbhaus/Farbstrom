@@ -95,6 +95,9 @@ cp .env.example .env
 | `SRT_PUBLIC_HOST` | host of `PUBLIC_ORIGIN` | SRT host returned by `/api/watch/:slug`. |
 | `SRT_PUBLIC_PORT` | `9998` | SRT playback UDP port returned by `/api/watch/:slug`. |
 | `SRT_LATENCY_MS` | `500` | SRT latency advertised to clients. |
+| `SRT_INGEST_PASSPHRASE` | unset | AES passphrase (10–79 chars) for SRT ingest (port 9999). Unset → unencrypted. Read by both OME (`Server.xml`) and the backend (surfaced in the admin Streamkeys ingest URL). |
+| `SRT_PLAYBACK_PASSPHRASE` | unset | AES passphrase (10–79 chars) for SRT playback (port 9998). Unset → unencrypted. Returned to Farbplay by `/api/watch/:slug`. |
+| `SRT_PBKEYLEN` | `16` | SRT AES key length in bytes: 16 / 24 / 32. |
 | `STREAM_DISABLE_RATE_LIMIT` | unset | Set to `1` to disable rate limiting (integration tests do this). |
 
 Generate secrets with `openssl rand -hex 32`.
@@ -253,6 +256,12 @@ Non-obvious facts that aren't derivable from reading the code.
 **iOS Safari**
 - `HTMLMediaElement.volume` is read-only — volume is hardware-only; the slider is hidden on mobile.
 - Viewport meta needs `maximum-scale=1.0, user-scalable=no` to prevent auto-zoom on rotation.
+
+**SRT encryption**
+- Opt-in per leg via `SRT_INGEST_PASSPHRASE` / `SRT_PLAYBACK_PASSPHRASE`. OME's SRT passphrase is **bind-level (per-port), not per-stream** — one shared secret each for ingest (9999) and playback (9998). It gives wire confidentiality, *not* access control (that's still the admission webhook + SignedPolicy).
+- Both OME (`Server.xml` `${env:...}`) and the backend read the same vars — they must match. So `SRT_*_PASSPHRASE` must reach the OME process; do **not** add them to the backend-only `env -u` strip lists in `supervisord.conf`.
+- Empty passphrase = encryption off (backward compatible). Enabling a leg is a **hard cutover**: every client on that port must send the passphrase or the SRT handshake fails — update all encoders (ingest) / ship a Farbplay build that sends it (playback). The two vars let you stage the legs independently.
+- Ingest passphrase is surfaced in the admin Streamkeys ingest URL (masked, revealable); playback passphrase is handed to Farbplay by `/api/watch/:slug`.
 
 **Timezones**
 - `expires_at` is stored as a UTC ISO string. Admin `datetime-local` is converted both ways. Rooms created before this fix may be off by the UTC offset — re-save them in admin to correct.

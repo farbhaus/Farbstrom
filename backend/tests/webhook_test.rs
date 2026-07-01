@@ -117,6 +117,69 @@ async fn webhook_allows_known_key_without_room() {
     assert_eq!(resp["allowed"], true);
 }
 
+#[tokio::test]
+async fn webhook_denies_blocked_stream_key() {
+    // A stream kick blocks the key (stream_keys.blocked = 1). A known-but-blocked
+    // key must be denied so the kicked encoder can't auto-reconnect, and its room
+    // must NOT be flipped live.
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let admin_tok = common::admin_token(&state);
+
+    let (sk_id, key_token) = common::seed_stream_key(&state, "Kicked Key");
+    let room_id = common::seed_room_full(
+        &state,
+        "Blocked Room",
+        "blocked-room-abc123",
+        "pending",
+        false,
+        Some(&sk_id),
+    );
+    // Simulate the kick having blocked the key.
+    state
+        .db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE stream_keys SET blocked = 1 WHERE id = ?1",
+            rusqlite::params![sk_id],
+        )
+        .unwrap();
+
+    let body = json!({
+        "request": {
+            "direction": "incoming",
+            "url": format!("rtmp://host/live/{}", key_token)
+        }
+    });
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let sig = sign_webhook(TEST_WEBHOOK_SECRET, &body_bytes);
+
+    let res = server
+        .post("/api/webhook/admission")
+        .add_header("x-ome-signature", sig.as_str())
+        .add_header(header::CONTENT_TYPE, "application/json")
+        .bytes(body_bytes.into())
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let resp: Value = res.json();
+    assert_eq!(resp["allowed"], false);
+
+    // Room stays pending — a blocked ingest never goes live.
+    let (hname, hval) = (
+        header::AUTHORIZATION,
+        format!("Bearer {}", admin_tok)
+            .parse::<axum::http::HeaderValue>()
+            .unwrap(),
+    );
+    let room: Value = server
+        .get(&format!("/api/rooms/{}", room_id))
+        .add_header(hname, hval)
+        .await
+        .json();
+    assert_eq!(room["status"], "pending");
+}
+
 // ---------------------------------------------------------------------------
 // Valid stream key -> room goes live
 // ---------------------------------------------------------------------------

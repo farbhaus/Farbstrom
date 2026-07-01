@@ -199,6 +199,7 @@
 }
 .badge-live    { background: #0d2211; color: var(--green); }
 .badge-pending { background: #1a1a1a; color: var(--dim); }
+.badge-scheduled { background: #10233a; color: #5599dd; }
 .badge-ended   { background: #2a1515; color: var(--danger); }
 .badge-webrtc  { background: #111828; color: #6688ee; }
 .badge-llhls   { background: #1f1a0a; color: #ccaa33; }

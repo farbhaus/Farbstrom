@@ -147,6 +147,9 @@ async fn admitted_participant_gets_signed_srt_details() {
     assert_eq!(body["srt"]["latency"], 500);
     assert_eq!(body["ttlSeconds"], 30);
     assert_eq!(body["title"], "Project X");
+    // No SRT encryption configured → no passphrase handed out.
+    assert!(body["srt"]["passphrase"].is_null());
+    assert!(body["srt"]["pbkeylen"].is_null());
 
     // streamid: default/live/<key>?policy=<b64url>&signature=<b64url-hmac>
     let streamid = body["srt"]["streamid"].as_str().unwrap();
@@ -165,6 +168,26 @@ async fn admitted_participant_gets_signed_srt_details() {
         .unwrap()
         .as_millis() as u64;
     assert!(policy["url_expire"].as_u64().unwrap() > now_ms);
+}
+
+#[tokio::test]
+async fn playback_passphrase_included_when_configured() {
+    // With SRT playback encryption configured, /api/watch hands Farbplay the
+    // passphrase + pbkeylen so it can decrypt.
+    let mut cfg = common::test_config();
+    cfg.srt_playback_passphrase = Some("super-secret-srt-passphrase".into());
+    cfg.srt_pbkeylen = 32;
+    let state = common::test_state_with_config(cfg);
+    let server = common::test_app(state.clone());
+
+    let (room_id, _key) = seed_room_with_key(&state, "Enc", "watch-enc", "live", false);
+    let (pid, tok) = common::seed_participant(&state, &room_id, "Alice", "viewer", true, false);
+
+    let res = server.get(&watch_url("watch-enc", &pid, &tok)).await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["srt"]["passphrase"], "super-secret-srt-passphrase");
+    assert_eq!(body["srt"]["pbkeylen"], 32);
 }
 
 #[tokio::test]

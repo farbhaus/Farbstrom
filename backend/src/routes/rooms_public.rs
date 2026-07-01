@@ -52,7 +52,7 @@ async fn room_info(
             "SELECT id, name, slug, delivery_mode, waiting_room, noise_reduction, echo_cancellation, push_to_talk, \
              CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END as has_password, \
              CASE WHEN stream_key_id IS NOT NULL THEN 1 ELSE 0 END as has_stream_key, \
-             status \
+             status, starts_at \
              FROM rooms WHERE slug = ?1",
         )?;
         let cols = &[
@@ -67,6 +67,7 @@ async fn room_info(
             "has_password",
             "has_stream_key",
             "status",
+            "starts_at",
         ];
         let row = stmt
             .query_row(rusqlite::params![slug], |row| row_to_json(row, cols))
@@ -108,7 +109,8 @@ async fn join_room(
         let mut stmt = conn.prepare(
             "SELECT r.id, r.name, r.slug, r.password_hash, r.presenter_key, \
              r.delivery_mode, r.waiting_room, r.status, r.expires_at, \
-             sk.key_token, r.noise_reduction, r.echo_cancellation, r.push_to_talk \
+             sk.key_token, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
+             r.starts_at \
              FROM rooms r \
              LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
              WHERE r.slug = ?1",
@@ -116,19 +118,20 @@ async fn join_room(
         let result = stmt
             .query_row(rusqlite::params![slug_clone], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,         // id
-                    row.get::<_, String>(1)?,         // name
-                    row.get::<_, String>(2)?,         // slug
-                    row.get::<_, Option<String>>(3)?, // password_hash
-                    row.get::<_, Option<String>>(4)?, // presenter_key
-                    row.get::<_, String>(5)?,         // delivery_mode
-                    row.get::<_, i32>(6)?,            // waiting_room
-                    row.get::<_, String>(7)?,         // status
-                    row.get::<_, Option<String>>(8)?, // expires_at
-                    row.get::<_, Option<String>>(9)?, // stream key_token
-                    row.get::<_, i32>(10)?,           // noise_reduction
-                    row.get::<_, i32>(11)?,           // echo_cancellation
-                    row.get::<_, i32>(12)?,           // push_to_talk
+                    row.get::<_, String>(0)?,          // id
+                    row.get::<_, String>(1)?,          // name
+                    row.get::<_, String>(2)?,          // slug
+                    row.get::<_, Option<String>>(3)?,  // password_hash
+                    row.get::<_, Option<String>>(4)?,  // presenter_key
+                    row.get::<_, String>(5)?,          // delivery_mode
+                    row.get::<_, i32>(6)?,             // waiting_room
+                    row.get::<_, String>(7)?,          // status
+                    row.get::<_, Option<String>>(8)?,  // expires_at
+                    row.get::<_, Option<String>>(9)?,  // stream key_token
+                    row.get::<_, i32>(10)?,            // noise_reduction
+                    row.get::<_, i32>(11)?,            // echo_cancellation
+                    row.get::<_, i32>(12)?,            // push_to_talk
+                    row.get::<_, Option<String>>(13)?, // starts_at
                 ))
             })
             .map_err(|e| match e {
@@ -154,6 +157,7 @@ async fn join_room(
         noise_reduction,
         echo_cancellation,
         push_to_talk,
+        starts_at,
     ) = room_data;
 
     // 410 if ended
@@ -238,8 +242,18 @@ async fn join_room(
         "viewer"
     };
 
-    // Auto-admit if no waiting room or if presenter
-    let is_admitted: i32 = if waiting_room == 0 || role == "presenter" {
+    // Admission gating:
+    //   - presenters (valid host link / admin entry) are always admitted, so a
+    //     host can set up before the scheduled start.
+    //   - a 'scheduled' room (issue #200) holds every other joiner until the
+    //     start poller flips it to 'pending' and auto-admits them — regardless
+    //     of the manual waiting-room setting.
+    //   - otherwise the manual waiting room decides.
+    let is_admitted: i32 = if role == "presenter" {
+        1
+    } else if status == "scheduled" {
+        0
+    } else if waiting_room == 0 {
         1
     } else {
         0
@@ -287,6 +301,7 @@ async fn join_room(
         "stream_key": stream_key,
         "room_name": room_name,
         "status": status,
+        "starts_at": starts_at,
     })))
 }
 

@@ -25,6 +25,7 @@ const API = '/api/public/rooms';
 
 let onAdmitted: () => void = () => {};
 let statusInterval: ReturnType<typeof setInterval> | null = null;
+let countdownInterval: ReturnType<typeof setInterval> | null = null;
 
 export function configureScreens(opts: { onAdmitted: () => void }): void {
   onAdmitted = opts.onAdmitted;
@@ -106,6 +107,65 @@ export function pollAdmission(): void {
 
 export function stopAdmissionPoll(): void {
   clearAdmissionPoll();
+  stopScheduledCountdown();
+}
+
+// ---- Scheduled start screen (issue #200) ----
+
+function stopScheduledCountdown(): void {
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+}
+
+// Renders the absolute start time + a live countdown. startsAt is stored UTC
+// ("YYYY-MM-DD HH:MM:SS", no zone marker), so force a UTC parse.
+export function showScheduledScreen(startsAt: string | null, name: string): void {
+  hideScreen('join-screen');
+  showHidden('scheduled-screen');
+  const nm = el('scheduled-name');
+  if (nm) nm.textContent = name;
+
+  const whenEl = el('scheduled-when');
+  const countEl = el('scheduled-countdown');
+  stopScheduledCountdown();
+  if (!startsAt) {
+    if (whenEl) whenEl.textContent = '';
+    if (countEl) countEl.textContent = '';
+    return;
+  }
+  const target = new Date(startsAt.replace(' ', 'T') + 'Z');
+  if (whenEl) {
+    whenEl.textContent = target.toLocaleString(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+  const tick = (): void => {
+    if (!countEl) return;
+    const ms = target.getTime() - Date.now();
+    if (ms <= 0) {
+      countEl.textContent = 'Starting…';
+      return;
+    }
+    const s = Math.floor(ms / 1000);
+    const parts: string[] = [];
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d) parts.push(`${d}d`);
+    if (d || h) parts.push(`${h}h`);
+    parts.push(`${m}m`);
+    parts.push(`${s % 60}s`);
+    countEl.textContent = `Starts in ${parts.join(' ')}`;
+  };
+  tick();
+  countdownInterval = setInterval(tick, 1000);
 }
 
 // ---- Landing form ----
@@ -146,10 +206,17 @@ export function initLandingForm(): void {
 // ---- Room info / session resume ----
 
 export interface RoomInfoOutcome {
-  kind: 'show-app' | 'show-waiting' | 'show-kicked' | 'show-join' | 'show-landing';
+  kind:
+    | 'show-app'
+    | 'show-waiting'
+    | 'show-scheduled'
+    | 'show-kicked'
+    | 'show-join'
+    | 'show-landing';
   roomInfo?: RoomInfo;
   initialStatus?: RoomInfo['status'];
   waitingName?: string;
+  startsAt?: string | null;
 }
 
 export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
@@ -241,6 +308,16 @@ export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
         if (sdata.admitted) {
           return { kind: 'show-app', roomInfo, initialStatus: roomInfo.status };
         }
+        // A held joiner in a scheduled room lands on the scheduled screen
+        // (issue #200); a plain waiting-room joiner on the waiting screen.
+        if (roomInfo.status === 'scheduled') {
+          return {
+            kind: 'show-scheduled',
+            roomInfo,
+            startsAt: roomInfo.starts_at,
+            waitingName: savedName,
+          };
+        }
         return {
           kind: 'show-waiting',
           roomInfo,
@@ -328,12 +405,19 @@ export async function doJoin(): Promise<RoomInfoOutcome> {
     if (password) localStorage.setItem(PASS_KEY, password);
     else localStorage.removeItem(PASS_KEY);
 
-    if (data.waiting_room && !data.admitted) {
-      hideScreen('join-screen');
-      showHidden('waiting-screen');
-      const wn = el('waiting-name');
-      if (wn) wn.textContent = name;
-      return { kind: 'show-waiting', waitingName: name };
+    if (!data.admitted) {
+      // A scheduled room holds every joiner (regardless of waiting_room) on
+      // the scheduled screen until the start poller admits them (issue #200).
+      if (data.status === 'scheduled') {
+        return { kind: 'show-scheduled', startsAt: data.starts_at, waitingName: name };
+      }
+      if (data.waiting_room) {
+        hideScreen('join-screen');
+        showHidden('waiting-screen');
+        const wn = el('waiting-name');
+        if (wn) wn.textContent = name;
+        return { kind: 'show-waiting', waitingName: name };
+      }
     }
     return { kind: 'show-app', initialStatus: data.status };
   } catch {

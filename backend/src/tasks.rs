@@ -134,6 +134,71 @@ pub async fn poll_expiry(state: &Arc<AppState>) -> Result<(), Box<dyn std::error
 }
 
 // ---------------------------------------------------------------------------
+// Start Poller -- every 60s
+// Opens scheduled rooms (issue #200): once starts_at has passed, flips the
+// room to 'pending' and auto-admits everyone who was held waiting. Mirrors the
+// expiry poller. Held viewers hold the admission SSE, which emits "admitted"
+// on its next tick once is_admitted flips, so no new event type is needed.
+// ---------------------------------------------------------------------------
+
+pub fn spawn_start_poller(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Err(e) = poll_starts(&state).await {
+                tracing::debug!("[poller] Start poll error: {}", e);
+            }
+        }
+    });
+}
+
+pub async fn poll_starts(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
+    let started_rooms: Vec<(String, String)> = {
+        let db = state.db.get()?;
+        let mut stmt = db.prepare(
+            "SELECT id, slug FROM rooms \
+             WHERE starts_at IS NOT NULL \
+             AND starts_at <= CURRENT_TIMESTAMP \
+             AND status = 'scheduled'",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    if started_rooms.is_empty() {
+        return Ok(());
+    }
+
+    for (id, slug) in started_rooms {
+        {
+            let db = state.db.get()?;
+            db.execute(
+                "UPDATE rooms SET status = 'pending' WHERE id = ?1 AND status = 'scheduled'",
+                rusqlite::params![id],
+            )?;
+            db.execute(
+                "UPDATE participants SET is_admitted = 1 \
+                 WHERE room_id = ?1 AND is_kicked = 0",
+                rusqlite::params![id],
+            )?;
+        }
+
+        // Refresh connected presenters' moderation view (waiting -> admitted).
+        let _ = state
+            .events
+            .moderation_changed
+            .send(crate::events::ModerationChangedEvent { slug: slug.clone() });
+        tracing::info!(
+            "[poller] Room {} started -> pending, participants admitted",
+            id
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Room-Ended File Cleanup -- immediate cleanup when a room ends
 // ---------------------------------------------------------------------------
 

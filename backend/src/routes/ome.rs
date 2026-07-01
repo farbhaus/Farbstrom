@@ -182,6 +182,24 @@ async fn delete_stream(
     State(state): State<Arc<AppState>>,
     Path(stream_key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    // Block the key BEFORE disconnecting so the encoder can't win the race by
+    // reconnecting between the OME DELETE and the block landing. The OME stream
+    // name is the ingest key token, so it matches key_token directly. Conference
+    // streams (conf-*) have no key row — the UPDATE is a harmless no-op.
+    {
+        let conn = state.db.get()?;
+        let key = stream_key.clone();
+        tokio::task::spawn_blocking(move || {
+            conn.execute(
+                "UPDATE stream_keys SET blocked = 1 WHERE key_token = ?1",
+                rusqlite::params![key],
+            )
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+
     let path = format!("/vhosts/default/apps/live/streams/{}", stream_key);
     let data = ome_request(
         &state.http_client,
