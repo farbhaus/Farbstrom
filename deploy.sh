@@ -24,7 +24,7 @@
 #        --yes / -y            skip confirmation prompts
 #        --update              reuse .env, pull newest image, recreate (no secret
 #                              rotation, so live sessions survive); rollback by
-#                              pinning FARBSTROM_TAG=sha-<short> in .env first
+#                              pinning FARBSTROM_TAG=vX.Y.Z in .env first
 #        --behind-proxy HOST   container serves plain HTTP on 127.0.0.1:HTTP_PORT;
 #                              an external proxy (e.g. host Caddy) terminates TLS
 #                              and forwards HOST → it. Skips firewall + the 80/443
@@ -254,7 +254,7 @@ fi
 # --- update mode ------------------------------------------------------------
 # Pull the newest image (or the FARBSTROM_TAG pinned in .env) and recreate.
 # Secrets are untouched, so live sessions survive. Rollback = pin a previous
-# FARBSTROM_TAG=sha-<short> in .env, then re-run --update.
+# FARBSTROM_TAG=vX.Y.Z in .env, then re-run --update.
 if [[ $UPDATE -eq 1 ]]; then
   [[ -f .env ]] || die "--update needs an existing .env (run a normal deploy first)."
   info "Pulling newest image"

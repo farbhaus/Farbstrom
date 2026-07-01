@@ -49,9 +49,10 @@ make update                              # pull newest image + recreate
 ```
 
 The image (`farbhaus/farbstrom`) is published to Docker Hub by
-`.github/workflows/docker-single.yml` on every push to `main` (tags `:latest`
-and `:sha-<short>`) and on a `v*` release tag (adds `:vX.Y.Z` + `:X.Y` for
-reproducible prod pinning), linux/amd64. It is self-contained — the Dockerfile compiles
+`.github/workflows/docker-single.yml` **only on a `v*.*.*` release tag** —
+immutable `:vX.Y.Z` + `:vX.Y` for reproducible prod pinning, plus `:latest`
+moved to the newest release. Pushes to `main` and PRs build the image as a CI
+safety net but publish nothing (linux/amd64). It is self-contained — the Dockerfile compiles
 the Rust backend AND the TypeScript frontend internally, so deploy hosts need
 neither the source nor a Node/Rust toolchain. Deploy hosts pin a tag via
 `FARBSTROM_TAG` in `.env`. Requires repo secrets `DOCKERHUB_USERNAME` and

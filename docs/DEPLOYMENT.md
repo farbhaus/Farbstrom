@@ -112,7 +112,7 @@ That's it. The script installs missing prerequisites (Docker + Compose, openssl)
 
 | Flag | Effect |
 |---|---|
-| `--update` | Pull the newest image and recreate (secrets untouched — live sessions survive). Roll back by pinning `FARBSTROM_TAG=sha-<short>` (or `vX.Y.Z`) in `.env` first, then `--update`. |
+| `--update` | Pull the newest image and recreate (secrets untouched — live sessions survive). Roll back by pinning `FARBSTROM_TAG=vX.Y.Z` in `.env` first, then `--update`. |
 | `--behind-proxy HOST` | Deploy behind an external TLS proxy: the container serves plain HTTP on `127.0.0.1:8880`, presets `SITE_ADDRESS=:80` / `PUBLIC_HOST=HOST` / `WEB_BIND=127.0.0.1`, and skips the firewall + 80/443 free-port check. |
 | `--init-env [HOST]` | Generate/refresh `.env` and exit without starting anything (openssl-only; no Docker needed). |
 | `--regenerate` | Rewrite `.env` from scratch (rotates secrets) |
