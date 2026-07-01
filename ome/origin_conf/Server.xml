@@ -38,6 +38,22 @@
             <SRT>
                 <Port>9999</Port>
                 <WorkerCount>1</WorkerCount>
+                <!--
+                    SRT ingest encryption (opt-in). Empty passphrase = no
+                    encryption (backward compatible). Set SRT_INGEST_PASSPHRASE
+                    (10-79 chars) in the env to require an encrypted push; the
+                    encoder must send the same passphrase + pbkeylen.
+                -->
+                <Options>
+                    <Option>
+                        <Key>SRTO_PBKEYLEN</Key>
+                        <Value>${env:SRT_PBKEYLEN:16}</Value>
+                    </Option>
+                    <Option>
+                        <Key>SRTO_PASSPHRASE</Key>
+                        <Value>${env:SRT_INGEST_PASSPHRASE:}</Value>
+                    </Option>
+                </Options>
             </SRT>
             <WebRTC>
                 <Signalling>
@@ -78,6 +94,23 @@
             <SRT>
                 <Port>9998</Port>
                 <WorkerCount>2</WorkerCount>
+                <!--
+                    SRT playback encryption (opt-in). Empty passphrase = no
+                    encryption (backward compatible). Set SRT_PLAYBACK_PASSPHRASE
+                    (10-79 chars) in the env to encrypt playback; Farbplay reads
+                    the passphrase + pbkeylen from GET /api/watch/<slug> and
+                    applies them to its SRT socket.
+                -->
+                <Options>
+                    <Option>
+                        <Key>SRTO_PBKEYLEN</Key>
+                        <Value>${env:SRT_PBKEYLEN:16}</Value>
+                    </Option>
+                    <Option>
+                        <Key>SRTO_PASSPHRASE</Key>
+                        <Value>${env:SRT_PLAYBACK_PASSPHRASE:}</Value>
+                    </Option>
+                </Options>
             </SRT>
         </Publishers>
     </Bind>

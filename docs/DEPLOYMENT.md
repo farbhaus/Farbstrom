@@ -169,7 +169,7 @@ Firewall ports (the script opens these via ufw/firewalld when active): tcp `80 4
 
 | Protocol | Port | Notes |
 |---|---|---|
-| SRT | `9999/udp` | Primary — H.265 passthrough. OBS URL: `srt://<host>:9999?streamid=default/live/<STREAM_KEY>` |
+| SRT | `9999/udp` | Primary — H.265 passthrough. OBS URL: `srt://<host>:9999?streamid=default/live/<STREAM_KEY>` (append `&passphrase=<p>&pbkeylen=<n>` when SRT ingest encryption is on — see below). |
 | RTMP | `1935/tcp` | Universal encoder support. URL: `rtmp://<host>:1935/live`, stream name = stream key |
 | WHIP | via Caddy `/live/*` | OBS 30+, browser-based encoders |
 
@@ -190,11 +190,16 @@ mirrors the browser viewer's lifecycle (waiting room + kick). The flow:
 {
   "srt": { "host": "stream.example.com", "port": 9998,
            "streamid": "default/live/<key>?policy=<b64url>&signature=<b64url-hmac>",
-           "latency": 500 },
+           "latency": 500,
+           // present only when SRT playback encryption is configured:
+           "passphrase": "<10-79 chars>", "pbkeylen": 16 },
   "ttlSeconds": 30,
   "title": "Project X"
 }
 ```
+
+When `passphrase`/`pbkeylen` are present, Farbplay must set `SRTO_PASSPHRASE`/`SRTO_PBKEYLEN`
+on its SRT socket before connecting, or the handshake fails.
 
 OME's `<SignedPolicy>` (in `ome/origin_conf/Server.xml`, scoped to the SRT publisher) validates
 the signature + `url_expire` on connect, so each token expires ~30 s after minting; the app
@@ -211,6 +216,23 @@ the gated GET (403/404) + 30 s TTL is the reconnect backstop, so a kicked viewer
 > stream name is the ingest stream key (`OutputStreamName=${OriginStreamName}`), so the key appears
 > in the `streamid` in plaintext — and is already handed to web viewers on join. Treat the room
 > link as a capability and keep slugs unguessable.
+
+### SRT encryption (optional)
+
+The SRT legs (encoder → OME, OME → Farbplay) are unencrypted by default. Enable AES per leg with a
+passphrase — read by both OME (`Server.xml`) and the backend, so they must match:
+
+| Env var | Leg | Client side |
+|---|---|---|
+| `SRT_INGEST_PASSPHRASE` | encoder → OME (`9999`) | Encoder appends `&passphrase=<p>&pbkeylen=<n>` to the SRT URL (the admin Streamkeys tab builds the full URL for you). |
+| `SRT_PLAYBACK_PASSPHRASE` | OME → Farbplay (`9998`) | Farbplay reads `passphrase`/`pbkeylen` from `/api/watch/<slug>` and sets `SRTO_PASSPHRASE`/`SRTO_PBKEYLEN`. |
+
+`SRT_PBKEYLEN` (16/24/32, default 16) is the AES key length. Passphrases are 10–79 chars
+(`openssl rand -hex 16`). This is **bind-level (per-port)** in OME — one shared passphrase per leg,
+not per room; it protects the media payload on the wire, not access (that's still the admission gate
++ SignedPolicy). Enabling a leg is a **hard cutover**: every client on that port must send the
+passphrase or its handshake fails, so update all encoders / ship a Farbplay build that sends it. The
+two vars are independent, so the legs can be cut over separately.
 
 ## Keyboard shortcuts
 

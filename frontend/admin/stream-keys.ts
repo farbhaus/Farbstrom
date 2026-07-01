@@ -5,7 +5,14 @@ import type { StreamKey } from './types.js';
 
 const INGEST_HOST = location.hostname;
 
+interface SrtConfig {
+  ingestPassphrase: string | null;
+  playbackPassphrase: string | null;
+  pbkeylen: number;
+}
+
 let keys: StreamKey[] = [];
+let srtConfig: SrtConfig | null = null;
 let onChange: () => void = () => {};
 
 export function getStreamKeys(): StreamKey[] {
@@ -17,9 +24,13 @@ export function setOnChange(fn: () => void): void {
 }
 
 export async function loadKeys(): Promise<void> {
-  const res = await apiFetch('/api/stream-keys');
+  const [res, srtRes] = await Promise.all([
+    apiFetch('/api/stream-keys'),
+    apiFetch('/api/stream-keys/srt-config'),
+  ]);
   if (!res) return;
   keys = await res.json();
+  srtConfig = srtRes && srtRes.ok ? await srtRes.json().catch(() => null) : null;
   renderKeys();
 }
 
@@ -51,6 +62,22 @@ function renderKeys(): void {
     .map((k) => {
       const full = urlsFor(k.key_token);
       const masked = urlsFor(maskToken(k.key_token));
+
+      // SRT encryption (opt-in): when a passphrase is set, the raw srt:// URLs
+      // must carry it. Ingest (9999) uses the ingest passphrase, playback (9998)
+      // the playback one. The passphrase is masked like the key — revealed and
+      // copied in full via data-full.
+      const pbk = srtConfig?.pbkeylen ?? 16;
+      const ingestPass = srtConfig?.ingestPassphrase || '';
+      const playbackPass = srtConfig?.playbackPassphrase || '';
+      if (ingestPass) {
+        full.srt += `&passphrase=${ingestPass}&pbkeylen=${pbk}`;
+        masked.srt += `&passphrase=${maskToken(ingestPass)}&pbkeylen=${pbk}`;
+      }
+      if (playbackPass) {
+        full.srtPlay += `&passphrase=${playbackPass}&pbkeylen=${pbk}`;
+        masked.srtPlay += `&passphrase=${maskToken(playbackPass)}&pbkeylen=${pbk}`;
+      }
 
       // Rendered masked; the copy handler and Reveal toggle read data-full.
       const row = (label: string, field: string): string => `

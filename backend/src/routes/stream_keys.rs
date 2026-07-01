@@ -188,9 +188,24 @@ async fn delete_key(
     Ok(Json(json!({ "ok": true })))
 }
 
+// GET /srt-config — SRT encryption passphrases for the admin's raw SRT URLs.
+// Admin-only; nulls when a leg is unencrypted. Static path, so it takes
+// precedence over the `/{id}` capture.
+async fn srt_config(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(json!({
+        "ingestPassphrase": state.config.srt_ingest_passphrase,
+        "playbackPassphrase": state.config.srt_playback_passphrase,
+        "pbkeylen": state.config.srt_pbkeylen,
+    })))
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_keys).post(create_key))
+        .route("/srt-config", get(srt_config))
         .route("/{id}", put(update_key).delete(delete_key))
         .route("/{id}/unblock", post(unblock_key))
 }

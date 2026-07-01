@@ -30,11 +30,17 @@ pub fn test_config() -> AppConfig {
         srt_public_host: "stream.example.com".into(),
         srt_public_port: 9998,
         srt_latency_ms: 500,
+        srt_ingest_passphrase: None,
+        srt_playback_passphrase: None,
+        srt_pbkeylen: 16,
     }
 }
 
 pub fn test_state() -> Arc<AppState> {
-    let config = test_config();
+    test_state_with_config(test_config())
+}
+
+pub fn test_state_with_config(config: AppConfig) -> Arc<AppState> {
     let pool = db::init_pool(&config.db_path, &config.data_path);
     let events = EventChannels::new();
     let admin_password_hash = bcrypt::hash("test-admin-password", 4).unwrap();
