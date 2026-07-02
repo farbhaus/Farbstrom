@@ -310,6 +310,29 @@ struct StatusQuery {
     token: Option<String>,
 }
 
+/// Immediately admit a held viewer whose scheduled start has passed, when the
+/// room's waiting room is off — so admission happens within the ~2s admission-poll
+/// interval of `starts_at` instead of waiting for the 60s start poller
+/// ([`crate::tasks::poll_starts`], which stays as the backstop and also does the
+/// room `scheduled` -> `pending` flip). Idempotent; a no-op for waiting-room
+/// rooms, kicked/ended rooms, or before the start. Returns whether it flipped
+/// the flag, so the caller can nudge the host roster.
+fn admit_if_started(conn: &rusqlite::Connection, participant_id: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE participants SET is_admitted = 1 \
+         WHERE id = ?1 AND is_admitted = 0 AND is_kicked = 0 \
+         AND EXISTS ( \
+             SELECT 1 FROM rooms r \
+             WHERE r.id = participants.room_id \
+             AND r.waiting_room = 0 \
+             AND r.status != 'ended' \
+             AND r.starts_at IS NOT NULL \
+             AND r.starts_at <= CURRENT_TIMESTAMP)",
+        rusqlite::params![participant_id],
+    )?;
+    Ok(n > 0)
+}
+
 // GET /:slug/status/:participantId?token= - admission poll
 async fn participant_status(
     State(state): State<Arc<AppState>>,
@@ -321,19 +344,23 @@ async fn participant_status(
         .ok_or_else(|| AppError::Unauthorized("Token required".into()))?;
 
     let conn = state.db.get()?;
+    let slug_evt = slug.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let did_admit = admit_if_started(&conn, &participant_id)?;
         let mut stmt = conn.prepare(
-            "SELECT p.is_admitted, p.is_kicked, r.status \
+            "SELECT p.is_admitted, p.is_kicked, r.status, \
+             (r.starts_at IS NOT NULL AND r.starts_at <= CURRENT_TIMESTAMP) AS started \
              FROM participants p \
              JOIN rooms r ON r.id = p.room_id \
              WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
         )?;
-        let result = stmt
+        let (is_admitted, is_kicked, room_status, started) = stmt
             .query_row(rusqlite::params![participant_id, token, slug], |row| {
                 Ok((
                     row.get::<_, i32>(0)?,
                     row.get::<_, i32>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
                 ))
             })
             .map_err(|e| match e {
@@ -342,17 +369,24 @@ async fn participant_status(
                 }
                 _ => AppError::Internal(e.to_string()),
             })?;
-        Ok::<_, AppError>(result)
+        Ok::<_, AppError>((did_admit, is_admitted, is_kicked, room_status, started))
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let (is_admitted, is_kicked, room_status) = result;
+    let (did_admit, is_admitted, is_kicked, room_status, started) = result;
+    if did_admit {
+        let _ = state
+            .events
+            .moderation_changed
+            .send(ModerationChangedEvent { slug: slug_evt });
+    }
 
     Ok(Json(json!({
         "admitted": is_admitted == 1,
         "kicked": is_kicked == 1,
         "room_status": room_status,
+        "started": started == 1,
     })))
 }
 
@@ -443,26 +477,37 @@ async fn waiting_events(
                 return Ok(Event::default().event("ping").data("{}"));
             }
         };
+        let slug_evt = slug.clone();
         let result = tokio::task::spawn_blocking(move || {
+            let did_admit = admit_if_started(&conn, &participant_id)?;
             let mut stmt = conn.prepare(
-                "SELECT p.is_admitted, p.is_kicked, r.status \
+                "SELECT p.is_admitted, p.is_kicked, r.status, \
+                 (r.starts_at IS NOT NULL AND r.starts_at <= CURRENT_TIMESTAMP) AS started \
                  FROM participants p \
                  JOIN rooms r ON r.id = p.room_id \
                  WHERE p.id = ?1 AND r.slug = ?2",
             )?;
-            let result = stmt.query_row(rusqlite::params![participant_id, slug], |row| {
-                Ok((
-                    row.get::<_, i32>(0)?,
-                    row.get::<_, i32>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            Ok::<_, rusqlite::Error>(result)
+            let (is_admitted, is_kicked, room_status, started) =
+                stmt.query_row(rusqlite::params![participant_id, slug], |row| {
+                    Ok((
+                        row.get::<_, i32>(0)?,
+                        row.get::<_, i32>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i32>(3)?,
+                    ))
+                })?;
+            Ok::<_, rusqlite::Error>((did_admit, is_admitted, is_kicked, room_status, started))
         })
         .await;
 
         match result {
-            Ok(Ok((is_admitted, is_kicked, room_status))) => {
+            Ok(Ok((did_admit, is_admitted, is_kicked, room_status, started))) => {
+                if did_admit {
+                    let _ = state
+                        .events
+                        .moderation_changed
+                        .send(ModerationChangedEvent { slug: slug_evt });
+                }
                 if is_kicked == 1 {
                     Ok(Event::default().event("kicked").data(json!({}).to_string()))
                 } else if room_status == "ended" {
@@ -474,7 +519,13 @@ async fn waiting_events(
                         .event("admitted")
                         .data(json!({}).to_string()))
                 } else {
-                    Ok(Event::default().event("ping").data(json!({}).to_string()))
+                    // Still waiting. Carry room status + whether the scheduled
+                    // start has passed, so a held waiting-room client can switch
+                    // from the "starting soon" screen to the waiting-room screen
+                    // once the room is running (issue #200 follow-up).
+                    Ok(Event::default().event("ping").data(
+                        json!({ "room_status": room_status, "started": started == 1 }).to_string(),
+                    ))
                 }
             }
             // Participant not found (deleted) - send ping; client will handle

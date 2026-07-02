@@ -26,6 +26,9 @@ const API = '/api/public/rooms';
 let onAdmitted: () => void = () => {};
 let statusInterval: ReturnType<typeof setInterval> | null = null;
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
+// Remembered so the scheduled -> waiting-room transition (once the room starts)
+// can re-render the waiting screen with the viewer's name.
+let waitingDisplayName = '';
 
 export function configureScreens(opts: { onAdmitted: () => void }): void {
   onAdmitted = opts.onAdmitted;
@@ -74,6 +77,17 @@ function clearAdmissionPoll(): void {
   }
 }
 
+// A held viewer parked on the scheduled ("starting soon") screen moves to the
+// waiting-room screen once the room actually starts. Only waiting-room rooms hit
+// this — a no-waiting-room room admits at start and delivers `admitted` instead.
+// (issue #200 follow-up: the scheduled screen otherwise stuck around until admit.)
+function onRoomStarted(): void {
+  if (el('scheduled-screen')?.classList.contains('hidden') !== false) return;
+  stopScheduledCountdown();
+  hideScreen('scheduled-screen');
+  showWaitingScreen(waitingDisplayName);
+}
+
 export function pollAdmission(): void {
   const pid = loadSavedSession()?.participantId || '';
   const tok = loadSavedSession()?.token || '';
@@ -84,6 +98,17 @@ export function pollAdmission(): void {
   sse.addEventListener('admitted', () => {
     sse.close();
     onAdmitted();
+  });
+  sse.addEventListener('ping', (e) => {
+    let data: { started?: boolean; room_status?: string } = {};
+    try {
+      data = JSON.parse((e as MessageEvent).data || '{}');
+    } catch {
+      return;
+    }
+    if (data.started === true || (!!data.room_status && data.room_status !== 'scheduled')) {
+      onRoomStarted();
+    }
   });
   sse.addEventListener('error', () => {
     sse.close();
@@ -100,6 +125,8 @@ export function pollAdmission(): void {
       if (data.admitted) {
         clearAdmissionPoll();
         onAdmitted();
+      } else if (data.started === true || (data.room_status && data.room_status !== 'scheduled')) {
+        onRoomStarted();
       }
     }, 3000);
   });
@@ -122,6 +149,7 @@ function stopScheduledCountdown(): void {
 // Renders the absolute start time + a live countdown. startsAt is stored UTC
 // ("YYYY-MM-DD HH:MM:SS", no zone marker), so force a UTC parse.
 export function showScheduledScreen(startsAt: string | null, name: string): void {
+  waitingDisplayName = name;
   hideScreen('join-screen');
   showHidden('scheduled-screen');
   const nm = el('scheduled-name');
@@ -444,6 +472,7 @@ function handleJoinOutcome(o: RoomInfoOutcome): void {
 }
 
 export function showWaitingScreen(name: string): void {
+  waitingDisplayName = name;
   hideScreen('join-screen');
   showHidden('waiting-screen');
   const wn = el('waiting-name');

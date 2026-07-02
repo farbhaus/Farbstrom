@@ -136,9 +136,21 @@ pub async fn poll_expiry(state: &Arc<AppState>) -> Result<(), Box<dyn std::error
 // ---------------------------------------------------------------------------
 // Start Poller -- every 60s
 // Opens scheduled rooms (issue #200): once starts_at has passed, flips the
-// room to 'pending' and auto-admits everyone who was held waiting. Mirrors the
-// expiry poller. Held viewers hold the admission SSE, which emits "admitted"
-// on its next tick once is_admitted flips, so no new event type is needed.
+// room to 'pending' and — when the waiting room is off — auto-admits everyone
+// who was held during the scheduled window. Mirrors the expiry poller. Held
+// viewers hold the admission SSE, which emits "admitted" on its next tick once
+// is_admitted flips, so no new event type is needed.
+//
+// The admit is decoupled from the status flip: the OME admission webhook flips
+// a still-'scheduled' room straight to 'live' the moment the host starts
+// streaming (webhook.rs) and admits nobody, so keying only off status='scheduled'
+// would miss those rooms. Instead we also release holds on any past-start,
+// waiting-room-off room that still has held viewers, whatever its current status.
+// Admission stays time-based: a host going live *before* starts_at does not
+// admit anyone (the query requires starts_at <= now).
+//
+// Waiting-room-ON rooms transition out of 'scheduled' at start but keep everyone
+// waiting for manual admit.
 // ---------------------------------------------------------------------------
 
 pub fn spawn_start_poller(state: Arc<AppState>) {
@@ -154,15 +166,27 @@ pub fn spawn_start_poller(state: Arc<AppState>) {
 }
 
 pub async fn poll_starts(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
-    let started_rooms: Vec<(String, String)> = {
+    // Rooms whose scheduled start has passed and still need action: either a
+    // 'scheduled' -> 'pending' flip, or (waiting room off) held viewers to
+    // release. The EXISTS branch also catches rooms the webhook already flipped
+    // to 'live'. Once a room's holds are cleared it stops matching, so this
+    // stays bounded and idempotent.
+    let started_rooms: Vec<(String, String, String)> = {
         let db = state.db.get()?;
         let mut stmt = db.prepare(
-            "SELECT id, slug FROM rooms \
-             WHERE starts_at IS NOT NULL \
-             AND starts_at <= CURRENT_TIMESTAMP \
-             AND status = 'scheduled'",
+            "SELECT r.id, r.slug, r.status FROM rooms r \
+             WHERE r.starts_at IS NOT NULL \
+             AND r.starts_at <= CURRENT_TIMESTAMP \
+             AND r.status != 'ended' \
+             AND ( \
+                 r.status = 'scheduled' \
+                 OR (r.waiting_room = 0 AND EXISTS ( \
+                     SELECT 1 FROM participants p \
+                     WHERE p.room_id = r.id \
+                     AND p.is_admitted = 0 AND p.is_kicked = 0)) \
+             )",
         )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         rows.filter_map(|r| r.ok()).collect()
     };
 
@@ -170,16 +194,22 @@ pub async fn poll_starts(state: &Arc<AppState>) -> Result<(), Box<dyn std::error
         return Ok(());
     }
 
-    for (id, slug) in started_rooms {
+    for (id, slug, status) in started_rooms {
         {
             let db = state.db.get()?;
-            db.execute(
-                "UPDATE rooms SET status = 'pending' WHERE id = ?1 AND status = 'scheduled'",
-                rusqlite::params![id],
-            )?;
+            // Time-based flip only: leave a webhook-set 'live' status alone.
+            if status == "scheduled" {
+                db.execute(
+                    "UPDATE rooms SET status = 'pending' WHERE id = ?1 AND status = 'scheduled'",
+                    rusqlite::params![id],
+                )?;
+            }
+            // Release holds only when the waiting room is off; the subquery gate
+            // avoids threading waiting_room through Rust and stays idempotent.
             db.execute(
                 "UPDATE participants SET is_admitted = 1 \
-                 WHERE room_id = ?1 AND is_kicked = 0",
+                 WHERE room_id = ?1 AND is_kicked = 0 \
+                 AND (SELECT waiting_room FROM rooms WHERE id = ?1) = 0",
                 rusqlite::params![id],
             )?;
         }
@@ -189,10 +219,7 @@ pub async fn poll_starts(state: &Arc<AppState>) -> Result<(), Box<dyn std::error
             .events
             .moderation_changed
             .send(crate::events::ModerationChangedEvent { slug: slug.clone() });
-        tracing::info!(
-            "[poller] Room {} started -> pending, participants admitted",
-            id
-        );
+        tracing::info!("[poller] Room {} reached start -> holds released", id);
     }
 
     Ok(())
