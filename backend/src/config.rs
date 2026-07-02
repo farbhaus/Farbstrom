@@ -29,17 +29,6 @@ pub struct AppConfig {
     pub srt_public_port: u16,
     /// SRT latency (ms) advertised to clients. Defaults to `500`.
     pub srt_latency_ms: u32,
-    /// SRT ingest encryption passphrase (`SRTO_PASSPHRASE` on the OME provider,
-    /// port 9999). `None` ⇒ ingest is unencrypted (backward compatible). When
-    /// set, 10–79 chars (libsrt) and exposed to the admin UI so the ingest URL
-    /// carries `&passphrase=…`.
-    pub srt_ingest_passphrase: Option<String>,
-    /// SRT playback encryption passphrase (`SRTO_PASSPHRASE` on the OME
-    /// publisher, port 9998). Returned to Farbplay by `/api/watch/:slug`.
-    /// `None` ⇒ playback is unencrypted.
-    pub srt_playback_passphrase: Option<String>,
-    /// SRT AES key length in bytes (`SRTO_PBKEYLEN`): 16/24/32. Default 16.
-    pub srt_pbkeylen: u32,
 }
 
 /// Extract the host portion of a URL-ish origin (`https://host:port/path` →
@@ -68,22 +57,6 @@ fn required_min_len(name: &str, min_len: usize) -> String {
     value
 }
 
-/// Read an optional SRT passphrase. Unset/empty ⇒ `None` (encryption off on that
-/// leg). A present value must be 10–79 chars, the libsrt `SRTO_PASSPHRASE` range
-/// — fail fast so a misconfigured passphrase can't silently break every SRT
-/// connection at cutover.
-fn optional_srt_passphrase(name: &str) -> Option<String> {
-    match env::var(name) {
-        Ok(v) if !v.is_empty() => {
-            if !(10..=79).contains(&v.len()) {
-                panic!("FATAL: {} must be 10-79 characters", name);
-            }
-            Some(v)
-        }
-        _ => None,
-    }
-}
-
 impl AppConfig {
     pub fn from_env() -> Self {
         // Signing keys — all used as HMAC secrets, enforce 32-char minimum.
@@ -102,18 +75,6 @@ impl AppConfig {
 
         let public_origin =
             env::var("PUBLIC_ORIGIN").unwrap_or_else(|_| "http://localhost:4001".into());
-
-        // SRT encryption (opt-in per leg). Must match OME's Server.xml, which
-        // reads the same env vars via ${env:...}.
-        let srt_ingest_passphrase = optional_srt_passphrase("SRT_INGEST_PASSPHRASE");
-        let srt_playback_passphrase = optional_srt_passphrase("SRT_PLAYBACK_PASSPHRASE");
-        let srt_pbkeylen = env::var("SRT_PBKEYLEN")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(16);
-        if ![16, 24, 32].contains(&srt_pbkeylen) {
-            panic!("FATAL: SRT_PBKEYLEN must be 16, 24, or 32");
-        }
 
         Self {
             jwt_secret,
@@ -143,48 +104,7 @@ impl AppConfig {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(500),
-            srt_ingest_passphrase,
-            srt_playback_passphrase,
-            srt_pbkeylen,
             public_origin,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::optional_srt_passphrase;
-
-    // Each test uses a unique env var name so the shared process env doesn't
-    // race across parallel tests.
-
-    #[test]
-    fn passphrase_unset_is_none() {
-        std::env::remove_var("TEST_SRT_UNSET");
-        assert!(optional_srt_passphrase("TEST_SRT_UNSET").is_none());
-    }
-
-    #[test]
-    fn passphrase_empty_is_none() {
-        std::env::set_var("TEST_SRT_EMPTY", "");
-        assert!(optional_srt_passphrase("TEST_SRT_EMPTY").is_none());
-        std::env::remove_var("TEST_SRT_EMPTY");
-    }
-
-    #[test]
-    fn passphrase_valid_length_is_some() {
-        std::env::set_var("TEST_SRT_OK", "0123456789"); // exactly 10 (min)
-        assert_eq!(
-            optional_srt_passphrase("TEST_SRT_OK").as_deref(),
-            Some("0123456789")
-        );
-        std::env::remove_var("TEST_SRT_OK");
-    }
-
-    #[test]
-    #[should_panic(expected = "10-79 characters")]
-    fn passphrase_too_short_panics() {
-        std::env::set_var("TEST_SRT_SHORT", "short"); // 5 chars
-        let _ = optional_srt_passphrase("TEST_SRT_SHORT");
     }
 }

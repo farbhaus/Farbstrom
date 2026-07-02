@@ -171,23 +171,25 @@ async fn admitted_participant_gets_signed_srt_details() {
 }
 
 #[tokio::test]
-async fn playback_passphrase_included_when_configured() {
-    // With SRT playback encryption configured, /api/watch hands Farbplay the
-    // passphrase + pbkeylen so it can decrypt.
-    let mut cfg = common::test_config();
-    cfg.srt_playback_passphrase = Some("super-secret-srt-passphrase".into());
-    cfg.srt_pbkeylen = 32;
-    let state = common::test_state_with_config(cfg);
+async fn playback_passphrase_from_db_toggle() {
+    // DB-managed SRT encryption (gh #208): enabling it via the settings table
+    // makes /api/watch hand out the generated playback passphrase.
+    let state = common::test_state();
+    {
+        let conn = state.db.get().unwrap();
+        stream_backend::srt::set_enabled(&conn, true).unwrap();
+    }
     let server = common::test_app(state.clone());
 
-    let (room_id, _key) = seed_room_with_key(&state, "Enc", "watch-enc", "live", false);
+    let (room_id, _key) = seed_room_with_key(&state, "Enc", "watch-db-enc", "live", false);
     let (pid, tok) = common::seed_participant(&state, &room_id, "Alice", "viewer", true, false);
 
-    let res = server.get(&watch_url("watch-enc", &pid, &tok)).await;
+    let res = server.get(&watch_url("watch-db-enc", &pid, &tok)).await;
     assert_eq!(res.status_code(), 200);
     let body: Value = res.json();
-    assert_eq!(body["srt"]["passphrase"], "super-secret-srt-passphrase");
-    assert_eq!(body["srt"]["pbkeylen"], 32);
+    let pass = body["srt"]["passphrase"].as_str().unwrap();
+    assert!((10..=79).contains(&pass.len()));
+    assert_eq!(body["srt"]["pbkeylen"], 16);
 }
 
 #[tokio::test]

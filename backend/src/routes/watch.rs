@@ -173,17 +173,21 @@ async fn watch(
         expire_ms,
     )?;
 
-    // SRT playback details. When playback encryption is configured, hand the
-    // passphrase + pbkeylen to Farbplay so it can decrypt (issue: SRT encryption).
+    // SRT playback details. When playback encryption is enabled (DB-managed,
+    // gh #208), hand the passphrase + pbkeylen to Farbplay so it can decrypt.
     let mut srt = json!({
         "host": state.config.srt_public_host,
         "port": state.config.srt_public_port,
         "streamid": streamid,
         "latency": state.config.srt_latency_ms,
     });
-    if let Some(ref passphrase) = state.config.srt_playback_passphrase {
+    let conn = state.db.get()?;
+    let eff = tokio::task::spawn_blocking(move || crate::srt::resolve(&conn))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if let Some(passphrase) = eff.playback_passphrase {
         srt["passphrase"] = json!(passphrase);
-        srt["pbkeylen"] = json!(state.config.srt_pbkeylen);
+        srt["pbkeylen"] = json!(eff.pbkeylen);
     }
 
     Ok(Json(json!({
