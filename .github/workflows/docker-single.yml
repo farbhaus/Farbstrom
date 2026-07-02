@@ -8,8 +8,8 @@ name: Docker Build (single-container)
 on:
   push:
     branches: [main]
-    # Release tags publish an immutable :vX.Y.Z (for reproducible prod pinning /
-    # rollback) alongside :latest + :sha-<short>.
+    # Publishing is TAG-ONLY: pushing a v*.*.* tag publishes immutable :vX.Y.Z +
+    # :vX.Y and moves :latest to it. A push to main (below) only build-validates.
     tags: ['v*.*.*']
   # PR validation only when an input to the single-container image changes.
   pull_request:
@@ -35,12 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Publish on a push to main or a release tag (v*). PRs and dev pushes
-      # build-validate only.
+      # Publish ONLY on a v*.*.* release tag. Pushes to main and PRs build the
+      # image as a CI safety net but push nothing to Docker Hub.
       - name: Decide whether to publish
         id: pub
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && { [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; }; then
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
             echo "push=true" >> "$GITHUB_OUTPUT"
           else
             echo "push=false" >> "$GITHUB_OUTPUT"
@@ -55,16 +55,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Tag-only scheme: a v*.*.* tag → :vX.Y.Z + :vX.Y (git tag == Docker tag)
+      # and :latest tracks the newest release. latest=false disables the action's
+      # auto-latest so the raw entry is the single source of truth. Non-tag builds
+      # produce an empty tag list (nothing is published — push=false above).
       - name: Compute tags
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - uses: docker/build-push-action@v6
         with:
