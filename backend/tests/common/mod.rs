@@ -11,8 +11,12 @@ use stream_backend::routes;
 use stream_backend::state::AppState;
 
 pub fn test_config() -> AppConfig {
-    // Use a unique temp file for each test to avoid cross-test interference
-    let db_path = format!("/tmp/zstream-test-{}.db", uuid::Uuid::new_v4());
+    // Use a unique temp file/dir per test to avoid cross-test interference —
+    // the SRT toggle writes `<data>/srt.env` via a `.tmp` + rename, and a shared
+    // data_path lets parallel tests race that rename (ENOENT) and 500.
+    let id = uuid::Uuid::new_v4();
+    let db_path = format!("/tmp/zstream-test-{}.db", id);
+    let data_path = format!("/tmp/zstream-test-{}", id);
     AppConfig {
         jwt_secret: "test-secret-that-is-at-least-thirty-two-characters-long".into(),
         ome_webhook_secret: "test-webhook-secret".into(),
@@ -25,7 +29,7 @@ pub fn test_config() -> AppConfig {
         livekit_url: "ws://localhost:7880".into(),
         port: 0,
         db_path,
-        data_path: "/tmp/zstream-test".into(),
+        data_path,
         public_origin: "http://localhost:4001".into(),
         srt_public_host: "stream.example.com".into(),
         srt_public_port: 9998,
