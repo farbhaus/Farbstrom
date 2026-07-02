@@ -921,6 +921,30 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
                 <div id="set-pk-list"><div class="empty">Loading…</div></div>
             </div>
         </div>
+
+        <!-- SRT wire encryption (gh #208). Two independent legs; Apply commits
+             both at once so OME restarts only once. -->
+        <div class="room-card u-mt-3">
+            <div class="room-card-header">
+                <div class="room-card-info">
+                    <div class="room-card-name">SRT encryption</div>
+                    <div class="room-card-meta">AES-encrypts the SRT wire. Applying restarts the streaming engine, so all live streams drop for a few seconds and affected encoders / players must reconnect with the new passphrase.</div>
+                </div>
+                <div class="room-card-actions">
+                    <button class="btn btn-sm btn-primary" id="srt-enc-apply" disabled>Apply</button>
+                </div>
+            </div>
+            <div class="room-card-body u-p-card-tight">
+                <div class="form-row checkbox">
+                    <input type="checkbox" id="srt-enc-playback">
+                    <label for="srt-enc-playback">Playback (server → viewers) — recommended</label>
+                </div>
+                <div class="form-row checkbox">
+                    <input type="checkbox" id="srt-enc-ingest">
+                    <label for="srt-enc-ingest">Ingest (encoder → server)</label>
+                </div>
+            </div>
+        </div>
     </div>
 
 </div>

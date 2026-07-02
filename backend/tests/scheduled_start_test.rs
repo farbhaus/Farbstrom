@@ -14,11 +14,13 @@ fn auth_header(token: &str) -> (axum::http::HeaderName, axum::http::HeaderValue)
     )
 }
 
-fn seed_scheduled_room(
+fn seed_room_state(
     state: &std::sync::Arc<stream_backend::state::AppState>,
     name: &str,
     slug: &str,
     starts_at: &str,
+    status: &str,
+    waiting_room: i32,
 ) -> String {
     let conn = state.db.get().unwrap();
     let id = uuid::Uuid::new_v4().to_string();
@@ -27,11 +29,20 @@ fn seed_scheduled_room(
         .collect();
     conn.execute(
         "INSERT INTO rooms (id, name, slug, presenter_key, delivery_mode, waiting_room, status, starts_at) \
-         VALUES (?1, ?2, ?3, ?4, 'webrtc', 0, 'scheduled', ?5)",
-        rusqlite::params![id, name, slug, presenter_key, starts_at],
+         VALUES (?1, ?2, ?3, ?4, 'webrtc', ?5, ?6, ?7)",
+        rusqlite::params![id, name, slug, presenter_key, waiting_room, status, starts_at],
     )
     .unwrap();
     id
+}
+
+fn seed_scheduled_room(
+    state: &std::sync::Arc<stream_backend::state::AppState>,
+    name: &str,
+    slug: &str,
+    starts_at: &str,
+) -> String {
+    seed_room_state(state, name, slug, starts_at, "scheduled", 0)
 }
 
 fn participant_admitted(
@@ -136,6 +147,172 @@ async fn poll_starts_ignores_future_scheduled_room() {
 
     assert_eq!(room_status(&state, &room_id), "scheduled");
     assert_eq!(participant_admitted(&state, &held), 0, "still held");
+}
+
+// The webhook flips a still-'scheduled' room to 'live' the moment the host
+// starts streaming, racing (and beating) the 60s poller. The poller must still
+// release the scheduled-era holds even though the room is no longer 'scheduled'.
+#[tokio::test]
+async fn poll_starts_admits_held_after_webhook_live() {
+    let state = common::test_state();
+    let room_id = seed_room_state(
+        &state,
+        "Live",
+        "sched-live",
+        "2020-01-01 00:00:00",
+        "live",
+        0,
+    );
+    let (held, _) = common::seed_participant(&state, &room_id, "Held", "viewer", false, false);
+
+    stream_backend::tasks::poll_starts(&state).await.unwrap();
+
+    assert_eq!(
+        room_status(&state, &room_id),
+        "live",
+        "live status untouched"
+    );
+    assert_eq!(
+        participant_admitted(&state, &held),
+        1,
+        "held viewer released after webhook-live"
+    );
+}
+
+// Waiting-room-ON scheduled rooms transition out of 'scheduled' at start but
+// keep everyone waiting for manual admit.
+#[tokio::test]
+async fn poll_starts_waiting_room_holds_after_start() {
+    let state = common::test_state();
+    let room_id = seed_room_state(
+        &state,
+        "WR",
+        "sched-wr",
+        "2020-01-01 00:00:00",
+        "scheduled",
+        1,
+    );
+    let (held, _) = common::seed_participant(&state, &room_id, "Held", "viewer", false, false);
+
+    stream_backend::tasks::poll_starts(&state).await.unwrap();
+
+    assert_eq!(room_status(&state, &room_id), "pending", "flipped open");
+    assert_eq!(
+        participant_admitted(&state, &held),
+        0,
+        "waiting room keeps them held for manual admit"
+    );
+}
+
+// Admin clearing starts_at (-> NULL) releases a scheduled room; the poller can't
+// catch that (no starts_at), so the update path admits the held viewers itself.
+#[tokio::test]
+async fn admin_clearing_starts_at_admits_held() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let token = common::admin_token(&state);
+    let room_id = seed_scheduled_room(&state, "Clear", "sched-clear", "2099-12-31 23:59:59");
+    let (held, _) = common::seed_participant(&state, &room_id, "Held", "viewer", false, false);
+
+    let (name, val) = auth_header(&token);
+    let res = server
+        .put(&format!("/api/rooms/{}", room_id))
+        .add_header(name, val)
+        .json(&json!({ "starts_at": null }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+
+    assert_eq!(
+        room_status(&state, &room_id),
+        "pending",
+        "released to pending"
+    );
+    assert_eq!(
+        participant_admitted(&state, &held),
+        1,
+        "held viewer admitted on clear"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Read-path self-heal — admit the moment the start passes, without the poller
+// (issue #200 follow-up: the status/SSE read admits held waiting viewers so
+// admission lands within ~the poll interval instead of up to 60s late).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn status_endpoint_admits_held_after_start() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    // Past start, waiting room off, room still 'scheduled' (poller not run).
+    let room_id = seed_scheduled_room(&state, "SelfHeal", "sched-selfheal", "2020-01-01 00:00:00");
+    let (held, tok) = common::seed_participant(&state, &room_id, "Held", "viewer", false, false);
+
+    let res = server
+        .get(&format!(
+            "/api/public/rooms/sched-selfheal/status/{}?token={}",
+            held, tok
+        ))
+        .await;
+    let body: Value = res.json();
+
+    assert_eq!(body["admitted"], true, "admitted on read, no poller");
+    assert_eq!(body["started"], true);
+    assert_eq!(
+        participant_admitted(&state, &held),
+        1,
+        "flag persisted in DB"
+    );
+}
+
+#[tokio::test]
+async fn status_endpoint_holds_before_start() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let room_id = seed_scheduled_room(&state, "Future", "sched-sh-future", "2099-12-31 23:59:59");
+    let (held, tok) = common::seed_participant(&state, &room_id, "Held", "viewer", false, false);
+
+    let res = server
+        .get(&format!(
+            "/api/public/rooms/sched-sh-future/status/{}?token={}",
+            held, tok
+        ))
+        .await;
+    let body: Value = res.json();
+
+    assert_eq!(body["admitted"], false, "still held before start");
+    assert_eq!(body["started"], false);
+}
+
+#[tokio::test]
+async fn status_endpoint_waiting_room_not_admitted_but_started() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    // Past start, waiting room ON: not admitted, but `started` lets the client
+    // switch from the "starting soon" screen to the waiting room.
+    let room_id = seed_room_state(
+        &state,
+        "WR",
+        "sched-sh-wr",
+        "2020-01-01 00:00:00",
+        "scheduled",
+        1,
+    );
+    let (held, tok) = common::seed_participant(&state, &room_id, "Held", "viewer", false, false);
+
+    let res = server
+        .get(&format!(
+            "/api/public/rooms/sched-sh-wr/status/{}?token={}",
+            held, tok
+        ))
+        .await;
+    let body: Value = res.json();
+
+    assert_eq!(
+        body["admitted"], false,
+        "waiting room holds for manual admit"
+    );
+    assert_eq!(body["started"], true, "but the room has started");
 }
 
 // ---------------------------------------------------------------------------

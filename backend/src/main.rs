@@ -59,6 +59,13 @@ async fn main() {
     // Initialize database
     let db = db::init_pool(&config.db_path, &config.data_path);
 
+    // SRT encryption is DB-managed (gh #208): write <data>/srt.env from the
+    // settings table so OME — which starts after the backend — reads the current
+    // passphrase from it.
+    if let Ok(conn) = db.get() {
+        stream_backend::srt::init_startup(&conn, &config.data_path);
+    }
+
     // Create shared state
     let events = events::EventChannels::new();
     let http_client = reqwest::Client::new();

@@ -545,6 +545,41 @@ async fn update_room(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
+    // issue #200: releasing a scheduled room by clearing (or back-dating) its
+    // start also releases the viewers held during the scheduled window — but
+    // only when the waiting room is off. The start poller covers a back-dated
+    // starts_at (still <= now); clearing it to NULL is caught only here.
+    if sets_starts {
+        let opened = room
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| s != "scheduled" && s != "ended")
+            .unwrap_or(false);
+        let waiting_off = room.get("waiting_room").and_then(|v| v.as_i64()) == Some(0);
+        if opened && waiting_off {
+            let conn = state.db.get()?;
+            let id_admit = id.clone();
+            let admitted = tokio::task::spawn_blocking(move || {
+                conn.execute(
+                    "UPDATE participants SET is_admitted = 1 \
+                     WHERE room_id = ?1 AND is_kicked = 0 AND is_admitted = 0",
+                    rusqlite::params![id_admit],
+                )
+            })
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))??;
+            if admitted > 0 {
+                if let Some(slug) = room.get("slug").and_then(|v| v.as_str()) {
+                    let _ = state.events.moderation_changed.send(
+                        crate::events::ModerationChangedEvent {
+                            slug: slug.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     if wants_stream_key_change {
         let new_sk_id = body
             .get("stream_key_id")

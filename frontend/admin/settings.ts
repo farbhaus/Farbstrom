@@ -20,6 +20,9 @@ function show(id: string, visible: boolean): void {
 }
 
 export async function loadSettings(): Promise<void> {
+  // Independent of the account-settings status call below, so it still loads if
+  // that fails.
+  void loadSrtEncryption();
   let res: Response | null;
   try {
     res = await apiFetch('/api/admin/settings/status');
@@ -226,8 +229,83 @@ async function deletePasskey(id: string): Promise<void> {
   }
 }
 
+// --- SRT wire encryption (gh #208) ---------------------------------------
+// Two independent legs; the checkboxes stage a desired state and Apply commits
+// both at once so OME restarts only once.
+
+interface SrtEncState {
+  ingestEnabled: boolean;
+  playbackEnabled: boolean;
+}
+
+let srtSaved: SrtEncState = { ingestEnabled: false, playbackEnabled: false };
+
+function srtChecks(): SrtEncState {
+  return {
+    ingestEnabled: !!($('srt-enc-ingest') as HTMLInputElement | null)?.checked,
+    playbackEnabled: !!($('srt-enc-playback') as HTMLInputElement | null)?.checked,
+  };
+}
+
+function syncSrtCheckboxes(): void {
+  const ing = $('srt-enc-ingest') as HTMLInputElement | null;
+  const pb = $('srt-enc-playback') as HTMLInputElement | null;
+  if (ing) ing.checked = srtSaved.ingestEnabled;
+  if (pb) pb.checked = srtSaved.playbackEnabled;
+}
+
+// Enable Apply only when the checkboxes differ from the persisted state.
+function updateSrtApplyState(): void {
+  const cur = srtChecks();
+  const dirty =
+    cur.ingestEnabled !== srtSaved.ingestEnabled ||
+    cur.playbackEnabled !== srtSaved.playbackEnabled;
+  const btn = $('srt-enc-apply') as HTMLButtonElement | null;
+  if (btn) btn.disabled = !dirty;
+}
+
+async function loadSrtEncryption(): Promise<void> {
+  const res = await apiFetch('/api/stream-keys/srt-config');
+  if (!res || !res.ok) return;
+  const c = await res.json().catch(() => null);
+  if (!c) return;
+  srtSaved = { ingestEnabled: !!c.ingestEnabled, playbackEnabled: !!c.playbackEnabled };
+  syncSrtCheckboxes();
+  updateSrtApplyState();
+}
+
+async function applySrtEncryption(): Promise<void> {
+  const cur = srtChecks();
+  const confirmed = await confirmModal({
+    title: 'Apply SRT encryption',
+    message:
+      'This restarts the streaming engine to apply the change. All live streams drop for a few seconds, and affected encoders and players must reconnect with the new passphrase.\n\nContinue?',
+    confirmLabel: 'Apply & restart',
+    danger: true,
+  });
+  if (!confirmed) return;
+  const btn = $('srt-enc-apply') as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  const res = await apiFetch('/api/stream-keys/srt-encryption', {
+    method: 'POST',
+    body: JSON.stringify({ ingest: cur.ingestEnabled, playback: cur.playbackEnabled }),
+  });
+  if (res && res.ok) {
+    const c = await res.json().catch(() => null);
+    if (c) srtSaved = { ingestEnabled: !!c.ingestEnabled, playbackEnabled: !!c.playbackEnabled };
+    syncSrtCheckboxes();
+    toast('SRT encryption updated — engine restarting');
+  } else {
+    toast('Failed to update SRT encryption');
+  }
+  updateSrtApplyState(); // re-enables Apply if the POST failed (still dirty)
+}
+
 export function initSettings(): void {
   $('set-pw-btn')?.addEventListener('click', changePassword);
+  $('srt-enc-ingest')?.addEventListener('change', updateSrtApplyState);
+  $('srt-enc-playback')?.addEventListener('change', updateSrtApplyState);
+  $('srt-enc-apply')?.addEventListener('click', () => void applySrtEncryption());
   $('set-totp-enable-btn')?.addEventListener('click', startTotpSetup);
   $('set-totp-confirm-btn')?.addEventListener('click', confirmTotp);
   $('set-totp-disable-btn')?.addEventListener('click', disableTotp);

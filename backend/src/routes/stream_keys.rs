@@ -188,24 +188,62 @@ async fn delete_key(
     Ok(Json(json!({ "ok": true })))
 }
 
-// GET /srt-config — SRT encryption passphrases for the admin's raw SRT URLs.
-// Admin-only; nulls when a leg is unencrypted. Static path, so it takes
-// precedence over the `/{id}` capture.
+// GET /srt-config — SRT encryption state for the admin's raw SRT URLs.
+// Admin-only; nulls when disabled. Static path, so it takes precedence over the
+// `/{id}` capture. Reads the DB (gh #208), the sole source of truth.
 async fn srt_config(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, AppError> {
-    Ok(Json(json!({
-        "ingestPassphrase": state.config.srt_ingest_passphrase,
-        "playbackPassphrase": state.config.srt_playback_passphrase,
-        "pbkeylen": state.config.srt_pbkeylen,
-    })))
+    let conn = state.db.get()?;
+    let eff = tokio::task::spawn_blocking(move || crate::srt::resolve(&conn))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(crate::srt::to_json(&eff)))
+}
+
+#[derive(Deserialize)]
+struct SrtEncryptionBody {
+    ingest: bool,
+    playback: bool,
+}
+
+// POST /srt-encryption — set the desired encryption state for both SRT legs
+// (gh #208). Full-state: the admin UI batches both checkboxes behind one Apply so
+// OME restarts once. Persists the flags + a generated passphrase per enabled leg,
+// rewrites <data>/srt.env, and restarts OME so it re-reads them. The restart
+// briefly drops every stream and is a hard cutover — the admin UI confirms first.
+async fn set_srt_encryption(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SrtEncryptionBody>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db.get()?;
+    let data_path = state.config.data_path.clone();
+    let eff = tokio::task::spawn_blocking(move || {
+        crate::srt::apply(&conn, &data_path, body.ingest, body.playback)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    // Apply the change: OME only reads the SRT passphrase at process start.
+    tokio::task::spawn_blocking(crate::srt::restart_ome)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    tracing::info!(
+        ingest = eff.ingest_enabled,
+        playback = eff.playback_enabled,
+        "SRT encryption applied"
+    );
+    Ok(Json(crate::srt::to_json(&eff)))
 }
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_keys).post(create_key))
         .route("/srt-config", get(srt_config))
+        .route("/srt-encryption", post(set_srt_encryption))
         .route("/{id}", put(update_key).delete(delete_key))
         .route("/{id}/unblock", post(unblock_key))
 }

@@ -217,22 +217,37 @@ the gated GET (403/404) + 30 s TTL is the reconnect backstop, so a kicked viewer
 > in the `streamid` in plaintext — and is already handed to web viewers on join. Treat the room
 > link as a capability and keep slugs unguessable.
 
-### SRT encryption (optional)
+### SRT encryption
 
-The SRT legs (encoder → OME, OME → Farbplay) are unencrypted by default. Enable AES per leg with a
-passphrase — read by both OME (`Server.xml`) and the backend, so they must match:
+The SRT legs (encoder → OME, OME → Farbplay) are unencrypted by default. Enable AES from the admin
+**Settings** tab (gh #208) — the two legs are **independent** checkboxes with a single **Apply** button:
 
-| Env var | Leg | Client side |
-|---|---|---|
-| `SRT_INGEST_PASSPHRASE` | encoder → OME (`9999`) | Encoder appends `&passphrase=<p>&pbkeylen=<n>` to the SRT URL (the admin Streamkeys tab builds the full URL for you). |
-| `SRT_PLAYBACK_PASSPHRASE` | OME → Farbplay (`9998`) | Farbplay reads `passphrase`/`pbkeylen` from `/api/watch/<slug>` and sets `SRTO_PASSPHRASE`/`SRTO_PBKEYLEN`. |
+- **Playback (server → viewers, `9998`)** — the exposed leg, out over the public internet to viewers.
+  This is where a passive eavesdropper could capture the stream, so it's the one to encrypt; the UI
+  marks it recommended.
+- **Ingest (encoder → server, `9999`)** — usually a trusted/controlled network, so encrypting it is
+  optional. Leaving it off avoids having to reconfigure every encoder.
 
-`SRT_PBKEYLEN` (16/24/32, default 16) is the AES key length. Passphrases are 10–79 chars
-(`openssl rand -hex 16`). This is **bind-level (per-port)** in OME — one shared passphrase per leg,
-not per room; it protects the media payload on the wire, not access (that's still the admission gate
-+ SignedPolicy). Enabling a leg is a **hard cutover**: every client on that port must send the
-passphrase or its handshake fails, so update all encoders / ship a Farbplay build that sends it. The
-two vars are independent, so the legs can be cut over separately.
+Tick the leg(s) you want and click **Apply** (both legs commit together, so OME restarts only once).
+No `.env` edit: the backend generates a passphrase per enabled leg, stores it in its DB, and restarts
+OME. The client side is then automatic:
+
+| Leg | Client side |
+|---|---|
+| encoder → OME (`9999`) | The admin Stream Keys tab appends `&passphrase=<p>&pbkeylen=<n>` to the ingest SRT URL (masked, revealable) for you to paste into the encoder. |
+| OME → Farbplay (`9998`) | Farbplay reads `passphrase`/`pbkeylen` from `/api/watch/<slug>` and sets `SRTO_PASSPHRASE`/`SRTO_PBKEYLEN`. |
+
+This is **bind-level (per-port)** in OME — one passphrase per leg, not per room; it protects the media
+payload on the wire, not access (that's still the admission gate + SignedPolicy).
+
+**Why Apply restarts OME:** OME reads its SRT passphrase from `Server.xml` only at process startup (no
+hot-reload). So applying an encryption change restarts the OME process, which briefly drops **every**
+stream (SRT and browser) and is a **hard cutover** — the affected leg's encoders / Farbplay clients
+must reconnect with the new passphrase. Do it between sessions. (Enable playback encryption only once a
+Farbplay build that reads the passphrase from `/api/watch` is deployed.)
+
+There is no `.env` setting for SRT encryption — the passphrase is generated and stored in the database,
+and `pbkeylen` is fixed at 16 (AES-128). Everything is driven by the admin toggle.
 
 ## Keyboard shortcuts
 

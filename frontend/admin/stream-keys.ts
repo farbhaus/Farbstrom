@@ -30,6 +30,8 @@ export async function loadKeys(): Promise<void> {
   ]);
   if (!res) return;
   keys = await res.json();
+  // srtConfig supplies the passphrases appended to the SRT URLs below; the
+  // encryption toggle itself lives in the Settings tab (gh #208).
   srtConfig = srtRes && srtRes.ok ? await srtRes.json().catch(() => null) : null;
   renderKeys();
 }

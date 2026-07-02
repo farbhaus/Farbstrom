@@ -104,7 +104,9 @@ COPY caddy/Caddyfile /etc/caddy/Caddyfile
 # Supervisor + entrypoint
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# OME launch wrapper: sources the DB-managed SRT passphrase (gh #208) before OME.
+COPY ome_start.sh /usr/local/bin/ome_start.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/ome_start.sh
 
 # Single-container env defaults
 ENV PORT=4001

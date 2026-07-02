@@ -30,9 +30,6 @@ pub fn test_config() -> AppConfig {
         srt_public_host: "stream.example.com".into(),
         srt_public_port: 9998,
         srt_latency_ms: 500,
-        srt_ingest_passphrase: None,
-        srt_playback_passphrase: None,
-        srt_pbkeylen: 16,
     }
 }
 
@@ -67,6 +64,9 @@ pub fn test_app(state: Arc<AppState>) -> TestServer {
     // limiter here; its behaviour is exercised by integration smoke tests
     // that hit the real HTTP server.
     std::env::set_var("STREAM_DISABLE_RATE_LIMIT", "1");
+    // The SRT-encryption toggle would otherwise shell out to `supervisorctl` to
+    // restart OME (gh #208), which doesn't exist in CI. The DB write still runs.
+    std::env::set_var("STREAM_DISABLE_OME_RESTART", "1");
     let router = routes::build_router(state);
     TestServer::new(router).unwrap()
 }
