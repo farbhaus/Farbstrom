@@ -132,12 +132,16 @@
 
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
 
+/* Native form controls pick up the brand accent everywhere, so every checkbox
+   (and radio) is visually consistent across admin/viewer/landing. */
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
+
 .form-row.checkbox { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .form-row.checkbox label {
     margin: 0; text-transform: none; letter-spacing: 0;
     font-size: 13px; font-weight: 400; color: var(--text);
 }
-.form-row.checkbox input { width: auto; accent-color: var(--accent); }
+.form-row.checkbox input { width: auto; }
 
 /* ---- Centered card (landing / login / join / waiting) ---- */
 .panel-box {
