@@ -204,13 +204,15 @@ async fn srt_config(
 
 #[derive(Deserialize)]
 struct SrtEncryptionBody {
-    enabled: bool,
+    ingest: bool,
+    playback: bool,
 }
 
-// POST /srt-encryption — enable/disable SRT wire encryption (gh #208). Persists
-// the flag + a generated passphrase per leg, rewrites <data>/srt.env, and
-// restarts OME so it re-reads the passphrase. The restart briefly drops every
-// stream and is a hard cutover — the admin UI confirms before calling this.
+// POST /srt-encryption — set the desired encryption state for both SRT legs
+// (gh #208). Full-state: the admin UI batches both checkboxes behind one Apply so
+// OME restarts once. Persists the flags + a generated passphrase per enabled leg,
+// rewrites <data>/srt.env, and restarts OME so it re-reads them. The restart
+// briefly drops every stream and is a hard cutover — the admin UI confirms first.
 async fn set_srt_encryption(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
@@ -219,7 +221,7 @@ async fn set_srt_encryption(
     let conn = state.db.get()?;
     let data_path = state.config.data_path.clone();
     let eff = tokio::task::spawn_blocking(move || {
-        crate::srt::apply_toggle(&conn, &data_path, body.enabled)
+        crate::srt::apply(&conn, &data_path, body.ingest, body.playback)
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
@@ -229,7 +231,11 @@ async fn set_srt_encryption(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    tracing::info!(enabled = eff.enabled, "SRT encryption toggled");
+    tracing::info!(
+        ingest = eff.ingest_enabled,
+        playback = eff.playback_enabled,
+        "SRT encryption applied"
+    );
     Ok(Json(crate::srt::to_json(&eff)))
 }
 

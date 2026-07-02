@@ -172,12 +172,13 @@ async fn admitted_participant_gets_signed_srt_details() {
 
 #[tokio::test]
 async fn playback_passphrase_from_db_toggle() {
-    // DB-managed SRT encryption (gh #208): enabling it via the settings table
-    // makes /api/watch hand out the generated playback passphrase.
+    // DB-managed SRT encryption (gh #208): enabling the playback leg makes
+    // /api/watch hand out the generated playback passphrase. Ingest stays off to
+    // confirm the legs are independent — only playback drives the watch response.
     let state = common::test_state();
     {
         let conn = state.db.get().unwrap();
-        stream_backend::srt::set_enabled(&conn, true).unwrap();
+        stream_backend::srt::apply(&conn, &state.config.data_path, false, true).unwrap();
     }
     let server = common::test_app(state.clone());
 

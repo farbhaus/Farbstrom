@@ -6,7 +6,6 @@ import type { StreamKey } from './types.js';
 const INGEST_HOST = location.hostname;
 
 interface SrtConfig {
-  enabled: boolean;
   ingestPassphrase: string | null;
   playbackPassphrase: string | null;
   pbkeylen: number;
@@ -31,56 +30,10 @@ export async function loadKeys(): Promise<void> {
   ]);
   if (!res) return;
   keys = await res.json();
+  // srtConfig supplies the passphrases appended to the SRT URLs below; the
+  // encryption toggle itself lives in the Settings tab (gh #208).
   srtConfig = srtRes && srtRes.ok ? await srtRes.json().catch(() => null) : null;
   renderKeys();
-  renderSrtToggle();
-}
-
-// SRT encryption toggle (gh #208). The card is static markup (outside the
-// JS-rendered #keys-list), so we only sync its state here.
-function renderSrtToggle(): void {
-  const toggle = document.getElementById('srt-enc-toggle') as HTMLInputElement | null;
-  const state = document.getElementById('srt-enc-state');
-  const enabled = srtConfig?.enabled ?? false;
-  if (toggle) toggle.checked = enabled;
-  if (state) {
-    state.textContent = enabled
-      ? 'Enabled — SRT ingest & playback are AES-encrypted.'
-      : 'Disabled — SRT legs are unencrypted.';
-  }
-}
-
-async function handleSrtToggle(): Promise<void> {
-  const toggle = document.getElementById('srt-enc-toggle') as HTMLInputElement | null;
-  if (!toggle) return;
-  const enabled = toggle.checked;
-  const confirmed = await confirmModal({
-    title: enabled ? 'Enable SRT encryption' : 'Disable SRT encryption',
-    message: enabled
-      ? 'This restarts the streaming engine to apply encryption. All live streams drop for a few seconds, and every encoder and player must reconnect with the new passphrase.\n\nContinue?'
-      : 'This restarts the streaming engine and turns off SRT wire encryption. All live streams drop for a few seconds, and encoders/players must reconnect without a passphrase.\n\nContinue?',
-    confirmLabel: enabled ? 'Enable & restart' : 'Disable & restart',
-    danger: true,
-  });
-  if (!confirmed) {
-    toggle.checked = !enabled; // revert — no change was made
-    return;
-  }
-  toggle.disabled = true;
-  const res = await apiFetch('/api/stream-keys/srt-encryption', {
-    method: 'POST',
-    body: JSON.stringify({ enabled }),
-  });
-  toggle.disabled = false;
-  if (res && res.ok) {
-    srtConfig = await res.json().catch(() => srtConfig);
-    renderSrtToggle();
-    toast(enabled ? 'SRT encryption enabled — engine restarting' : 'SRT encryption disabled — engine restarting');
-    onChange(); // reload keys so the SRT URLs pick up / drop the passphrase
-  } else {
-    toast('Failed to update SRT encryption');
-    toggle.checked = !enabled; // revert
-  }
 }
 
 function renderKeys(): void {
@@ -221,9 +174,6 @@ async function deleteKey(id: string): Promise<void> {
 
 export function initStreamKeys(): void {
   document.getElementById('new-key-btn')?.addEventListener('click', openKeyModal);
-  document
-    .getElementById('srt-enc-toggle')
-    ?.addEventListener('change', () => void handleSrtToggle());
   document
     .getElementById('key-modal-close')
     ?.addEventListener('click', () => closeModal('key-modal'));
