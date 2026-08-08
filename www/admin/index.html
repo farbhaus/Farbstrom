@@ -363,6 +363,12 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     color: var(--dim); border-bottom: 1px solid var(--border); background: var(--surface2);
 }
 .files-list-actions-spacer {} /* placeholder cell in the actions column */
+.files-list-head input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+
+/* Dragging down the checkbox column selects a run of files. The checkboxes and
+   row tints are the whole feedback — no band is drawn. Suppress text selection
+   for the duration, or the drag paints a selection across the rows it crosses. */
+.files-dropzone.checkbox-drag { user-select: none; }
 
 .assign-room-row {
     display: flex; align-items: center; gap: 10px; padding: 10px 14px;
@@ -850,7 +856,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
 
         <div class="files-dropzone" id="files-dropzone">
             <div class="files-list-head">
-                <span></span>
+                <span><input type="checkbox" id="files-select-all" title="Select all listed files" aria-label="Select all listed files"></span>
                 <span></span>
                 <span>Name</span>
                 <span>Type</span>

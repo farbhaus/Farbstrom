@@ -77,7 +77,19 @@ export async function loadFiles(): Promise<void> {
   const res = await apiFetch('/api/admin/files' + filesQueryString());
   if (!res || !res.ok) return;
   filesList = await res.json();
+  pruneSelection();
   renderFiles();
+}
+
+// Drop anything that fell out of the listing (a filter, a search, a delete)
+// from the selection. Without this the bulk bar keeps counting rows that
+// aren't on screen, and "Delete selected" reaches files the admin can't see.
+function pruneSelection(): void {
+  if (!filesSelected.size) return;
+  const listed = new Set(filesList.map((f) => f.id));
+  for (const id of Array.from(filesSelected)) {
+    if (!listed.has(id)) filesSelected.delete(id);
+  }
 }
 
 export async function loadStorageStats(): Promise<void> {
@@ -196,6 +208,155 @@ function updateBulkBar(): void {
   } else {
     bar.classList.remove('active');
   }
+  syncSelectAll();
+}
+
+// ---- Selection ----
+
+// The header checkbox reflects the listed files. pruneSelection keeps the two
+// in step, so this is really "is everything on screen ticked".
+function syncSelectAll(): void {
+  const box = document.getElementById('files-select-all') as HTMLInputElement | null;
+  if (!box) return;
+  const listed = filesList.length;
+  const picked = filesList.filter((f) => filesSelected.has(f.id)).length;
+  box.checked = listed > 0 && picked === listed;
+  box.indeterminate = picked > 0 && picked < listed;
+  box.disabled = listed === 0;
+}
+
+// Push `filesSelected` onto the rendered rows without a full re-render — the
+// checkbox drag calls this on every pointermove.
+function paintSelection(): void {
+  const container = document.getElementById('files-list');
+  if (!container) return;
+  for (const row of Array.from(container.querySelectorAll<HTMLElement>('.file-row'))) {
+    const id = row.dataset['id'] || '';
+    const on = filesSelected.has(id);
+    row.classList.toggle('selected', on);
+    const cb = row.querySelector<HTMLInputElement>('input[data-action="select"]');
+    if (cb) cb.checked = on;
+  }
+  updateBulkBar();
+}
+
+function selectAllListed(on: boolean): void {
+  for (const f of filesList) {
+    if (on) filesSelected.add(f.id);
+    else filesSelected.delete(f.id);
+  }
+  paintSelection();
+}
+
+// ---- Drag across the checkboxes ----
+//
+// Press a row's checkbox and drag up or down: every row the pointer passes
+// takes the *opposite* of the state you started on. So a drag begun on a
+// ticked box clears the run, and one begun on an empty box fills it.
+//
+// A plain click is left entirely alone — the native checkbox toggle and the
+// existing 'select' action handle it. Only once the pointer actually moves do
+// we take over, and then we suppress the trailing click so the browser doesn't
+// toggle the anchor row a second time on top of what we already applied.
+
+const DRAG_THRESHOLD = 3; // px of travel before a click counts as a drag
+
+function initCheckboxDrag(zone: HTMLElement): void {
+  let rows: HTMLElement[] = [];
+  let bands: Array<{ top: number; bottom: number }> = [];
+  let anchor = -1;
+  let want = false;
+  let startY = 0;
+  let dragging = false;
+  let pointerId = -1;
+
+  // Page coordinates, not viewport: the run has to stay glued to the rows if
+  // the page scrolls mid-drag.
+  const rowAt = (pageY: number): number => {
+    for (let i = 0; i < bands.length; i++) {
+      const b = bands[i];
+      if (b && pageY >= b.top && pageY <= b.bottom) return i;
+    }
+    // Past either end — clamp, so overshooting keeps extending the run.
+    const first = bands[0];
+    if (first && pageY < first.top) return 0;
+    return bands.length - 1;
+  };
+
+  const applyRun = (to: number): void => {
+    const lo = Math.min(anchor, to);
+    const hi = Math.max(anchor, to);
+    for (let i = lo; i <= hi; i++) {
+      const id = rows[i]?.dataset['id'];
+      if (!id) continue;
+      if (want) filesSelected.add(id);
+      else filesSelected.delete(id);
+    }
+    paintSelection();
+  };
+
+  zone.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.pointerType === 'touch') return;
+    const cb = (e.target as HTMLElement).closest<HTMLInputElement>('input[data-action="select"]');
+    if (!cb) return;
+    const list = document.getElementById('files-list');
+    rows = list ? Array.from(list.querySelectorAll<HTMLElement>('.file-row')) : [];
+    anchor = rows.findIndex((r) => r.contains(cb));
+    if (anchor === -1) return;
+
+    // Snapshot geometry once — the list can't change mid-drag.
+    bands = rows.map((r) => {
+      const rect = r.getBoundingClientRect();
+      return { top: rect.top + window.scrollY, bottom: rect.bottom + window.scrollY };
+    });
+    want = !cb.checked;
+    startY = e.pageY;
+    dragging = false;
+    pointerId = e.pointerId;
+    // Deliberately NOT capturing the pointer here. Capture retargets the
+    // trailing click to the capture element, which robs the checkbox of its
+    // native toggle and stops the delegated 'select' action from matching —
+    // i.e. a plain click would do nothing. Capture is taken in pointermove,
+    // once this is genuinely a drag and we're going to swallow the click anyway.
+  });
+
+  zone.addEventListener('pointermove', (e) => {
+    if (anchor === -1 || e.pointerId !== pointerId) return;
+    if (!dragging) {
+      if (Math.abs(e.pageY - startY) < DRAG_THRESHOLD) return;
+      dragging = true;
+      zone.classList.add('checkbox-drag');
+      // Now that it's a drag, capture so moves that stray off the list still
+      // extend the run.
+      zone.setPointerCapture(e.pointerId);
+    }
+    applyRun(rowAt(e.pageY));
+  });
+
+  // On window, not the zone: without capture a release outside the list would
+  // never reach a zone-scoped listener and the drag state would stick.
+  const end = (e: PointerEvent): void => {
+    if (anchor === -1 || e.pointerId !== pointerId) return;
+    if (zone.hasPointerCapture(e.pointerId)) zone.releasePointerCapture(e.pointerId);
+    zone.classList.remove('checkbox-drag');
+    if (dragging) {
+      // Swallow the trailing click: we've already set the anchor row, and the
+      // native checkbox activation would flip it straight back. Dropped on the
+      // next tick in case no click materialises — an armed once-listener would
+      // otherwise eat an unrelated click later on.
+      const swallow = (ev: MouseEvent): void => {
+        ev.stopPropagation();
+        ev.preventDefault();
+      };
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+    }
+    dragging = false;
+    anchor = -1;
+    pointerId = -1;
+  };
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
 }
 
 // ---- Upload queue ----
@@ -598,7 +759,13 @@ export function initFiles(): void {
       const files = Array.from((e as DragEvent).dataTransfer?.files || []);
       if (files.length) void uploadFiles(files);
     });
+    initCheckboxDrag(dropzone);
   }
+
+  // Select all listed
+  document.getElementById('files-select-all')?.addEventListener('change', (e) => {
+    selectAllListed((e.target as HTMLInputElement).checked);
+  });
 
   // Bulk bar
   document.getElementById('files-bulk-clear')?.addEventListener('click', () => {
