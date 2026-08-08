@@ -51,6 +51,12 @@ jobs:
       - name: build
         run: npm run build
         working-directory: frontend
+      # Enforces that www/shared/tokens.css stays the only source of raw design
+      # values. The convention was documented long before this gate existed and
+      # drifted anyway — 43 hardcoded radii, 28 of them restating a token that
+      # already existed. Also catches dead and undefined tokens.
+      - name: design lint
+        run: ./scripts/design-lint.sh
 
   audit:
     runs-on: ubuntu-latest

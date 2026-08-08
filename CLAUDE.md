@@ -217,6 +217,15 @@ Conventions:
 - Page-specific CSS stays inline in the page's `<style>` block. Promote duplicated styles to `components.css`.
 - Looping animations must be guarded by `@media (prefers-reduced-motion: reduce)`.
 
+**Enforced by CI.** `./scripts/design-lint.sh` (run it locally before pushing)
+fails on a hardcoded radius, z-index, font-size, font-weight, letter-spacing or
+color outside `tokens.css`, and on any token that is referenced-but-undefined or
+defined-but-unused. It allowlists exactly three things: the `.btn-tab` radius
+reset, `--focus-aspect` (set per element from `conference.ts`), and
+`--panel-w*`/`--strip-w*` (read via `getComputedStyle` in `layout.ts`, so no
+`var()` reference exists to find). The conventions above were documented long
+before this gate and drifted anyway — hence the gate.
+
 **File rows are two different components, named differently on purpose.**
 `.file-row` is admin's 8-column grid table row (`frontend/admin/files.ts`);
 `.shared-file` (+ `-name/-size/-dl/-show/-del`) is the viewer's flex chip row in
@@ -254,7 +263,7 @@ meant neither could be promoted to `components.css`. Keep them distinct.
 GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
 - **audit** — `cargo audit` (advisory DB check).
-- **frontend** — `npm run typecheck`.
+- **frontend** — `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
 - **licenses** — regenerates `docs/THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
 
 ## Useful reference docs
