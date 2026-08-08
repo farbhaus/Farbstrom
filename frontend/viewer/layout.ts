@@ -234,13 +234,17 @@ function reflowDuringPanelTransition(): void {
   requestAnimationFrame(tick);
 }
 
-export function toggleChat(): void {
-  const next = !viewerStore.get().chatOpen;
-  viewerStore.set({ chatOpen: next });
-  document.getElementById('right-panel')?.classList.toggle('open', next);
-  document.getElementById('chat-toggle')?.classList.toggle('panel-open', next);
-  if (next) document.getElementById('chat-toggle')?.classList.remove('has-notification');
+export function setChatOpen(open: boolean): void {
+  if (viewerStore.get().chatOpen === open) return;
+  viewerStore.set({ chatOpen: open });
+  document.getElementById('right-panel')?.classList.toggle('open', open);
+  document.getElementById('chat-toggle')?.classList.toggle('panel-open', open);
+  if (open) document.getElementById('chat-toggle')?.classList.remove('has-notification');
   reflowDuringPanelTransition();
+}
+
+export function toggleChat(): void {
+  setChatOpen(!viewerStore.get().chatOpen);
 }
 
 // Swap the chat panel between its Chat and Files tab panes. Pure DOM state —

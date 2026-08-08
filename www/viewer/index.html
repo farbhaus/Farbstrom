@@ -693,6 +693,60 @@ body.has-focus.strip-hidden #stage-strip {
 .chat-draft-remove:hover { background: var(--surface); color: var(--text); }
 .chat-draft-remove svg { width: 14px; height: 14px; }
 
+/* Staging tray — one chip per attachment waiting to be sent (#211). Capped in
+   height so a multi-file drop can't push the composer out of the panel. */
+#chat-draft-list {
+    flex-shrink: 0;
+    display: flex; flex-direction: column; gap: var(--sp-1);
+    max-height: 132px; overflow-y: auto;
+    padding: var(--sp-2) var(--sp-3) 0;
+}
+#chat-draft-list:empty { display: none; }
+/* Inside the tray the chip owns the gap, not its own margins. */
+#chat-draft-list .chat-draft-chip { margin: 0; position: relative; overflow: hidden; }
+/* Upload progress — a hairline along the chip's bottom edge. */
+.chat-draft-progress {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    height: 3px; background: var(--border);
+}
+.chat-draft-progress > div {
+    height: 100%; width: 0;
+    background: var(--accent);
+    transition: width var(--dur-fast) linear;
+}
+.chat-draft-chip.is-failed { border-color: var(--danger); }
+.chat-draft-chip.is-failed .chat-file-size { color: var(--danger); }
+
+/* Drop overlay — armed while a file drag is anywhere over the viewer (#211).
+   Dropping stages into chat wherever it lands, so the affordance is page-wide
+   rather than scoped to the panel. */
+#chat-drop-overlay {
+    position: fixed; inset: 0;
+    z-index: var(--z-overlay);
+    display: none;
+    align-items: center; justify-content: center;
+    flex-direction: column; gap: var(--sp-2);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(2px);
+    color: var(--accent);
+    font-size: 15px; font-weight: 600;
+    text-align: center; padding: var(--sp-4);
+}
+/* The dashed frame is inset, but the overlay itself covers the viewport edge
+   to edge — an uncovered gutter would hand the drag back to the page and make
+   the overlay flicker on and off along the border. */
+#chat-drop-overlay::before {
+    content: ''; position: absolute; inset: var(--sp-4);
+    border: 2px dashed var(--accent);
+    border-radius: var(--r-xl);
+    pointer-events: none;
+}
+#chat-drop-overlay.is-active { display: flex; }
+#chat-drop-overlay svg { width: 40px; height: 40px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+/* Children must not become the drag target — otherwise the overlay's own
+   dragleave fires as the pointer crosses onto the icon or label. */
+#chat-drop-overlay > * { pointer-events: none; }
+
 /* ---- Files tab ---- */
 .files-count-badge {
     font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
@@ -1232,14 +1286,9 @@ body.has-focus.strip-hidden #stage-strip {
             </div>
             <div id="chat-body" class="tab-pane" data-tab="chat">
                 <div id="chat-messages"></div>
-                <div id="upload-progress-row" style="display:none;align-items:center;gap:8px;padding:4px 6px;margin-bottom:4px;font-size:11px;color:var(--dim);">
-                    <div id="upload-progress-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
-                    <div id="upload-progress-pct" style="font-variant-numeric:tabular-nums;">0%</div>
-                    <button id="upload-progress-cancel" title="Cancel upload" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;line-height:1;padding:0 4px;">✕</button>
-                </div>
-                <div id="upload-progress-bar" style="display:none;height:3px;background:var(--border);margin-bottom:2px;border-radius:2px;overflow:hidden;">
-                    <div id="upload-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width 0.1s linear;"></div>
-                </div>
+                <!-- Staged attachments (uploaded with defer=true, not yet shared).
+                     Populated by chat.ts; empty until something is staged. -->
+                <div id="chat-draft-list"></div>
                 <div id="chat-input-row">
                     <textarea id="chat-input" rows="1" placeholder="Message..." maxlength="500" autocomplete="off" disabled></textarea>
                     <button id="chat-attach" disabled title="Attach file">
@@ -1248,7 +1297,7 @@ body.has-focus.strip-hidden #stage-strip {
                     <button id="chat-send" disabled>
                         <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
                     </button>
-                    <input type="file" id="file-input" style="display:none">
+                    <input type="file" id="file-input" multiple style="display:none">
                 </div>
             </div>
             <div id="files-pane" class="tab-pane" data-tab="files" hidden>
@@ -1335,6 +1384,15 @@ body.has-focus.strip-hidden #stage-strip {
          landscape breakpoint matches, freeing vertical space for the stage. -->
     <div id="left-toolbar"  class="side-pill nav-pill" aria-hidden="true"></div>
     <div id="right-toolbar" class="side-pill nav-pill" aria-hidden="true"></div>
+
+    <!-- Drag-and-drop target (#211). Covers the whole viewer while a file drag
+         is in progress — dropping anywhere stages the file in chat, opening the
+         panel if it's closed. Being the topmost hit-test target is what makes
+         its own dragleave fire exactly once, when the pointer leaves the window. -->
+    <div id="chat-drop-overlay" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        <span>Drop to attach</span>
+    </div>
 
 </div><!-- /app -->
 

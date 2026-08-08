@@ -1,6 +1,7 @@
 // Chat sidebar + file sharing (upload XHR with cancel + progress).
 
-import { esc, fmtBytes } from '../shared/utils.js';
+import { esc, fmtBytes, toast } from '../shared/utils.js';
+import { setChatOpen, switchPanelTab } from './layout.js';
 import { getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
 import type { Role, SessionFile, WsClientMessage } from './types.js';
@@ -219,34 +220,84 @@ export async function loadSessionFiles(): Promise<void> {
   } catch {}
 }
 
-let currentUploadXhr: XMLHttpRequest | null = null;
-// A file that has been uploaded (defer=true) and is waiting to be sent
-// alongside a chat message. Cleared when the user sends or removes the chip.
-let currentDraft: { id: string; name: string; size: number } | null = null;
+// ---- Attachment staging ----
+//
+// Attachments upload immediately with `defer=true` so the transfer overlaps
+// with the user still typing, but they stay invisible to the room until Send
+// promotes each one with a `file:share`. Uploads run strictly one at a time:
+// an attachment here can be up to the backend's 2.5 GB cap, and parallel XHRs
+// would only split the same uplink.
 
-function uploadFile(file: File): void {
-  if (currentDraft) {
-    // Only one draft attached at a time. Remove the existing one first.
-    void clearDraft({ deleteRemote: true });
+const MAX_DRAFTS = 10;
+const CLIP_SVG =
+  '<svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+
+type DraftState = 'queued' | 'uploading' | 'ready' | 'failed';
+
+interface Draft {
+  /** DOM key — deliberately not the server id, which doesn't exist yet. */
+  localId: string;
+  file: File;
+  /** Server-side id, set once the deferred upload lands. */
+  fileId: string | null;
+  name: string;
+  size: number;
+  state: DraftState;
+  pct: number;
+  xhr: XMLHttpRequest | null;
+}
+
+let drafts: Draft[] = [];
+let draftSeq = 0;
+
+/** Chat has to be connected before anything can be staged onto it. */
+function chatAcceptsFiles(): boolean {
+  const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+  return !!input && !input.disabled;
+}
+
+// Single entry point for both the paperclip picker and a panel drop.
+function enqueueFiles(files: File[]): void {
+  if (!files.length || !chatAcceptsFiles()) return;
+  const room = MAX_DRAFTS - drafts.length;
+  if (room <= 0) {
+    toast(`Up to ${MAX_DRAFTS} attachments at a time`);
+    return;
   }
-  const attachBtn = document.getElementById('chat-attach') as HTMLButtonElement;
-  const progressBar = document.getElementById('upload-progress-bar') as HTMLElement;
-  const progressFill = document.getElementById('upload-progress-fill') as HTMLElement;
-  const progressRow = document.getElementById('upload-progress-row') as HTMLElement;
-  const progressName = document.getElementById('upload-progress-name') as HTMLElement;
-  const progressPct = document.getElementById('upload-progress-pct') as HTMLElement;
-  const cancelBtn = document.getElementById('upload-progress-cancel') as HTMLButtonElement;
+  const accepted = files.slice(0, room);
+  if (accepted.length < files.length) {
+    toast(`Up to ${MAX_DRAFTS} attachments at a time — ${files.length - accepted.length} skipped`);
+  }
+  for (const file of accepted) {
+    drafts.push({
+      localId: `d${++draftSeq}`,
+      file,
+      fileId: null,
+      name: file.name,
+      size: file.size,
+      state: 'queued',
+      pct: 0,
+      xhr: null,
+    });
+  }
+  renderDrafts();
+  syncSendButton();
+  pumpQueue();
+}
 
-  attachBtn.disabled = true;
-  progressBar.style.display = '';
-  progressRow.style.display = 'flex';
-  progressFill.style.width = '0%';
-  progressName.textContent = file.name;
-  progressName.title = file.name;
-  progressPct.textContent = '0%';
+function pumpQueue(): void {
+  if (drafts.some((d) => d.state === 'uploading')) return;
+  const next = drafts.find((d) => d.state === 'queued');
+  if (next) startUpload(next);
+}
+
+function startUpload(draft: Draft): void {
+  draft.state = 'uploading';
+  draft.pct = 0;
+  renderDrafts();
 
   const xhr = new XMLHttpRequest();
-  currentUploadXhr = xhr;
+  draft.xhr = xhr;
   xhr.open(
     'POST',
     `/api/public/rooms/${encodeURIComponent(slug)}/files` +
@@ -254,83 +305,127 @@ function uploadFile(file: File): void {
       `&token=${encodeURIComponent(getToken())}&defer=true`,
   );
   xhr.upload.addEventListener('progress', (e) => {
-    if (e.lengthComputable) {
-      const pct = Math.round((e.loaded / e.total) * 100);
-      progressFill.style.width = pct + '%';
-      progressPct.textContent = pct + '%';
-    }
+    if (!e.lengthComputable) return;
+    draft.pct = Math.round((e.loaded / e.total) * 100);
+    // Patch the chip in place — a full re-render on every tick would recreate
+    // the fill element and kill its width transition.
+    updateDraftProgress(draft);
   });
-  const hideProgress = (): void => {
-    currentUploadXhr = null;
-    attachBtn.disabled = false;
-    progressBar.style.display = 'none';
-    progressRow.style.display = 'none';
-    progressFill.style.width = '0%';
+  const finish = (state: DraftState): void => {
+    draft.xhr = null;
+    draft.state = state;
+    renderDrafts();
+    syncSendButton();
+    pumpQueue();
   };
   xhr.onload = () => {
-    hideProgress();
     if (xhr.status >= 200 && xhr.status < 300) {
       try {
         const body = JSON.parse(xhr.responseText) as { id: string; name: string; size: number };
-        currentDraft = { id: body.id, name: body.name, size: body.size };
-        renderDraftChip(currentDraft);
-        syncSendButton();
+        draft.fileId = body.id;
+        draft.name = body.name;
+        draft.size = body.size;
+        finish('ready');
+        return;
       } catch {
-        /* ignore malformed response */
+        /* malformed response — fall through to the failure path */
       }
     }
+    finish('failed');
   };
-  xhr.onerror = hideProgress;
-  xhr.onabort = hideProgress;
-  cancelBtn.onclick = () => {
-    if (currentUploadXhr) currentUploadXhr.abort();
-  };
+  xhr.onerror = () => finish('failed');
+  // No onabort: removeDraft() has already dropped the draft and re-pumped the
+  // queue by the time abort() fires.
 
   const fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', draft.file);
   xhr.send(fd);
 }
 
-function renderDraftChip(draft: { id: string; name: string; size: number }): void {
-  // The chip sits between the chat messages list and the input row so it
-  // visually reads as "attached to the message you're about to send."
-  let chip = document.getElementById('chat-draft-chip');
-  if (!chip) {
-    chip = document.createElement('div');
-    chip.id = 'chat-draft-chip';
-    chip.className = 'chat-file chat-draft-chip';
-    const inputRow = document.getElementById('chat-input-row');
-    inputRow?.parentElement?.insertBefore(chip, inputRow);
+function draftSubtitle(draft: Draft): string {
+  switch (draft.state) {
+    case 'queued':
+      return `${fmtBytes(draft.size)} · waiting`;
+    case 'uploading':
+      return `${fmtBytes(draft.size)} · ${draft.pct}%`;
+    case 'failed':
+      return 'Upload failed';
+    default:
+      return fmtBytes(draft.size);
   }
-  chip.innerHTML =
-    `<span class="chat-file-icon"><svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>` +
-    `<div class="chat-file-info"><div class="chat-file-name" title="${esc(draft.name)}">${esc(draft.name)}</div><div class="chat-file-size">${fmtBytes(draft.size)}</div></div>` +
-    `<button class="chat-draft-remove" title="Remove" aria-label="Remove attachment"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`;
-  chip.querySelector('.chat-draft-remove')?.addEventListener('click', () => {
-    void clearDraft({ deleteRemote: true });
-  });
 }
 
-async function clearDraft(opts: { deleteRemote: boolean }): Promise<void> {
-  const draft = currentDraft;
-  currentDraft = null;
-  document.getElementById('chat-draft-chip')?.remove();
+function draftChipHtml(draft: Draft): string {
+  const inFlight = draft.state === 'queued' || draft.state === 'uploading';
+  const label = inFlight ? 'Cancel upload' : 'Remove attachment';
+  return (
+    `<div class="chat-file chat-draft-chip${draft.state === 'failed' ? ' is-failed' : ''}" data-draft-id="${draft.localId}">` +
+    `<span class="chat-file-icon">${CLIP_SVG}</span>` +
+    `<div class="chat-file-info">` +
+    `<div class="chat-file-name" title="${esc(draft.name)}">${esc(draft.name)}</div>` +
+    `<div class="chat-file-size">${esc(draftSubtitle(draft))}</div>` +
+    `</div>` +
+    `<button class="chat-draft-remove" data-draft-id="${draft.localId}" title="${label}" aria-label="${label}">` +
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>` +
+    `</button>` +
+    (inFlight
+      ? `<div class="chat-draft-progress"><div style="width:${draft.pct}%"></div></div>`
+      : '') +
+    `</div>`
+  );
+}
+
+// The tray sits between the messages list and the input row so the chips read
+// as "attached to the message you're about to send."
+function renderDrafts(): void {
+  const list = document.getElementById('chat-draft-list');
+  if (!list) return;
+  list.innerHTML = drafts.map(draftChipHtml).join('');
+}
+
+function chipEl(localId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `#chat-draft-list [data-draft-id="${CSS.escape(localId)}"]`,
+  );
+}
+
+function updateDraftProgress(draft: Draft): void {
+  const chip = chipEl(draft.localId);
+  if (!chip) return;
+  const fill = chip.querySelector<HTMLElement>('.chat-draft-progress > div');
+  if (fill) fill.style.width = draft.pct + '%';
+  const sub = chip.querySelector<HTMLElement>('.chat-file-size');
+  if (sub) sub.textContent = draftSubtitle(draft);
+}
+
+function removeDraft(localId: string): void {
+  const idx = drafts.findIndex((d) => d.localId === localId);
+  if (idx === -1) return;
+  const draft = drafts.splice(idx, 1)[0];
+  if (!draft) return;
+  draft.xhr?.abort();
+  draft.xhr = null;
+  renderDrafts();
   syncSendButton();
-  if (opts.deleteRemote && draft) {
-    try {
-      await fetch(
-        `/api/public/rooms/${encodeURIComponent(slug)}/files/${encodeURIComponent(draft.id)}` +
-          `?participantId=${encodeURIComponent(getParticipantId())}&token=${encodeURIComponent(getToken())}`,
-        { method: 'DELETE' },
-      );
-    } catch {
-      /* best-effort cleanup */
-    }
+  pumpQueue();
+  // Only a completed upload left something on the server to clean up.
+  if (draft.fileId) void deleteRemoteDraft(draft.fileId);
+}
+
+async function deleteRemoteDraft(fileId: string): Promise<void> {
+  try {
+    await fetch(
+      `/api/public/rooms/${encodeURIComponent(slug)}/files/${encodeURIComponent(fileId)}` +
+        `?participantId=${encodeURIComponent(getParticipantId())}&token=${encodeURIComponent(getToken())}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    /* best-effort cleanup */
   }
 }
 
-// The send button + chat-send only need to be lit when the chat is enabled
-// AND there's something to send (text or a draft).
+// The send button only needs to be lit when the chat is enabled AND there's
+// something to send (text, or an attachment that finished uploading).
 function syncSendButton(): void {
   const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
   const sendBtn = document.getElementById('chat-send') as HTMLButtonElement | null;
@@ -342,20 +437,24 @@ function syncSendButton(): void {
     return;
   }
   const hasText = input.value.trim().length > 0;
-  sendBtn.disabled = !(hasText || currentDraft !== null);
+  sendBtn.disabled = !(hasText || drafts.some((d) => d.state === 'ready'));
 }
 
 function sendChat(): void {
   const input = document.getElementById('chat-input') as HTMLTextAreaElement;
   const text = input.value.trim();
-  const draft = currentDraft;
-  if (!text && !draft) return;
+  const ready = drafts.filter((d) => d.state === 'ready');
+  if (!text && !ready.length) return;
   if (!sendFn) return;
   if (text) sendFn({ type: 'chat:message', text });
-  if (draft) {
-    sendFn({ type: 'file:share', fileId: draft.id });
-    currentDraft = null;
-    document.getElementById('chat-draft-chip')?.remove();
+  for (const draft of ready) {
+    if (draft.fileId) sendFn({ type: 'file:share', fileId: draft.fileId });
+  }
+  // Attachments still uploading stay staged, so a large transfer never blocks
+  // sending a message — the user hits Send again once it lands.
+  if (ready.length) {
+    drafts = drafts.filter((d) => d.state !== 'ready');
+    renderDrafts();
   }
   input.value = '';
   autoGrow(input);
@@ -370,6 +469,93 @@ function autoGrow(el: HTMLTextAreaElement): void {
   const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
   el.style.height = 'auto';
   el.style.height = `${el.scrollHeight + border}px`;
+}
+
+// ---- Drag and drop (#211) ----
+//
+// The whole viewer is the drop target — a file dropped over the video, the
+// roster, anywhere, is staged in chat. The panel is opened on drop so the
+// staged chip is visible rather than hidden behind a closed panel.
+
+/** True only for an OS file drag — not a text selection or an in-page drag. */
+function isFileDrag(e: DragEvent): boolean {
+  const types = e.dataTransfer?.types;
+  return !!types && Array.from(types).includes('Files');
+}
+
+// Pull real files out of a drop. `items` is preferred over `files` so a dropped
+// *folder* — easy to grab by accident when the shot lives in one — is reported
+// rather than uploaded as a 0-byte entry.
+function collectFiles(dt: DataTransfer | null): File[] {
+  if (!dt) return [];
+  const items = Array.from(dt.items ?? []);
+  if (!items.length) return Array.from(dt.files);
+  const files: File[] = [];
+  let folders = 0;
+  for (const item of items) {
+    if (item.kind !== 'file') continue;
+    // webkitGetAsEntry is the only synchronous way to tell a directory from a
+    // file; it's non-standard but universal, and absent entries fall through
+    // to getAsFile so nothing is lost if it ever goes away.
+    const entry = item.webkitGetAsEntry();
+    if (entry && !entry.isFile) {
+      folders++;
+      continue;
+    }
+    const file = item.getAsFile();
+    if (file) files.push(file);
+  }
+  if (folders) toast('Folders can’t be attached');
+  return files;
+}
+
+function initDropZone(): void {
+  const overlay = document.getElementById('chat-drop-overlay');
+  if (!overlay) return;
+
+  const disarm = (): void => overlay.classList.remove('is-active');
+
+  // Every file drag is preventDefault'd whether or not we can accept it: the
+  // browser's default is to navigate the tab to the dropped file, which
+  // silently ends the session. When chat isn't connected we take the drag but
+  // show 'none', so the cursor stays honest instead of promising a drop.
+  const arm = (e: DragEvent): void => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    const ok = chatAcceptsFiles();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = ok ? 'copy' : 'none';
+    overlay.classList.toggle('is-active', ok);
+  };
+  window.addEventListener('dragenter', arm);
+  window.addEventListener('dragover', arm);
+
+  // Once armed the overlay covers the viewport and is the topmost hit-test
+  // target, so its own dragleave fires exactly once — when the pointer really
+  // leaves the window. No per-element enter/leave bookkeeping needed.
+  overlay.addEventListener('dragleave', disarm);
+  // Belt and braces: a drag cancelled in-window (Escape) doesn't always send a
+  // dragleave, and a stuck overlay would swallow the whole page.
+  window.addEventListener('dragend', disarm);
+
+  window.addEventListener('drop', (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    disarm();
+    if (!chatAcceptsFiles()) return;
+    const files = collectFiles(e.dataTransfer);
+    if (!files.length) return;
+    // Fullscreen puts #stage in the top layer, above the panel — leave it, or
+    // the staged chip lands somewhere the user can't see and the drop reads as
+    // having done nothing.
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      void (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+    }
+    // Drop lands anywhere on the page, so surface where the files went:
+    // reveal the panel and its Chat tab before staging.
+    setChatOpen(true);
+    switchPanelTab('chat');
+    enqueueFiles(files);
+  });
 }
 
 export function initChat(): void {
@@ -394,10 +580,18 @@ export function initChat(): void {
   });
   document.getElementById('file-input')?.addEventListener('change', (e) => {
     const target = e.target as HTMLInputElement;
-    const file = target.files?.[0];
-    if (file) uploadFile(file);
+    enqueueFiles(Array.from(target.files ?? []));
     target.value = '';
   });
+  // Remove / cancel on a staged attachment. Delegated so the tray can be
+  // re-rendered freely without re-wiring per chip.
+  document.getElementById('chat-draft-list')?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('.chat-draft-remove');
+    const id = btn?.dataset['draftId'];
+    if (id) removeDraft(id);
+  });
+
+  initDropZone();
 
   // Presenter-only Show / Delete buttons inside chat messages and the
   // files list. Delegated at #right-panel so dynamically-rendered rows
