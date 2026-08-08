@@ -18,31 +18,24 @@ html, body { overflow: hidden; }
 
 /* ---- Fullscreen overlays (join, waiting) ---- */
 .screen {
-    position: fixed; inset: 0; z-index: 200;
+    position: fixed; inset: 0; z-index: var(--z-screen);
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     gap: 16px;
 }
 .screen.hidden { display: none; }
 
-.join-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); padding: 48px; width: 380px; }
+/* .join-box / .waiting-box / .conf-prompt-box / .roster-box all use the
+   shared .panel-box shell from components.css; only their own layout is here. */
 .screen-logo:not(.u-hidden) { height: 48px; opacity: 0.6; margin: 0 auto 24px; display: block; }
-.brand-wordmark { font-size: 15px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; color: var(--text); margin: 0 auto 24px; }
-.join-room-name { font-size: 20px; font-weight: 600; margin-bottom: 32px; }
-.form-row { margin-bottom: 16px; }
-.form-row label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
-.form-row input {
-    width: 100%; padding: 10px 12px;
-    background: var(--bg); border: 1px solid var(--border);
-    border-radius: var(--r-btn); color: var(--text); font: inherit; font-size: 13px; outline: none;
-    transition: border-color var(--dur-fast) var(--ease-out),
-                box-shadow var(--dur-fast) var(--ease-out);
-}
-.form-row input:hover { border-color: var(--dim); }
-.form-row input:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
+.brand-wordmark { font-size: var(--fs-md); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; text-align: center; color: var(--text); margin: 0 auto 24px; }
+.join-room-name { font-size: var(--fs-xl); font-weight: var(--fw-semi); margin-bottom: 32px; }
+/* .form-row comes from components.css. The only viewer-specific difference:
+   the input sits on --bg because the join card is already --surface. */
+.form-row input { background: var(--bg); }
 .join-btn {
     width: 100%; padding: 11px; background: var(--text); color: var(--bg);
-    border: none; border-radius: var(--r-btn); font: inherit; font-size: 13px; font-weight: 600;
+    border: none; border-radius: var(--r-control); font: inherit; font-size: var(--fs-base); font-weight: var(--fw-semi);
     cursor: pointer; margin-top: 8px;
     transition: background var(--dur-fast) var(--ease-out),
                 transform var(--dur-fast) var(--ease-out);
@@ -50,14 +43,14 @@ html, body { overflow: hidden; }
 .join-btn:hover  { background: color-mix(in srgb, var(--text) 80%, var(--bg)); }
 .join-btn:active { transform: translateY(1px); }
 .join-btn:focus-visible { outline: none; box-shadow: var(--ring-accent); }
-.join-error { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
+.join-error { color: var(--danger); font-size: var(--fs-sm); margin-top: 10px; min-height: 16px; }
 
-.waiting-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 40px 48px; width: 380px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
-.waiting-label { font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); }
-.waiting-name { font-size: 18px; font-weight: 600; }
-.waiting-msg { color: var(--dim); font-size: 13px; }
-.waiting-msg #scheduled-when { color: var(--text); font-weight: 600; }
-.scheduled-countdown { margin-top: 6px; font-size: 20px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.waiting-box { display: flex; flex-direction: column; gap: var(--sp-2-5); align-items: flex-start; }
+.waiting-label { color: var(--dim); }
+.waiting-name { font-size: var(--fs-lg); font-weight: var(--fw-semi); }
+.waiting-msg { color: var(--dim); font-size: var(--fs-base); }
+.waiting-msg #scheduled-when { color: var(--text); font-weight: var(--fw-semi); }
+.scheduled-countdown { margin-top: 6px; font-size: var(--fs-xl); font-weight: var(--fw-bold); color: var(--accent); font-variant-numeric: tabular-nums; }
 .dot-anim::after { content: ''; animation: dots 1.5s steps(4, end) infinite; }
 @keyframes dots { 0%,25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
 
@@ -67,31 +60,22 @@ html, body { overflow: hidden; }
     display: flex; align-items: center; justify-content: center;
 }
 #landing-screen.hidden { display: none; }
-.landing-title { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
-.landing-sub { font-size: 13px; color: var(--dim); margin-bottom: 32px; line-height: 1.5; }
-.landing-error { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
+.landing-title { font-size: var(--fs-xl); font-weight: var(--fw-semi); margin-bottom: 6px; }
+.landing-sub { font-size: var(--fs-base); color: var(--dim); margin-bottom: 32px; line-height: var(--lh-body); }
+.landing-error { color: var(--danger); font-size: var(--fs-sm); margin-top: 10px; min-height: 16px; }
 
 /* ---- Conference permission prompt ---- */
-#conf-prompt-overlay {
-    position: fixed; inset: 0; z-index: 150;
-    background: rgba(0,0,0,0.7);
-    display: flex; align-items: center; justify-content: center;
-    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-}
 #conf-prompt-overlay.hidden { display: none; }
-.conf-prompt-box {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; padding: 40px 36px 32px; width: 340px; text-align: center;
-}
+.conf-prompt-box { text-align: center; }
 .conf-prompt-icon { margin-bottom: 16px; color: var(--dim); }
 .conf-prompt-icon svg { width: 36px; height: 36px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.conf-prompt-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
-.conf-prompt-desc { font-size: 13px; color: var(--dim); margin-bottom: 28px; line-height: 1.5; }
+.conf-prompt-title { font-size: var(--fs-md); font-weight: var(--fw-bold); margin-bottom: 6px; }
+.conf-prompt-desc { font-size: var(--fs-base); color: var(--dim); margin-bottom: 28px; line-height: var(--lh-body); }
 .conf-prompt-actions { display: flex; flex-direction: column; gap: 8px; }
 .conf-prompt-btn {
-    width: 100%; padding: 12px; font: inherit; font-size: 13px; font-weight: 600;
-    cursor: pointer; border: 1.5px solid var(--border); background: var(--surface2);
-    border-radius: var(--r-btn); color: var(--text);
+    width: 100%; padding: 12px; font: inherit; font-size: var(--fs-base); font-weight: var(--fw-semi);
+    cursor: pointer; border: var(--bw-control) solid var(--border); background: var(--surface2);
+    border-radius: var(--r-control); color: var(--text);
     display: flex; align-items: center; justify-content: center; gap: 8px;
     transition: border-color var(--dur-fast) var(--ease-out),
                 background var(--dur-fast) var(--ease-out),
@@ -104,74 +88,66 @@ html, body { overflow: hidden; }
 .conf-prompt-btn svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 .conf-prompt-skip {
     background: none; color: var(--dim); border-color: transparent;
-    font-size: 12px; padding: 8px; margin-top: 4px;
+    font-size: var(--fs-sm); padding: 8px; margin-top: 4px;
 }
 .conf-prompt-skip:hover { color: var(--text); background: none; border-color: transparent; }
 
 /* ---- Device picker ---- */
-#device-picker-overlay {
-    position: fixed; inset: 0; z-index: 150;
-    background: rgba(0,0,0,0.7);
-    display: flex; align-items: center; justify-content: center;
-    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-}
 #device-picker-overlay.hidden { display: none; }
 .device-picker-row { margin-bottom: 14px; text-align: left; }
-.device-picker-row label {
-    display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--dim); margin-bottom: 4px;
-}
+.device-picker-row label { display: block; color: var(--dim); margin-bottom: var(--sp-1); }
 .device-picker-row select {
-    width: 100%; padding: 8px 10px; font: inherit; font-size: 13px;
-    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; outline: none;
+    width: 100%; padding: 8px 10px; font: inherit; font-size: var(--fs-base);
+    background: var(--surface2); color: var(--text); border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-control); outline: none;
     -webkit-appearance: none; appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23777' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 28px;
 }
-.device-picker-row select:focus { border-color: var(--dim); }
+/* Same accent + ring as every other input in the product. */
+.device-picker-row select:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
 .device-picker-check {
     display: flex; align-items: center; gap: 8px; cursor: pointer;
-    font-size: 13px; color: var(--text); margin-bottom: 0;
-    text-transform: none; letter-spacing: normal; font-weight: 400;
+    font-size: var(--fs-base); color: var(--text); margin-bottom: 0;
+    text-transform: none; letter-spacing: normal; font-weight: var(--fw-normal);
 }
 .device-picker-check input { width: 16px; height: 16px; cursor: pointer; }
-.device-privacy-note { margin-top: 16px; font-size: 11px; line-height: 1.5; color: var(--dim); text-align: left; }
+.device-privacy-note { margin-top: 16px; font-size: var(--fs-xs); line-height: var(--lh-body); color: var(--dim); text-align: left; }
 .device-privacy-note a { color: var(--accent); }
 
 /* ---- "Show" button next to "Get" on shared files (presenter-only) ---- */
-.file-row-show {
-    background: var(--surface); border: 1px solid var(--border);
-    color: var(--text); font: inherit; font-weight: 700; letter-spacing: 0.04em;
+.shared-file-show {
+    background: var(--surface); border: var(--bw-control) solid var(--border);
+    color: var(--text); font: inherit; font-weight: var(--fw-bold); letter-spacing: var(--ls-btn);
     flex-shrink: 0; cursor: pointer;
-    padding: 3px 10px; font-size: 10px; border-radius: var(--r-md);
+    padding: 3px 10px; font-size: var(--fs-2xs); border-radius: var(--r-control);
     transition: border-color var(--dur-fast) var(--ease-out),
                 background var(--dur-fast) var(--ease-out),
                 color var(--dur-fast) var(--ease-out);
 }
-.file-row-show:hover { border-color: var(--dim); background: var(--surface2); }
-.file-row-show.is-active {
+.shared-file-show:hover { border-color: var(--dim); background: var(--surface2); }
+.shared-file-show.is-active {
     color: var(--bg); background: var(--accent); border-color: var(--accent);
 }
-.file-row-show.is-active:hover {
+.shared-file-show.is-active:hover {
     background: var(--accent); border-color: var(--accent); opacity: 0.85;
 }
 
 /* Presenter-only Delete buttons next to Get on shared files. Icon-only
    to keep the row compact; turns danger-red on hover. */
-.file-row-del {
+.shared-file-del {
     display: inline-flex; align-items: center; justify-content: center;
-    background: transparent; border: 1px solid transparent;
+    background: transparent; border: var(--bw-control) solid transparent;
     color: var(--dim); cursor: pointer; flex-shrink: 0;
-    border-radius: var(--r-md);
+    border-radius: var(--r-control);
     padding: 4px;
     transition: background var(--dur-fast) var(--ease-out),
                 border-color var(--dur-fast) var(--ease-out),
                 color var(--dur-fast) var(--ease-out);
 }
-.file-row-del svg { width: 14px; height: 14px; }
-.file-row-del:hover {
+.shared-file-del svg { width: 14px; height: 14px; }
+.shared-file-del:hover {
     color: var(--danger);
     background: var(--surface2);
     border-color: var(--border);
@@ -188,29 +164,35 @@ html, body { overflow: hidden; }
 /* ---- Top bar ---- */
 #top-bar {
     height: var(--topbar-h); flex-shrink: 0;
-    background: var(--surface); border-bottom: 1px solid var(--border);
+    background: var(--surface); border-bottom: var(--bw-hair) solid var(--border);
     display: flex; align-items: center; padding: 0 16px;
 }
 #top-left { flex: 1; display: flex; align-items: center; }
-.brand-logo:not(.u-hidden) { height: 30px; opacity: 1; transition: opacity 0.15s; margin: 20px; display: flex }
+.brand-logo:not(.u-hidden) { height: 30px; opacity: 1; transition: opacity var(--dur-fast) var(--ease-out); margin: 20px; display: flex }
 .brand-logo:hover { opacity: 1; }
-.brand-wordmark-sm { font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); opacity: 0.5; margin: 20px; }
-#top-center { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dim); }
-#ws-status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dim); }
-#ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); transition: background 0.3s; flex-shrink: 0; }
+.brand-wordmark-sm { font-size: var(--fs-base); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text); opacity: 0.5; margin: 20px; }
+#top-center { display: flex; align-items: center; gap: 10px; font-size: var(--fs-sm); color: var(--dim); }
+#ws-status { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--dim); }
+#ws-dot { width: var(--sp-2); height: var(--sp-2); border-radius: var(--r-circle); background: var(--dim); transition: background var(--dur-slow) var(--ease-out); flex-shrink: 0; }
 #ws-dot.connected { background: var(--green); }
 #ws-dot.error     { background: var(--danger); }
 .top-sep { color: var(--border); user-select: none; }
-#room-name-label { font-size: 12px; color: var(--text); font-weight: 600; }
+#room-name-label { font-size: var(--fs-sm); color: var(--text); font-weight: var(--fw-semi); }
 #top-right { flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
-#participant-count { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dim); }
+/* Shell (height, padding, border, radius, hover) comes from .top-pill. */
+#participant-count { gap: var(--sp-1-5); }
 #participant-count svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+/* Same .top-pill height as its neighbours so the row lines up, but keeps the
+   squared badge shape: it is a status tag, not a control. */
 #live-badge {
-    display: none; padding: 3px 9px 3px 7px; font-size: 10px; font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--green); border: 1px solid var(--green); background: #0d2211;
+    display: none;
+    font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+    letter-spacing: var(--ls-label); text-transform: uppercase;
+    border-radius: var(--r-inset);
+    color: var(--green); border-color: var(--green); background: var(--green-tint);
 }
-#live-badge.visible { display: inline-flex; align-items: center; gap: 4px; }
+/* Alignment and gap come from .top-pill; this only reverses the hidden state. */
+#live-badge.visible { display: inline-flex; }
 
 /* ---- Main row (panels + video) ---- */
 #main-row {
@@ -230,10 +212,10 @@ html, body { overflow: hidden; }
        leaving a thin vertical strip beside the stage — clip it to the padding box. */
     background-clip: padding-box;
     display: flex; flex-direction: column;
-    transition: width 0.25s ease, margin 0.25s ease;
-    border: 1px solid transparent;
-    border-radius: var(--r-lg);
-    z-index: 20;
+    transition: width var(--dur-med) var(--ease-out), margin var(--dur-med) var(--ease-out);
+    border: var(--bw-hair) solid transparent;
+    border-radius: var(--r-card);
+    z-index: var(--z-panel);
 }
 .side-panel.open { border-color: var(--border); }
 #right-panel.open { width: var(--panel-w); margin: 8px 8px 8px 0; }
@@ -254,11 +236,11 @@ html, body { overflow: hidden; }
 .tile {
     position: relative;
     aspect-ratio: 16 / 9;
-    background: #000;
-    border: 1px solid var(--border);
+    background: var(--media-bg);
+    border: var(--bw-hair) solid var(--border);
     overflow: hidden;
-    border-radius: var(--r-lg);
-    animation: tile-in 0.2s ease;
+    border-radius: var(--r-card);
+    animation: tile-in var(--dur-fast) var(--ease-out);
 }
 .tile.hidden { display: none !important; }
 @keyframes tile-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
@@ -270,13 +252,13 @@ html, body { overflow: hidden; }
 }
 /* Stream + share fit-contain so we don't crop the source. */
 #tile-stream .tile-inner > video, #tile-share .tile-inner > video {
-    object-fit: contain; background: #000;
+    object-fit: contain; background: var(--media-bg);
 }
 /* When the presenter is showing a still image, #display-img overlays the
    OvenPlayer mount inside #tile-stream. Same fit treatment so it lands
    exactly where video would. */
 #display-img {
-    position: absolute; inset: 0; z-index: 6;
+    position: absolute; inset: 0; z-index: var(--z-tile-display);
     width: 100%; height: 100%;
     object-fit: contain;
     /* No background: the parent .tile already paints black, and giving
@@ -303,9 +285,9 @@ html, body { overflow: hidden; }
 
 .tile-name {
     position: absolute; bottom: 6px; left: 6px;
-    padding: 2px 8px; font-size: 11px; font-weight: 600; color: #fff;
-    background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-    border-radius: var(--r-md);
+    padding: 2px 8px; font-size: var(--fs-xs); font-weight: var(--fw-semi); color: var(--on-media);
+    background: var(--scrim); backdrop-filter: blur(var(--blur-scrim)); -webkit-backdrop-filter: blur(var(--blur-scrim));
+    border-radius: var(--r-control);
     pointer-events: none;
     max-width: calc(100% - 12px);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -313,7 +295,7 @@ html, body { overflow: hidden; }
 
 /* Empty-state placeholder shown when no tiles are visible. */
 #stage-empty {
-    color: var(--dim); font-size: 13px; text-align: center;
+    color: var(--dim); font-size: var(--fs-base); text-align: center;
     padding: 24px;
     grid-column: 1 / -1;
 }
@@ -328,7 +310,7 @@ html, body { overflow: hidden; }
 
 /* Pointer overlay: lives inside #tile-stream and tracks the video bounds. */
 #pointer-overlay {
-    position: absolute; inset: 0; z-index: 7;
+    position: absolute; inset: 0; z-index: var(--z-tile-pointer);
     pointer-events: none; overflow: hidden;
 }
 #pointer-overlay.active { pointer-events: auto; touch-action: none; }
@@ -341,113 +323,100 @@ html, body { overflow: hidden; }
 .remote-pointer-dot {
     width: 20px; height: 20px;
     margin-left: -2px; margin-top: -2px;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+    filter: var(--shadow-float);
 }
-.remote-pointer-dot svg { width: 100%; height: 100%; stroke: #fff; stroke-width: 1.5; stroke-linejoin: round; }
+.remote-pointer-dot svg { width: 100%; height: 100%; stroke: var(--on-media); stroke-width: var(--bw-control); stroke-linejoin: round; }
 .remote-pointer-label {
     position: absolute; left: 16px; top: 8px;
-    font-size: 10px; font-weight: 700; color: #fff;
-    white-space: nowrap; padding: 1px 6px; border-radius: 3px;
+    font-size: var(--fs-2xs); font-weight: var(--fw-bold); color: var(--on-media);
+    white-space: nowrap; padding: 1px 6px; border-radius: var(--r-inset);
     pointer-events: none;
 }
 
 /* Offline overlay inside #tile-stream — shown when status != live. */
 #offline-screen {
-    position: absolute; inset: 0; z-index: 5;
+    position: absolute; inset: 0; z-index: var(--z-tile-offline);
     display: none; flex-direction: column;
     align-items: center; justify-content: center;
     background: var(--bg); gap: 12px;
 }
 #offline-screen.visible { display: flex; }
-.offline-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); animation: pulse-dot 2s ease-in-out infinite; }
-@keyframes pulse-dot { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:0.3; transform:scale(0.8)} }
-.offline-label { font-size: 13px; color: var(--dim); font-weight: 500; }
+.offline-dot { width: var(--sp-2-5); height: var(--sp-2-5); border-radius: var(--r-circle); background: var(--green); animation: dot-pulse 2s ease-in-out infinite; }
+.offline-label { font-size: var(--fs-base); color: var(--dim); font-weight: var(--fw-semi); }
 
 /* Chat panel header (right-panel) */
 .panel-header {
-    padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--border); flex-shrink: 0;
+    padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4); border-bottom: var(--bw-hair) solid var(--border); flex-shrink: 0;
     display: flex; align-items: center; justify-content: space-between;
 }
-.panel-label { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); }
+.panel-label { color: var(--dim); }
 .panel-tabs { display: flex; gap: var(--sp-2); }
 .panel-tab {
     position: relative;
-    font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
     color: var(--dim); background: none; border: none; cursor: pointer;
-    padding: 4px 2px; border-bottom: 2px solid transparent;
+    padding: var(--sp-1) 2px; border-bottom: var(--bw-accent) solid transparent;
     display: inline-flex; align-items: center; gap: 6px;
     transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .panel-tab:hover { color: var(--text); }
 .panel-tab.is-active { color: var(--text); border-bottom-color: var(--accent); }
-.panel-tab:focus-visible { outline: none; box-shadow: var(--ring-accent); border-radius: var(--r-sm); }
+.panel-tab:focus-visible { outline: none; box-shadow: var(--ring-accent); border-radius: var(--r-inset); }
 .panel-tab.has-notification::after {
     content: ''; position: absolute; top: 0; right: -2px;
-    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    width: 6px; height: 6px; border-radius: var(--r-circle); background: var(--accent);
 }
 
 /* ---- Roster modal (anchored via clicking the top-bar participant count) ---- */
-#participant-count {
-    cursor: pointer; user-select: none; position: relative;
-    padding: 3px 10px; border: 1px solid var(--border); border-radius: var(--r-pill);
-    transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
-}
-#participant-count:hover { color: var(--text); border-color: var(--dim); }
+/* Anchors the notification dot. */
+#participant-count { position: relative; }
 #participant-count .notif-dot {
     display: none;
     position: absolute; top: -2px; right: -4px;
-    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
-    box-shadow: 0 0 0 2px var(--surface);
+    width: var(--sp-2); height: var(--sp-2); border-radius: var(--r-circle); background: var(--accent);
+    box-shadow: var(--ring-surface);
 }
 #participant-count .notif-dot.visible { display: block; }
 
-#roster-overlay {
-    position: fixed; inset: 0; z-index: 150;
-    background: rgba(0,0,0,0.55);
-    display: flex; align-items: center; justify-content: center;
-    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-}
 #roster-overlay.hidden { display: none; }
 .roster-box {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--r-lg); width: 380px; max-width: calc(100vw - 32px);
-    max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-    overflow: hidden;
+    /* Sections own their padding, so the shell's is reset to zero. */
+    padding: 0;
+    max-height: calc(100vh - var(--sp-8) * 2);
+    display: flex; flex-direction: column; overflow: hidden;
 }
 .roster-box-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
-    border-bottom: 1px solid var(--border);
+    border-bottom: var(--bw-hair) solid var(--border);
 }
-.roster-box-title { font-size: 13px; font-weight: 700; }
+.roster-box-title { font-size: var(--fs-base); font-weight: var(--fw-bold); }
 .roster-box-body { overflow-y: auto; padding: var(--sp-2) 0; flex: 1; min-height: 0; }
 body:not(.has-host) #roster-body .host-only { display: none; }
-.roster-section { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border); }
+.roster-section { padding: var(--sp-2) var(--sp-3); border-bottom: var(--bw-hair) solid var(--border); }
 .roster-section:last-child { border-bottom: none; }
 .roster-section-header {
     display: flex; align-items: center; gap: var(--sp-2);
-    font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
     color: var(--dim); margin-bottom: var(--sp-2);
 }
 .roster-section-header > span:first-child { flex: 1; }
 .roster-count {
     display: inline-flex; align-items: center; justify-content: center;
-    min-width: 18px; padding: 0 5px; height: 16px;
-    background: var(--surface2); border-radius: 8px; font-size: 10px; color: var(--dim);
+    min-width: 18px; padding: 0 var(--sp-1-5); height: var(--sp-4);
+    background: var(--surface2); border-radius: var(--r-pill); font-size: var(--fs-2xs); color: var(--dim);
 }
 .roster-list { display: flex; flex-direction: column; gap: var(--sp-1); }
 .roster-row {
     display: flex; align-items: center; gap: var(--sp-2);
     padding: var(--sp-1) var(--sp-2);
-    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-md);
+    background: var(--surface2); border: var(--bw-hair) solid var(--border); border-radius: var(--r-control);
 }
-.roster-row .roster-name { flex: 1; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.roster-row .roster-role { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
-.roster-empty { font-size: 11px; color: var(--dim); padding: var(--sp-1) var(--sp-2); }
+.roster-row .roster-name { flex: 1; font-size: var(--fs-sm); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roster-row .roster-role { font-size: var(--fs-2xs); color: var(--dim); text-transform: uppercase; letter-spacing: var(--ls-label); }
+.roster-empty { font-size: var(--fs-xs); color: var(--dim); padding: var(--sp-1) var(--sp-2); }
 .btn-mini {
-    background: transparent; border: 1px solid var(--border); color: var(--text);
-    font: inherit; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
-    padding: 2px 8px; border-radius: var(--r-md); cursor: pointer;
+    background: transparent; border: var(--bw-control) solid var(--border); color: var(--text);
+    font: inherit; font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase;
+    padding: 2px 8px; border-radius: var(--r-control); cursor: pointer;
     transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .btn-mini:hover { background: var(--surface); border-color: var(--dim); }
@@ -458,8 +427,8 @@ body:not(.has-host) #roster-body .host-only { display: none; }
 .panel-close {
     display: inline-flex; align-items: center; justify-content: center;
     width: 28px; height: 28px; padding: 0;
-    background: transparent; border: 1px solid transparent;
-    color: var(--dim); cursor: pointer; border-radius: var(--r-md);
+    background: transparent; border: var(--bw-hair) solid transparent;
+    color: var(--dim); cursor: pointer; border-radius: var(--r-control);
     transition: background var(--dur-fast) var(--ease-out),
                 border-color var(--dur-fast) var(--ease-out),
                 color var(--dur-fast) var(--ease-out);
@@ -472,20 +441,20 @@ body:not(.has-host) #roster-body .host-only { display: none; }
 .tile-actions {
     position: absolute; top: 6px; right: 6px;
     display: none; gap: 4px;
-    z-index: 8;
+    z-index: var(--z-tile-actions);
 }
 .tile:hover .tile-actions { display: flex; }
 /* Pointer mode owns the stream tile — suppress hover actions while active. */
 #pointer-overlay.active ~ .tile-actions { display: none !important; }
 .tile-btn {
     width: 28px; height: 28px;
-    background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: var(--r-btn); color: #fff; cursor: pointer;
+    background: var(--scrim); border: var(--bw-control) solid var(--pill-border);
+    border-radius: var(--r-control); color: var(--on-media); cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     transition: background var(--dur-fast) var(--ease-out),
                 border-color var(--dur-fast) var(--ease-out);
 }
-.tile-btn:hover { background: rgba(0,0,0,0.85); border-color: rgba(255,255,255,0.25); }
+.tile-btn:hover { background: var(--scrim-strong); border-color: var(--glass-border-strong); }
 .tile-btn.danger:hover { background: color-mix(in srgb, var(--danger) 70%, transparent); border-color: var(--danger); }
 .tile-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tile-btn.muted-indicator { border-color: var(--danger); color: var(--danger); }
@@ -511,7 +480,7 @@ body:not(.has-host) #roster-body .host-only { display: none; }
 .tile.cam-off .conf-user-icon { align-items: center; justify-content: center; margin-bottom: 4px; }
 .tile.cam-off .conf-player-inner { display: none; }
 .tile.cam-off { background: var(--surface2); display: flex !important; flex-direction: column; align-items: center; justify-content: center; }
-.tile.cam-off .tile-name { position: static; background: none; font-size: 13px; padding: 0; }
+.tile.cam-off .tile-name { position: static; background: none; font-size: var(--fs-base); padding: 0; }
 
 /* ---- Focus sub-layout ---- */
 /* Focus mode: stage becomes a 2-column grid — focused tile fills the main
@@ -527,7 +496,7 @@ body.has-focus #stage {
     gap: 8px;
     align-content: stretch;
     justify-content: stretch;
-    transition: gap 0.25s ease;
+    transition: gap var(--dur-med) var(--ease-out);
 }
 body.has-focus #stage-strip {
     grid-column: 1; grid-row: 1;
@@ -535,11 +504,12 @@ body.has-focus #stage-strip {
     width: var(--strip-w);
     padding: 8px;
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    z-index: 20;
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
+    z-index: var(--z-panel);
     /* Same width/ease as the chat panel so the two panels animate identically. */
-    transition: width 0.25s ease, padding 0.25s ease, opacity 0.25s ease, border-color 0.25s ease;
+    transition: width var(--dur-med) var(--ease-out), padding var(--dur-med) var(--ease-out),
+                opacity var(--dur-med) var(--ease-out), border-color var(--dur-med) var(--ease-out);
     opacity: 1;
 }
 body.has-focus #stage > .tile[data-focused] {
@@ -608,11 +578,11 @@ body.has-focus.strip-hidden #stage-strip {
 
 /* Call-room badge on landing screen */
 .call-room-badge {
-    display: inline-block; margin-left: 8px;
-    padding: 2px 8px; font-size: 10px; font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase;
+    display: inline-block; margin-left: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2); font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+    letter-spacing: var(--ls-label); text-transform: uppercase;
     background: var(--surface2); color: var(--dim);
-    border: 1px solid var(--border); border-radius: 3px;
+    border: var(--bw-hair) solid var(--border); border-radius: var(--r-inset);
     vertical-align: middle;
 }
 
@@ -622,22 +592,22 @@ body.has-focus.strip-hidden #stage-strip {
 #chat-body[hidden], #files-pane[hidden] { display: none; }
 
 #chat-messages { flex: 1; overflow-y: auto; padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-3); }
-.chat-msg { display: flex; flex-direction: column; gap: 2px; padding-left: 0; border-left: 3px solid transparent; padding: 2px 0 2px var(--sp-2); margin-left: calc(var(--sp-2) * -1); transition: border-color var(--dur-fast) var(--ease-out); }
+.chat-msg { display: flex; flex-direction: column; gap: 2px; padding-left: 0; border-left: var(--bw-accent) solid transparent; padding: 2px 0 2px var(--sp-2); margin-left: calc(var(--sp-2) * -1); transition: border-color var(--dur-fast) var(--ease-out); }
 /* Presenter messages get a subtle left accent bar — glanceable without full bubble noise. */
 .chat-msg:has(.chat-who.presenter) { border-left-color: var(--accent); }
 .chat-meta { display: flex; align-items: baseline; gap: 6px; }
-.chat-who { font-size: 11px; font-weight: 700; }
+.chat-who { font-size: var(--fs-xs); font-weight: var(--fw-bold); }
 .chat-who.presenter { color: var(--accent); }
 .chat-who.viewer    { color: var(--dim); }
-.chat-time { font-size: 10px; color: var(--dim); opacity: 0.6; }
-.chat-text { font-size: 13px; color: var(--text); line-height: 1.45; word-break: break-word; white-space: pre-wrap; }
+.chat-time { font-size: var(--fs-2xs); color: var(--dim); opacity: 0.6; }
+.chat-text { font-size: var(--fs-base); color: var(--text); line-height: var(--lh-body); word-break: break-word; white-space: pre-wrap; }
 
-#chat-input-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--border); flex-shrink: 0; align-items: flex-end; }
+#chat-input-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-top: var(--bw-hair) solid var(--border); flex-shrink: 0; align-items: flex-end; }
 #chat-input {
     flex: 1; padding: 8px 12px;
-    background: var(--bg); border: 1px solid var(--border); color: var(--text);
-    font: inherit; font-size: 13px; line-height: 1.45; outline: none; min-width: 0;
-    border-radius: var(--r-btn);
+    background: var(--bg); border: var(--bw-hair) solid var(--border); color: var(--text);
+    font: inherit; font-size: var(--fs-base); line-height: var(--lh-body); outline: none; min-width: 0;
+    border-radius: var(--r-control);
     resize: none; overflow-y: auto; max-height: 96px;
     scrollbar-width: none; /* Firefox */
     transition: border-color var(--dur-fast) var(--ease-out),
@@ -648,27 +618,17 @@ body.has-focus.strip-hidden #stage-strip {
 #chat-input:focus  { border-color: var(--accent); box-shadow: var(--ring-accent); }
 #chat-input:disabled { opacity: 0.4; cursor: default; }
 /* Chat action buttons — match the toolbar .tb-btn aesthetic (square, 8px radius, 1.5px border). */
-#chat-send, #chat-attach {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 36px; height: 36px; padding: 0; flex-shrink: 0;
-    background: var(--surface2); border: 1.5px solid var(--border);
-    color: var(--dim); cursor: pointer; border-radius: var(--r-btn);
-    transition: border-color var(--dur-fast) var(--ease-out),
-                color var(--dur-fast) var(--ease-out),
-                background var(--dur-fast) var(--ease-out),
-                box-shadow var(--dur-fast) var(--ease-out);
-}
-#chat-send:hover, #chat-attach:hover { border-color: var(--dim); color: var(--text); }
-#chat-send:focus-visible, #chat-attach:focus-visible { outline: none; box-shadow: var(--ring-accent); border-color: var(--accent); color: var(--text); }
-#chat-send:disabled, #chat-attach:disabled { opacity: 0.4; cursor: default; }
+/* Both are .btn-icon (components.css) — same 36px box, border, radius, hover,
+   focus ring and disabled treatment. Only the resting icon color differs. */
+#chat-send, #chat-attach { color: var(--dim); flex-shrink: 0; }
 #chat-send svg, #chat-attach svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; }
 
-/* Draft-chip file card (posted files use the slim .file-row look). */
+/* Draft-chip file card (posted files use the slim .shared-file look). */
 .chat-file {
     display: flex; align-items: center; gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-3);
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: var(--r-lg);
+    background: var(--surface2); border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
     margin-top: 4px;
     transition: border-color var(--dur-fast) var(--ease-out);
 }
@@ -676,8 +636,8 @@ body.has-focus.strip-hidden #stage-strip {
 .chat-file-icon { flex-shrink: 0; color: var(--dim); display: flex; align-items: center; }
 .chat-file-icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; }
 .chat-file-info { flex: 1; min-width: 0; }
-.chat-file-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat-file-size { font-size: 11px; color: var(--dim); }
+.chat-file-name { font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-file-size { font-size: var(--fs-xs); color: var(--dim); }
 
 /* Draft chip — same shape as a posted file message, but with an X to remove
    instead of a download link, and tucked against the input row. */
@@ -685,8 +645,8 @@ body.has-focus.strip-hidden #stage-strip {
 .chat-draft-remove {
     display: inline-flex; align-items: center; justify-content: center;
     width: 24px; height: 24px; padding: 0; flex-shrink: 0;
-    background: transparent; border: 1px solid transparent;
-    color: var(--dim); cursor: pointer; border-radius: var(--r-md);
+    background: transparent; border: var(--bw-control) solid transparent;
+    color: var(--dim); cursor: pointer; border-radius: var(--r-control);
     transition: background var(--dur-fast) var(--ease-out),
                 color var(--dur-fast) var(--ease-out);
 }
@@ -729,7 +689,7 @@ body.has-focus.strip-hidden #stage-strip {
     background: color-mix(in srgb, var(--bg) 82%, transparent);
     backdrop-filter: blur(2px);
     color: var(--accent);
-    font-size: 15px; font-weight: 600;
+    font-size: var(--fs-md); font-weight: var(--fw-semi);
     text-align: center; padding: var(--sp-4);
 }
 /* The dashed frame is inset, but the overlay itself covers the viewport edge
@@ -737,8 +697,8 @@ body.has-focus.strip-hidden #stage-strip {
    the overlay flicker on and off along the border. */
 #chat-drop-overlay::before {
     content: ''; position: absolute; inset: var(--sp-4);
-    border: 2px dashed var(--accent);
-    border-radius: var(--r-xl);
+    border: var(--bw-accent) dashed var(--accent);
+    border-radius: var(--r-card);
     pointer-events: none;
 }
 #chat-drop-overlay.is-active { display: flex; }
@@ -749,29 +709,29 @@ body.has-focus.strip-hidden #stage-strip {
 
 /* ---- Files tab ---- */
 .files-count-badge {
-    font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+    font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--ls-btn);
     background: var(--surface); color: var(--dim);
-    border: 1px solid var(--border); border-radius: 999px;
-    padding: 1px 8px; line-height: 1.6;
+    border: var(--bw-hair) solid var(--border); border-radius: var(--r-pill);
+    padding: 0 var(--sp-1-5); line-height: var(--lh-body);
 }
 #files-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: var(--sp-1) var(--sp-2); gap: 2px; }
-.file-row {
+.shared-file {
     display: flex; align-items: center; gap: var(--sp-2);
-    padding: 6px 10px; border-radius: var(--r-md);
+    padding: 6px 10px; border-radius: var(--r-control);
     transition: background var(--dur-fast) var(--ease-out);
 }
-.file-row:hover { background: var(--surface2); }
-.file-row-name { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
-.file-row-size { font-size: 10px; color: var(--dim); flex-shrink: 0; }
-.file-row-dl {
-    padding: 3px 10px; background: var(--surface); border: 1px solid var(--border);
-    color: var(--text); font: inherit; font-size: 10px; font-weight: 700;
-    text-decoration: none; flex-shrink: 0; border-radius: var(--r-md);
+.shared-file:hover { background: var(--surface2); }
+.shared-file-name { flex: 1; min-width: 0; font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.shared-file-size { font-size: var(--fs-2xs); color: var(--dim); flex-shrink: 0; }
+.shared-file-dl {
+    padding: 3px 10px; background: var(--surface); border: var(--bw-control) solid var(--border);
+    color: var(--text); font: inherit; font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+    text-decoration: none; flex-shrink: 0; border-radius: var(--r-control);
     transition: border-color var(--dur-fast) var(--ease-out),
                 background var(--dur-fast) var(--ease-out);
 }
-.file-row-dl:hover { border-color: var(--dim); background: var(--surface2); }
-#files-empty { padding: var(--sp-3); font-size: 12px; color: var(--dim); text-align: center; }
+.shared-file-dl:hover { border-color: var(--dim); background: var(--surface2); }
+#files-empty { padding: var(--sp-3); font-size: var(--fs-sm); color: var(--dim); text-align: center; }
 
 /* ---- Bottom toolbar — in-flow, always-visible centered pill (#186) ----
    Sits in the #app flex column (not over the stage): align-self centers it
@@ -787,7 +747,7 @@ body.has-focus.strip-hidden #stage-strip {
     display: flex; align-items: center; justify-content: center;
     /* Match the tiles/columns corner radius (override .nav-pill's pill radius)
        so the toolbar matches the rest of the layout on every viewport. */
-    border-radius: var(--r-lg);
+    border-radius: var(--r-card);
     /* Extra end padding so the first/last buttons aren't cramped against the ends. */
     gap: 4px; padding: 6px 16px;
 }
@@ -805,9 +765,9 @@ body.has-focus.strip-hidden #stage-strip {
     bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
     flex-wrap: wrap; justify-content: center; align-items: center;
     gap: 6px; padding: 10px 12px; max-width: calc(100vw - 24px);
-    background: var(--pill-bg); border: 1px solid var(--pill-border);
+    background: var(--pill-bg); border: var(--bw-hair) solid var(--pill-border);
     /* Match the tiles/columns radius (mobile-only popup), not the pill radius. */
-    border-radius: var(--r-lg);
+    border-radius: var(--r-card);
     backdrop-filter: blur(var(--pill-blur)); -webkit-backdrop-filter: blur(var(--pill-blur));
 }
 #bottom-toolbar.compact.more-open #more-sheet { display: flex; }
@@ -819,19 +779,19 @@ body.has-focus.strip-hidden #stage-strip {
 .tb-btn {
     width: 42px; height: 42px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
-    background: var(--surface2); border: 1.5px solid var(--border);
+    background: var(--surface2); border: var(--bw-control) solid var(--border);
     /* Standard button radius, matching the rest of the layout (#186). */
-    border-radius: var(--r-btn); color: var(--dim); cursor: pointer;
-    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    border-radius: var(--r-control); color: var(--dim); cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+                background var(--dur-fast) var(--ease-out);
     position: relative;
 }
 .tb-btn:hover { border-color: var(--dim); color: var(--text); }
 .tb-btn.active { border-color: var(--green); color: var(--green); }
-.tb-btn.muted { border-color: var(--danger); color: var(--danger); background: rgba(224,80,80,0.08); }
+.tb-btn.muted { border-color: var(--danger); color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .tb-btn.panel-open { border-color: var(--accent); color: var(--accent); }
 .tb-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
-.tb-btn.has-notification::after { content: ''; position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: notif-pulse 1.5s ease-in-out infinite; }
-@keyframes notif-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.tb-btn.has-notification::after { content: ''; position: absolute; top: 6px; right: 6px; width: var(--sp-2); height: var(--sp-2); border-radius: var(--r-circle); background: var(--accent); animation: dot-pulse 1.5s ease-in-out infinite; }
 /* Force-mute alert: smooth glow that fades in and out on the mic button.
    Runs until the participant unmutes themselves (or the mic becomes unmuted by any means). */
 @keyframes mic-force-mute-glow {
@@ -839,8 +799,17 @@ body.has-focus.strip-hidden #stage-strip {
     50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 60%, transparent); }
 }
 .tb-btn.force-muted { animation: mic-force-mute-glow 2.4s ease-in-out infinite; }
+/* Every looping animation on the page, not just the mic glow. The dot pulses
+   are also guarded in components.css, where .dot-pulse is defined. */
 @media (prefers-reduced-motion: reduce) {
-    .tb-btn.force-muted { animation: none; }
+    .tb-btn.force-muted,
+    .tb-btn.has-notification::after,
+    .panel-tab.has-notification::after,
+    .offline-dot,
+    .dot-anim::after,
+    .remote-pointer { animation: none; }
+    .remote-pointer { transition: none; }
+    .tile { animation: none; }
 }
 .tb-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -848,7 +817,7 @@ body.has-focus.strip-hidden #stage-strip {
 #player-controls { align-items: center; }
 #volume-slider, #seek-slider {
     -webkit-appearance: none; appearance: none;
-    height: 4px; border-radius: 2px;
+    height: 4px; border-radius: var(--r-pill);
     background: var(--border); outline: none; cursor: pointer;
     margin: 0 4px;
 }
@@ -856,26 +825,28 @@ body.has-focus.strip-hidden #stage-strip {
 #volume-slider:disabled, #seek-slider:disabled { opacity: 0.35; cursor: default; }
 #volume-slider::-webkit-slider-thumb, #seek-slider::-webkit-slider-thumb {
     -webkit-appearance: none; appearance: none;
-    width: 14px; height: 14px; border-radius: 50%;
+    width: 14px; height: 14px; border-radius: var(--r-circle);
     background: var(--text); cursor: pointer; border: none;
     margin-top: -5px;
 }
 #volume-slider::-moz-range-thumb, #seek-slider::-moz-range-thumb {
-    width: 14px; height: 14px; border-radius: 50%;
+    width: 14px; height: 14px; border-radius: var(--r-circle);
     background: var(--text); cursor: pointer; border: none;
 }
-#volume-slider::-webkit-slider-runnable-track, #seek-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; }
-#volume-slider::-moz-range-track, #seek-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--border); }
+#volume-slider::-webkit-slider-runnable-track, #seek-slider::-webkit-slider-runnable-track { height: 4px; border-radius: var(--r-pill); }
+#volume-slider::-moz-range-track, #seek-slider::-moz-range-track { height: 4px; border-radius: var(--r-pill); background: var(--border); }
 
 /* Seek bar (file playback only) */
 #seek-group { display: flex; align-items: center; gap: 6px; }
 /* Taller, transparent element = bigger click/touch target; the visible
    4px track is drawn by the track pseudo-elements (centered by the UA). */
 #seek-slider { width: 140px; height: 20px; background: transparent; }
-#seek-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--border); }
+/* Height/radius come from the shared track rule above; only the fill differs,
+   because #seek-slider itself is transparent to widen the hit target. */
+#seek-slider::-webkit-slider-runnable-track { background: var(--border); }
 .seek-time {
-    font-family: var(--mono, ui-monospace, monospace);
-    font-size: 12px; color: var(--dim);
+    font-family: var(--ff-mono);
+    font-size: var(--fs-sm); color: var(--dim);
     white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 
@@ -889,7 +860,6 @@ body.has-focus.strip-hidden #stage-strip {
     #top-left { display: none; }
     #top-center, #top-right { display: contents; }
     .top-sep { display: none; }
-    #leave-btn { margin-left: 0 !important; }
 
     /* Mobile: the pill is a slim full-width bottom row of essentials (cam/mic/
        screen, pointer, chat, fullscreen, ⋯); layout.ts moves the secondary
@@ -919,7 +889,7 @@ body.has-focus.strip-hidden #stage-strip {
     #right-panel.open {
         width: calc(100% - 16px) !important;
         margin: 8px 8px 8px 0 !important;
-        z-index: 30;
+        z-index: var(--z-panel-mobile);
     }
 
     /* Tile action buttons stay visible on touch (no hover to reveal them) */
@@ -959,8 +929,8 @@ body.has-focus.strip-hidden #stage-strip {
         width: auto; height: 100%;
     }
 
-    /* Join / waiting boxes fit small screens */
-    .join-box, .waiting-box, #landing-screen .panel-box { width: calc(100vw - 32px); padding: 32px 24px; }
+    /* Join / waiting / landing boxes fit small screens via .panel-box's own
+       mobile rule in components.css — nothing page-specific needed here. */
 }
 
 /* Side pills are empty/hidden outside the landscape split. */
@@ -992,7 +962,7 @@ body.has-focus.strip-hidden #stage-strip {
         position: absolute; top: 50%; transform: translateY(-50%);
         max-height: calc(100% - 16px); overflow-y: auto; z-index: var(--z-pill);
         /* Match the tiles/columns radius, not the pill radius. */
-        border-radius: var(--r-lg);
+        border-radius: var(--r-card);
     }
     #left-toolbar  { left:  calc(8px + env(safe-area-inset-left, 0px)); }
     #right-toolbar { right: calc(8px + env(safe-area-inset-right, 0px)); }
@@ -1028,7 +998,7 @@ body.has-focus.strip-hidden #stage-strip {
 
 <!-- Join screen -->
 <div id="join-screen" class="screen hidden">
-    <div class="join-box">
+    <div class="panel-box panel-box-md join-box">
         <img src="" alt="" class="screen-logo u-hidden">
         <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="join-room-name" id="join-room-name">Loading...</div>
@@ -1050,7 +1020,7 @@ body.has-focus.strip-hidden #stage-strip {
 
 <!-- Waiting screen -->
 <div id="waiting-screen" class="screen hidden">
-    <div class="waiting-box">
+    <div class="panel-box panel-box-md waiting-box">
         <div class="waiting-label">Waiting Room</div>
         <div class="waiting-name" id="waiting-name"></div>
         <div class="waiting-msg">Waiting for the host to admit you<span class="dot-anim"></span></div>
@@ -1059,7 +1029,7 @@ body.has-focus.strip-hidden #stage-strip {
 
 <!-- Scheduled-start screen (issue #200) -->
 <div id="scheduled-screen" class="screen hidden">
-    <div class="waiting-box">
+    <div class="panel-box panel-box-md waiting-box">
         <div class="waiting-label">Scheduled</div>
         <div class="waiting-name" id="scheduled-name"></div>
         <div class="waiting-msg">This session starts on <span id="scheduled-when"></span></div>
@@ -1069,7 +1039,7 @@ body.has-focus.strip-hidden #stage-strip {
 
 <!-- Kicked screen -->
 <div id="kicked-screen" class="screen hidden">
-    <div class="waiting-box">
+    <div class="panel-box panel-box-md waiting-box">
         <div class="waiting-label" style="color:var(--danger)">Removed</div>
         <div class="waiting-name">You have been removed from this session.</div>
         <div class="waiting-msg">Contact the host if you believe this was a mistake.</div>
@@ -1078,7 +1048,7 @@ body.has-focus.strip-hidden #stage-strip {
 
 <!-- Session-ended screen -->
 <div id="session-ended-screen" class="screen hidden">
-    <div class="waiting-box">
+    <div class="panel-box panel-box-md waiting-box">
         <div class="waiting-label">Ended</div>
         <div class="waiting-name">This session has ended.</div>
         <div class="waiting-msg">Thanks for joining.</div>
@@ -1087,7 +1057,7 @@ body.has-focus.strip-hidden #stage-strip {
 
 <!-- Left screen -->
 <div id="left-screen" class="screen hidden">
-    <div class="waiting-box">
+    <div class="panel-box panel-box-md waiting-box">
         <img src="" alt="Logo" class="screen-logo brand-logo u-hidden">
         <div class="brand-wordmark-sm brand-fallback u-hidden">Farbstrom</div>
         <div class="waiting-name" id="left-room-name"></div>
@@ -1097,8 +1067,8 @@ body.has-focus.strip-hidden #stage-strip {
 </div>
 
 <!-- Conference permission prompt -->
-<div id="conf-prompt-overlay" class="hidden">
-    <div class="conf-prompt-box">
+<div id="conf-prompt-overlay" class="modal-overlay modal-overlay-low hidden">
+    <div class="panel-box panel-box-sm conf-prompt-box">
         <div class="conf-prompt-icon">
             <svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
         </div>
@@ -1119,8 +1089,8 @@ body.has-focus.strip-hidden #stage-strip {
 </div>
 
 <!-- Device picker modal -->
-<div id="device-picker-overlay" class="hidden">
-    <div class="conf-prompt-box" style="width:340px">
+<div id="device-picker-overlay" class="modal-overlay modal-overlay-low hidden">
+    <div class="panel-box panel-box-sm conf-prompt-box">
         <div class="conf-prompt-title">Device Settings</div>
         <div class="device-picker-row">
             <label>Camera</label>
@@ -1163,8 +1133,8 @@ body.has-focus.strip-hidden #stage-strip {
 </div>
 
 <!-- Roster / participant management modal -->
-<div id="roster-overlay" class="hidden">
-    <div class="roster-box">
+<div id="roster-overlay" class="modal-overlay modal-overlay-low hidden">
+    <div class="panel-box panel-box-md roster-box">
         <div class="roster-box-header">
             <div class="roster-box-title">Participants</div>
             <button class="panel-close" id="roster-close" title="Close">
@@ -1211,13 +1181,13 @@ body.has-focus.strip-hidden #stage-strip {
             <div id="ws-status"><div id="ws-dot"></div><span id="ws-label">Connecting</span></div>
         </div>
         <div id="top-right">
-            <span id="live-badge"><svg viewBox="0 0 8 8" width="8" height="8" style="fill:var(--green);stroke:none"><circle cx="4" cy="4" r="4"/></svg> Live</span>
-            <span id="participant-count" title="Participants">
+            <span id="live-badge" class="top-pill"><svg viewBox="0 0 8 8" width="8" height="8" style="fill:var(--green);stroke:none"><circle cx="4" cy="4" r="4"/></svg> Live</span>
+            <span id="participant-count" class="top-pill interactive" title="Participants">
                 <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 <span id="participant-num">0</span>
                 <span class="notif-dot" id="roster-dot"></span>
             </span>
-            <button id="leave-btn" title="Leave session" style="background:none;border:1px solid var(--border);color:var(--dim);border-radius:var(--r-pill);padding:3px 12px;font:inherit;font-size:11px;cursor:pointer;margin-left:8px;">Leave</button>
+            <button id="leave-btn" class="top-pill interactive" title="Leave session">Leave</button>
         </div>
     </div>
 
@@ -1291,10 +1261,10 @@ body.has-focus.strip-hidden #stage-strip {
                 <div id="chat-draft-list"></div>
                 <div id="chat-input-row">
                     <textarea id="chat-input" rows="1" placeholder="Message..." maxlength="500" autocomplete="off" disabled></textarea>
-                    <button id="chat-attach" disabled title="Attach file">
+                    <button id="chat-attach" class="btn-icon" disabled title="Attach file">
                         <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
-                    <button id="chat-send" disabled>
+                    <button id="chat-send" class="btn-icon" disabled>
                         <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
                     </button>
                     <input type="file" id="file-input" multiple style="display:none">

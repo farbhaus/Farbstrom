@@ -16,25 +16,23 @@ body {
     justify-content: center;
     min-height: 100vh;
     min-height: 100dvh;
-    padding: 48px 20px;
+    padding: var(--sp-12) var(--sp-5);
 }
 .legal {
     width: 100%;
     max-width: 720px;
 }
-.brand-wordmark {
-    font-size: 15px; font-weight: 700; letter-spacing: 0.1em;
-    text-transform: uppercase; color: var(--text); margin-bottom: 32px;
-}
-.legal h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
-.legal .updated { font-size: 12px; color: var(--dim); margin-bottom: 32px; }
-.legal h2 { font-size: 15px; font-weight: 600; margin: 28px 0 8px; }
-.legal p, .legal li { font-size: 14px; line-height: 1.6; color: var(--dim); }
-.legal ul { margin: 8px 0 8px 20px; }
-.legal li { margin-bottom: 6px; }
-.legal code { font-family: monospace; font-size: 12px; color: var(--text); }
+/* Typography comes from components.css; this page wants it left-aligned. */
+.brand-wordmark { text-align: left; margin: 0 0 var(--sp-8); }
+.legal h1 { font-size: var(--fs-2xl); font-weight: var(--fw-bold); margin-bottom: var(--sp-1-5); }
+.legal .updated { font-size: var(--fs-sm); color: var(--dim); margin-bottom: var(--sp-8); }
+.legal h2 { font-size: var(--fs-md); font-weight: var(--fw-semi); margin: var(--sp-7) 0 var(--sp-2); }
+.legal p, .legal li { font-size: var(--fs-base); line-height: var(--lh-body); color: var(--dim); }
+.legal ul { margin: var(--sp-2) 0 var(--sp-2) var(--sp-5); }
+.legal li { margin-bottom: var(--sp-1-5); }
+.legal code { font-family: var(--ff-mono); font-size: var(--fs-sm); color: var(--text); }
 .legal a { color: var(--accent); }
-.legal .back { display: inline-block; margin-top: 32px; font-size: 13px; }
+.legal .back { display: inline-block; margin-top: var(--sp-8); font-size: var(--fs-base); }
 </style>
 </head>
 <body>

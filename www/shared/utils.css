@@ -21,10 +21,10 @@
 
 .u-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-3); }
 
-.u-p-card-tight { padding: 16px 20px 20px; }
+.u-p-card-tight { padding: var(--sp-4) var(--sp-5) var(--sp-5); }
 
 /* Form-row override when used inside a custom grid without its own margin */
 .u-form-row-inline { margin: 0; }
 
 /* Monospace text input (used for URL inputs etc.) */
-.u-mono { font-family: monospace; font-size: 12px; }
+.u-mono { font-family: var(--ff-mono); font-size: var(--fs-sm); }

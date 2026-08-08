@@ -10,18 +10,23 @@ interface MimeCategory {
   match: (mime: string) => boolean;
 }
 
+// Colors are CSS custom properties, not hex literals: they land in an inline
+// `style="background:…"` (see renderStorage below), so var() resolves normally
+// and the palette stays defined once in www/shared/tokens.css. This also means
+// the PDF/Docs/Other segments track --danger/--green/--dim under a rebrand,
+// which the previous near-miss hexes (#ff5252, #4caf50, #777) did not.
 const MIME_CATEGORIES: MimeCategory[] = [
-  { key: 'image', label: 'Images', color: '#5ab8ff', match: (m) => m.startsWith('image/') },
-  { key: 'video', label: 'Video', color: '#ff7e5f', match: (m) => m.startsWith('video/') },
-  { key: 'audio', label: 'Audio', color: '#c76bff', match: (m) => m.startsWith('audio/') },
-  { key: 'pdf', label: 'PDF', color: '#ff5252', match: (m) => m === 'application/pdf' },
+  { key: 'image', label: 'Images', color: 'var(--cat-image)', match: (m) => m.startsWith('image/') },
+  { key: 'video', label: 'Video', color: 'var(--cat-video)', match: (m) => m.startsWith('video/') },
+  { key: 'audio', label: 'Audio', color: 'var(--cat-audio)', match: (m) => m.startsWith('audio/') },
+  { key: 'pdf', label: 'PDF', color: 'var(--cat-pdf)', match: (m) => m === 'application/pdf' },
   {
     key: 'doc',
     label: 'Docs',
-    color: '#4caf50',
+    color: 'var(--cat-doc)',
     match: (m) => m.includes('openxmlformats') || m === 'text/plain',
   },
-  { key: 'other', label: 'Other', color: '#777', match: () => true },
+  { key: 'other', label: 'Other', color: 'var(--cat-other)', match: () => true },
 ];
 
 function mimeCategory(mime: string): MimeCategory {

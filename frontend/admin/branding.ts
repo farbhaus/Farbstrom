@@ -81,13 +81,16 @@ export async function loadBranding(): Promise<void> {
   const siteNameInput = document.getElementById('site-name-input') as HTMLInputElement | null;
   if (siteNameInput) siteNameInput.value = data.siteName ?? '';
 
-  if (data.colors) {
-    for (const f of COLOR_FIELDS) {
-      const val = data.colors[`color_${f}`] || COLOR_DEFAULTS[f];
-      getInput(`color-${f}`).value = val;
-      getInput(`color-${f}-hex`).value = val;
-      if (data.colors[`color_${f}`]) setColorVar(f, val);
-    }
+  // Seed unconditionally. The markup carries no default colors — tokens.css is
+  // the only copy of the palette — so if `colors` is absent the native color
+  // inputs would otherwise sit at the UA default (#000000) rather than the
+  // real defaults captured in COLOR_DEFAULTS.
+  for (const f of COLOR_FIELDS) {
+    const override = data.colors?.[`color_${f}`];
+    const val = override || COLOR_DEFAULTS[f];
+    getInput(`color-${f}`).value = val;
+    getInput(`color-${f}-hex`).value = val;
+    if (override) setColorVar(f, val);
   }
 }
 

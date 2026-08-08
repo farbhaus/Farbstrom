@@ -1,5 +1,9 @@
 /* Farbstrom design tokens — single source of truth.
-   Overridable at runtime by /api/branding via utils.js applyBranding(). */
+   Overridable at runtime by /api/branding via utils.js applyBranding().
+
+   This is the ONLY file that may contain raw values. Every other stylesheet
+   (components.css, utils.css, each page's <style>) references these tokens —
+   see the "Design system" section of CLAUDE.md. */
 
 *, *::before, *::after {
     box-sizing: border-box; margin: 0; padding: 0;
@@ -21,7 +25,11 @@ html { touch-action: manipulation; }
      max-height:440px landscape — viewer short-viewport landscape layout. */
 
 :root {
-    /* Color */
+    /* ---- Color: base palette ----
+       --bg/--surface/--text/--accent/--danger/--green are overridden at runtime
+       by the admin Branding API (frontend/admin/branding.ts CSS_MAP). The rest
+       are fixed neutrals. Anything derived from a brandable base must use
+       color-mix() so it tracks the override — a hardcoded tint freezes. */
     --bg:       #171717;
     --surface:  #1d1d1d;
     --surface2: #1c1c1c;
@@ -33,56 +41,165 @@ html { touch-action: manipulation; }
     --danger:   #ff6159;
     --green:    #28c941;
 
-    /* Typography */
+    /* Semantic blue. Not brandable — used for informational badges only. */
+    --info:     #5599dd;
+
+    /* Ingest/playback protocol identity colors (badges in admin + viewer).
+       Deliberately outside the brand palette so protocols stay distinguishable
+       whatever the accent is. WebRTC reuses --info. */
+    --proto-llhls: #ccaa33;
+    --proto-srt:   #aa77ee;
+
+    /* Storage-bar categories (frontend/admin/files.ts MIME_CATEGORIES reads
+       these as var() strings in inline styles). */
+    --cat-image: #5ab8ff;
+    --cat-video: #ff7e5f;
+    --cat-audio: #c76bff;
+    --cat-pdf:   var(--danger);
+    --cat-doc:   var(--green);
+    --cat-other: var(--dim);
+
+    /* Participant pointer cursors are a 10-color identity palette derived from
+       a hash of the participant id — see POINTER_COLORS in
+       frontend/viewer/pointer.ts. Computed per client, never transported, and
+       intentionally outside the brand, so it is not tokenized here. */
+
+    /* ---- Color: derived tints ----
+       Low-contrast backgrounds for badges, selected rows and hover states. */
+    --accent-tint: color-mix(in srgb, var(--accent) 8%,  var(--bg));
+    --green-tint:  color-mix(in srgb, var(--green)  14%, var(--bg));
+    --danger-tint: color-mix(in srgb, var(--danger) 14%, var(--bg));
+    --info-tint:   color-mix(in srgb, var(--info)   14%, var(--bg));
+    --dim-tint:    color-mix(in srgb, var(--dim)    8%,  var(--bg));
+    --llhls-tint:  color-mix(in srgb, var(--proto-llhls) 12%, var(--bg));
+    --srt-tint:    color-mix(in srgb, var(--proto-srt)   12%, var(--bg));
+
+    /* Hover/active tints for interactive surfaces. */
+    --tint-hover:  color-mix(in srgb, var(--text) 9%,  transparent);
+    --tint-active: color-mix(in srgb, var(--text) 15%, transparent);
+    /* --text dimmed toward --bg — the primary-button hover. */
+    --text-hover:  color-mix(in srgb, var(--text) 80%, var(--bg));
+
+    /* ---- Color: media ----
+       Video letterboxing and chrome drawn on top of video. Not brandable:
+       these must stay black/white whatever the palette is. */
+    --media-bg:  #000000;
+    --on-media:  #ffffff;
+
+    /* Full-screen darkening behind modals and overlays, and the ground for
+       glass chrome sitting on video. */
+    --scrim:        rgba(0, 0, 0, 0.65);
+    --scrim-strong: rgba(0, 0, 0, 0.85);
+
+    /* ---- Typography ----
+       The scale below is derived from measured usage: 13px is the product's
+       real body size, not 14px. Steps are deliberately sparse — if a size
+       isn't here, round to the nearest step rather than adding one. */
     --ff:       system-ui, sans-serif;
-    --fs-base:  14px;
-    --fs-sm:    12px;
-    --fs-xs:    11px;
-    --fs-lg:    16px;
+    --ff-mono:  ui-monospace, monospace;
+    --fs-2xs:   10px;  /* panel tabs, badges, dense micro-labels */
+    --fs-xs:    11px;  /* form labels, section titles, stat labels */
+    --fs-sm:    12px;  /* meta and secondary text */
+    --fs-base:  13px;  /* body, buttons, inputs */
+    --fs-md:    15px;  /* wordmarks, prompt titles */
+    --fs-lg:    18px;  /* card titles, screen subtitles */
+    --fs-xl:    20px;  /* screen titles */
+    --fs-2xl:   28px;  /* dashboard stat values, legal h1 */
 
-    /* Spacing (4px scale) */
-    --sp-1: 4px;
-    --sp-2: 8px;
-    --sp-3: 12px;
-    --sp-4: 16px;
-    --sp-5: 20px;
-    --sp-6: 24px;
-    --sp-7: 28px;
-    --sp-8: 32px;
+    --fw-normal: 400;
+    --fw-semi:   600;
+    --fw-bold:   700;
 
-    /* Radii */
-    --r-sm:  4px;
-    --r-md:  6px;
-    --r-btn: 8px;   /* buttons, inputs — matches viewer toolbar aesthetic */
-    --r-lg:  10px;  /* cards, panels, tiles */
-    --r-xl:  12px;
-    --r-pill: 999px; /* fully-rounded floating nav pills (#186) */
+    --lh-tight: 1.2;
+    --lh-body:  1.5;
 
-    /* Floating nav pill (#186) — shared by the admin navbar and viewer toolbar
-       so the two match. Semi-transparent surface + blur for a glassy overlay. */
+    /* Tracking for uppercase micro-labels, and the subtle tracking on buttons. */
+    --ls-label: 0.1em;
+    --ls-btn:   0.03em;
+
+    /* ---- Spacing (4px scale) ----
+       --sp-1-5 and --sp-2-5 exist because 6px and 10px are load-bearing in
+       control padding; snapping them to the 4px grid would shift every button. */
+    --sp-1:   4px;
+    --sp-1-5: 6px;
+    --sp-2:   8px;
+    --sp-2-5: 10px;
+    --sp-3:  12px;
+    --sp-4:  16px;
+    --sp-5:  20px;
+    --sp-6:  24px;
+    --sp-7:  28px;
+    --sp-8:  32px;
+    --sp-9:  36px;
+    --sp-12: 48px;
+
+    /* ---- Radii ----
+       Pick by the element's ROLE, not by eye. The steps are deliberately far
+       enough apart to be distinguishable; there is no step between --r-control
+       and --r-card on purpose. */
+    --r-inset:   4px;   /* micro-elements nested inside a control: swatches, tags */
+    --r-control:  8px;  /* buttons, inputs, selects, icon buttons, chips */
+    --r-card:    12px;  /* cards, panels, tiles, modals, toasts, toolbars, sheets */
+    --r-pill:   999px;  /* nav pills, count badges, progress bars and tracks */
+    --r-circle:   50%;  /* status dots, slider thumbs */
+
+    /* ---- Borders ---- */
+    --bw-hair:    1px;    /* dividers, card and container edges */
+    --bw-control: 1.5px;  /* every button, so controls read as one family */
+    --bw-accent:  2px;    /* active-tab underlines, drop-target outlines */
+
+    /* ---- Floating nav pill (#186) ----
+       Shared by the admin navbar and viewer toolbar so the two match.
+       Semi-transparent surface + blur for a glassy overlay. */
     --pill-bg:     color-mix(in srgb, var(--surface) 72%, transparent);
     --pill-border: color-mix(in srgb, var(--text) 12%, transparent);
     --pill-blur:   12px;
+    /* Hover partner for --pill-border, on glass chrome over video. */
+    --glass-border-strong: color-mix(in srgb, var(--text) 25%, transparent);
+    /* Blur behind modal/overlay scrims (weaker than the pill's). */
+    --blur-scrim:  4px;
+    /* Height of a top-bar chip. Explicit so a chip containing an icon and one
+       containing only text come out the same height (see .top-pill). */
+    --pill-h:      24px;
 
-    /* Motion */
-    --dur-fast: 150ms;
+    /* ---- Motion ---- */
+    --dur-fast: 150ms;  /* hover/focus on controls */
+    --dur-med:  250ms;  /* panels sliding, layout reflow */
+    --dur-slow: 300ms;  /* progress bars filling */
     --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* overshoot, admin tabs */
 
-    /* Focus ring — tracks --accent at 30% alpha via color-mix. */
-    --ring-accent: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+    /* ---- Elevation ---- */
+    /* Focus ring — tracks --accent at 35% alpha via color-mix. */
+    --ring-accent:  0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+    /* Solid halo that punches a notification dot out of its background. */
+    --ring-surface: 0 0 0 2px var(--surface);
+    /* The one real elevation shadow in the product — chrome floating over
+       video. Expressed as a filter so it follows the alpha of an SVG cursor
+       rather than boxing it; apply with `filter: var(--shadow-float)`. */
+    --shadow-float: drop-shadow(0 1px 2px var(--scrim));
 
-    /* Z-index */
-    --z-nav:     100;
-    --z-pill:    120;  /* floating nav pills — above content/panels, below overlays */
-    --z-overlay: 150;
-    --z-screen:  200;
-    --z-modal:   300;
-    --z-toast:   999;
+    /* ---- Z-index ----
+       Every layer in the product lives on this scale. New layers extend it;
+       they are never invented inline. The 5–8 band is the stacking context
+       *inside* a video tile, which is why it sits below the page-level layers. */
+    --z-tile-offline: 5;
+    --z-tile-display: 6;
+    --z-tile-pointer: 7;
+    --z-tile-actions: 8;
+    --z-panel:        20;   /* viewer side panel / stage strip */
+    --z-panel-mobile: 30;   /* viewer right panel when it takes over on mobile */
+    --z-pill:        120;   /* floating nav pills — above panels, below overlays */
+    --z-overlay:     150;   /* prompts and pickers that sit under a modal */
+    --z-screen:      200;   /* full-page screens: join, waiting */
+    --z-modal:       300;
+    --z-toast:       999;
 
-    /* Layout */
+    /* ---- Layout ----
+       --panel-w and --strip-w* are read from JS via getComputedStyle in
+       frontend/viewer/layout.ts — do not rename them. */
     --nav-h:     62px;
     --topbar-h:  48px;
-    --toolbar-h: 56px;
     --panel-w:     320px;
     --panel-w-max: 560px;
     --strip-w:      220px;

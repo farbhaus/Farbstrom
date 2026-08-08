@@ -1,19 +1,22 @@
 /* Farbstrom shared components — lifted from admin's best-evolved versions.
-   Page-specific layout stays in each page's local <style>. */
+   Page-specific layout stays in each page's local <style>.
+
+   No raw values in here: every length, color, duration and layer comes from
+   tokens.css. See the "Design system" section of CLAUDE.md. */
 
 /* ---- Buttons ---- */
 .btn {
-    padding: 8px 16px;
-    border: 1.5px solid var(--border);
+    padding: var(--sp-2) var(--sp-4);
+    border: var(--bw-control) solid var(--border);
     background: var(--surface);
     font: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
+    font-size: var(--fs-base);
+    font-weight: var(--fw-semi);
+    letter-spacing: var(--ls-btn);
     color: var(--text);
     cursor: pointer;
     white-space: nowrap;
-    border-radius: var(--r-btn);
+    border-radius: var(--r-control);
     transition: background var(--dur-fast) var(--ease-out),
                 border-color var(--dur-fast) var(--ease-out),
                 color var(--dur-fast) var(--ease-out),
@@ -26,7 +29,7 @@
 .btn:disabled { opacity: 0.4; cursor: default; transform: none; }
 
 .btn-primary { background: var(--text); color: var(--bg); border-color: var(--text); }
-.btn-primary:hover { background: #ccc; border-color: #ccc; }
+.btn-primary:hover { background: var(--text-hover); border-color: var(--text-hover); }
 
 .btn-danger { color: var(--danger); border-color: var(--danger); }
 .btn-danger:hover { background: color-mix(in srgb, var(--danger) 15%, var(--surface)); border-color: var(--danger); }
@@ -34,8 +37,8 @@
 .btn-ghost { background: none; border-color: transparent; }
 .btn-ghost:hover { background: var(--surface2); border-color: transparent; }
 
-.btn-sm { padding: 5px 12px; font-size: 12px; }
-.btn-lg { padding: 11px 20px; font-size: 13px; }
+.btn-sm { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-sm); }
+.btn-lg { padding: var(--sp-3) var(--sp-5); font-size: var(--fs-base); }
 .btn-block { width: 100%; }
 
 /* Square icon button — matches the viewer toolbar .tb-btn aesthetic.
@@ -43,11 +46,11 @@
 .btn-icon {
     display: inline-flex; align-items: center; justify-content: center;
     width: 36px; height: 36px; padding: 0;
-    border: 1.5px solid var(--border);
+    border: var(--bw-control) solid var(--border);
     background: var(--surface2);
     color: var(--text);
     cursor: pointer;
-    border-radius: var(--r-btn);
+    border-radius: var(--r-control);
     transition: background var(--dur-fast) var(--ease-out),
                 border-color var(--dur-fast) var(--ease-out),
                 color var(--dur-fast) var(--ease-out),
@@ -58,13 +61,17 @@
 .btn-icon:focus-visible { outline: none; box-shadow: var(--ring-accent); border-color: var(--accent); }
 .btn-icon:disabled { opacity: 0.4; cursor: default; transform: none; }
 .btn-icon svg { width: 18px; height: 18px; }
-.btn-icon.btn-icon-sm { width: 28px; height: 28px; border-radius: var(--r-md); }
+.btn-icon.btn-icon-sm { width: 28px; height: 28px; }
 .btn-icon.btn-icon-sm svg { width: 14px; height: 14px; }
+/* Borderless variant — panel close buttons, inline row dismiss. */
+.btn-icon.btn-icon-ghost { background: none; border-color: transparent; color: var(--dim); }
+.btn-icon.btn-icon-ghost:hover { background: var(--surface2); border-color: transparent; color: var(--text); }
 
 .btn-tab {
     border: none; background: none; color: var(--dim);
-    border-bottom: 2px solid transparent;
-    padding: 6px 14px; font-size: 13px; border-radius: 0;
+    border-bottom: var(--bw-accent) solid transparent;
+    padding: var(--sp-1-5) var(--sp-4); font-size: var(--fs-base);
+    border-radius: 0;  /* deliberate reset — an underlined tab has no corners */
     transition: color var(--dur-fast) var(--ease-out),
                 border-color var(--dur-fast) var(--ease-out);
 }
@@ -77,27 +84,72 @@
    Positioning/contents stay page-local; this only carries the aesthetic. */
 .nav-pill {
     background: var(--pill-bg);
-    border: 1px solid var(--pill-border);
+    border: var(--bw-hair) solid var(--pill-border);
     border-radius: var(--r-pill);
     backdrop-filter: blur(var(--pill-blur));
     -webkit-backdrop-filter: blur(var(--pill-blur));
 }
 
+/* ---- Top-bar chip ----
+   The small chips in a page's top bar: status badge, participant counter, the
+   leave control. The explicit height is the whole point — without it each chip
+   is sized by its own contents, so one holding a 16px icon ends up taller than
+   one holding 11px text and the row never lines up. Padding is horizontal only
+   for the same reason. */
+.top-pill {
+    display: inline-flex; align-items: center; gap: var(--sp-1);
+    height: var(--pill-h); padding: 0 var(--sp-2-5);
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-pill);
+    background: none;
+    font: inherit; font-size: var(--fs-sm);
+    color: var(--dim);
+    white-space: nowrap;
+    transition: border-color var(--dur-fast) var(--ease-out),
+                color var(--dur-fast) var(--ease-out);
+}
+.top-pill.interactive { cursor: pointer; user-select: none; }
+.top-pill.interactive:hover { color: var(--text); border-color: var(--dim); }
+.top-pill:focus-visible { outline: none; box-shadow: var(--ring-accent); border-color: var(--accent); }
+
+/* ---- Uppercase micro-label ----
+   One recipe for every label-ish element in the product, so size/weight/
+   tracking can't drift per page. Page CSS keeps only its own layout
+   properties (margins, widths, color overrides) — never these five. */
+.label-micro, .label-micro-sm, .modal-title,
+.section-title, .form-row label, .stat-label, .stat-dim, .url-label,
+.url-group > summary, .participants-title, .participants-group-title,
+.waiting-label, .device-picker-row label,
+.panel-label, .panel-tab, .roster-section-header, .files-list-head {
+    font-weight: var(--fw-bold);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+}
+.label-micro,
+.section-title, .form-row label, .stat-label, .stat-dim, .url-label,
+.url-group > summary, .participants-title, .participants-group-title,
+.waiting-label, .device-picker-row label {
+    font-size: var(--fs-xs);
+}
+.label-micro-sm,
+.panel-label, .panel-tab, .roster-section-header, .files-list-head {
+    font-size: var(--fs-2xs);
+}
+
 /* ---- Forms ---- */
-.form-row { margin-bottom: 18px; }
+.form-row { margin-bottom: var(--sp-4); }
 .form-row label {
     display: block;
-    font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
-    text-transform: uppercase; color: var(--dim);
-    margin-bottom: 6px;
+    color: var(--dim);
+    margin-bottom: var(--sp-1-5);
 }
 .form-row input,
 .form-row select,
 .form-row textarea {
-    width: 100%; padding: 9px 12px;
-    border: 1px solid var(--border); background: var(--surface2);
-    font: inherit; font-size: 13px; color: var(--text);
-    outline: none; border-radius: var(--r-btn);
+    width: 100%; padding: var(--sp-2-5) var(--sp-3);
+    border: var(--bw-hair) solid var(--border); background: var(--surface2);
+    font: inherit; font-size: var(--fs-base); color: var(--text);
+    outline: none; border-radius: var(--r-control);
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
@@ -120,73 +172,99 @@
 
 /* Generic inputs outside .form-row — for places that use raw <input>, <select>, <textarea>. */
 .input, .select, .textarea {
-    padding: 9px 12px;
-    border: 1px solid var(--border); background: var(--surface2);
-    font: inherit; font-size: 13px; color: var(--text);
-    outline: none; border-radius: var(--r-btn);
+    padding: var(--sp-2-5) var(--sp-3);
+    border: var(--bw-hair) solid var(--border); background: var(--surface2);
+    font: inherit; font-size: var(--fs-base); color: var(--text);
+    outline: none; border-radius: var(--r-control);
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
 .input:hover, .select:hover, .textarea:hover { border-color: var(--dim); }
 .input:focus, .select:focus, .textarea:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
 
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--sp-6); }
 
 /* Native form controls pick up the brand accent everywhere, so every checkbox
    (and radio) is visually consistent across admin/viewer/landing. */
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 
-.form-row.checkbox { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.form-row.checkbox { display: flex; align-items: center; gap: var(--sp-2-5); margin-bottom: var(--sp-4); }
 .form-row.checkbox label {
     margin: 0; text-transform: none; letter-spacing: 0;
-    font-size: 13px; font-weight: 400; color: var(--text);
+    font-size: var(--fs-base); font-weight: var(--fw-normal); color: var(--text);
 }
 .form-row.checkbox input { width: auto; }
 
-/* ---- Centered card (landing / login / join / waiting) ---- */
+/* ---- Centered card (landing / login / join / waiting / prompts) ---- */
 .panel-box {
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-xl);
-    padding: 48px;
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
+    padding: var(--sp-12);
     width: 400px;
-    max-width: calc(100vw - 32px);
+    max-width: calc(100vw - var(--sp-8));
+}
+.panel-box-md { width: 380px; }
+.panel-box-sm { width: 340px; }
+@media (max-width: 700px) {
+    .panel-box, .panel-box-md, .panel-box-sm { padding: var(--sp-8) var(--sp-6); }
 }
 
 /* ---- Modal ---- */
 .modal-overlay {
     position: fixed; inset: 0;
-    background: rgba(0,0,0,0.6);
-    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    background: var(--scrim);
+    backdrop-filter: blur(var(--blur-scrim)); -webkit-backdrop-filter: blur(var(--blur-scrim));
     display: flex; align-items: center; justify-content: center;
     z-index: var(--z-modal);
 }
+/* Prompts and pickers that must sit under a true modal. */
+.modal-overlay.modal-overlay-low { z-index: var(--z-overlay); }
 .modal {
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-xl);
-    width: 600px; max-width: calc(100vw - 32px);
-    max-height: calc(100vh - 64px);
-    overflow-y: auto; padding: 36px;
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
+    width: 600px; max-width: calc(100vw - var(--sp-8));
+    max-height: calc(100vh - var(--sp-4) * 4);
+    overflow-y: auto; padding: var(--sp-9);
 }
 .modal-header {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 28px;
+    margin-bottom: var(--sp-7);
 }
-.modal-title {
-    font-size: 13px; font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase;
-}
+.modal-title { font-size: var(--fs-base); }
 .modal-footer {
-    display: flex; justify-content: flex-end; gap: 8px;
-    margin-top: 24px;
+    display: flex; justify-content: flex-end; gap: var(--sp-2);
+    margin-top: var(--sp-6);
+}
+
+/* ---- Card (admin room / stream-key / OME-stream / stat cards) ---- */
+.card {
+    background: var(--surface);
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
+    margin-bottom: var(--sp-4);
+    overflow: hidden;
+    transition: border-color var(--dur-fast) var(--ease-out);
+}
+.card-header {
+    display: flex; align-items: center; gap: var(--sp-4);
+    padding: var(--sp-5) var(--sp-6);
+    border-bottom: var(--bw-hair) solid var(--border);
+}
+.card-body { padding: var(--sp-5) var(--sp-6); }
+.card-footer {
+    padding: var(--sp-3) var(--sp-6);
+    border-top: var(--bw-hair) solid var(--border);
+    display: flex; align-items: center; gap: var(--sp-3);
+    background: var(--surface2);
 }
 
 /* ---- Panel card (rounded inset card inside a side panel or tab content) ---- */
 .panel-card {
     background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
     padding: var(--sp-3) var(--sp-4);
     transition: border-color var(--dur-fast) var(--ease-out),
                 background var(--dur-fast) var(--ease-out);
@@ -194,30 +272,75 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .panel-card.interactive { cursor: pointer; }
 .panel-card.interactive:hover { border-color: var(--dim); }
 
-/* ---- Badges ---- */
+/* ---- Badges ----
+   Two shapes on purpose: .badge is an uppercase status/protocol tag (squared
+   off), .badge-count is a numeric counter (fully rounded). Nothing else. */
 .badge {
-    display: inline-block; padding: 3px 9px;
-    font-size: 10px; font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    border-radius: var(--r-sm);
+    display: inline-block; padding: var(--sp-1) var(--sp-2);
+    font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+    letter-spacing: var(--ls-label); text-transform: uppercase;
+    border-radius: var(--r-inset);
 }
-.badge-live    { background: #0d2211; color: var(--green); }
-.badge-pending { background: #1a1a1a; color: var(--dim); }
-.badge-scheduled { background: #10233a; color: #5599dd; }
-.badge-ended   { background: #2a1515; color: var(--danger); }
-.badge-webrtc  { background: #111828; color: #6688ee; }
-.badge-llhls   { background: #1f1a0a; color: #ccaa33; }
-.badge-srt     { background: #1a0f22; color: #aa77ee; }
-.badge-source  { background: #0d2211; color: var(--green); }
+.badge-live,
+.badge-source    { background: var(--green-tint);  color: var(--green); }
+.badge-pending   { background: var(--dim-tint);    color: var(--dim); }
+.badge-scheduled,
+.badge-webrtc    { background: var(--info-tint);   color: var(--info); }
+.badge-ended     { background: var(--danger-tint); color: var(--danger); }
+.badge-llhls     { background: var(--llhls-tint);  color: var(--proto-llhls); }
+.badge-srt       { background: var(--srt-tint);    color: var(--proto-srt); }
+/* Outlined variant — a tag that sits inline with text (e.g. participant role). */
+.badge-outline { background: none; border: var(--bw-hair) solid currentColor; }
+
+.badge-count {
+    display: inline-block; padding: 0 var(--sp-1-5);
+    font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+    border-radius: var(--r-pill);
+    background: var(--surface2); color: var(--dim);
+}
+
+/* ---- Progress bar ---- */
+.progress {
+    display: flex; height: var(--sp-1-5);
+    background: var(--surface2);
+    border-radius: var(--r-pill);
+    overflow: hidden;
+}
+.progress-sm { height: var(--sp-1); }
+.progress-lg { height: var(--sp-2); }
+.progress-fill {
+    height: 100%;
+    transition: width var(--dur-slow) var(--ease-out),
+                background-color var(--dur-slow) var(--ease-out);
+}
+.progress-fill.ok   { background: var(--green); }
+.progress-fill.warn { background: var(--accent); }
+.progress-fill.crit { background: var(--danger); }
+
+/* ---- Status dot ---- */
+.dot {
+    display: inline-block; flex-shrink: 0;
+    width: var(--sp-2); height: var(--sp-2);
+    border-radius: var(--r-circle);
+}
+.dot-sm { width: var(--sp-1-5); height: var(--sp-1-5); }
+.dot-lg { width: var(--sp-2-5); height: var(--sp-2-5); }
+.dot-pulse { animation: dot-pulse 2s ease-in-out infinite; }
+@keyframes dot-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
+@media (prefers-reduced-motion: reduce) {
+    .dot-pulse { animation: none; }
+}
 
 /* ---- Toast ---- */
 #toast {
-    position: fixed; bottom: 24px; left: 50%;
-    transform: translateX(-50%) translateY(20px);
+    position: fixed; bottom: var(--sp-6); left: 50%;
+    transform: translateX(-50%) translateY(var(--sp-5));
     background: var(--text); color: var(--bg);
-    padding: 10px 20px; border-radius: var(--r-lg);
-    font-size: 13px; z-index: var(--z-toast);
-    opacity: 0; transition: opacity 0.2s, transform 0.2s;
+    padding: var(--sp-2-5) var(--sp-5); border-radius: var(--r-card);
+    font-size: var(--fs-base); z-index: var(--z-toast);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-out),
+                transform var(--dur-fast) var(--ease-out);
     pointer-events: none;
 }
 #toast.show {
@@ -227,27 +350,40 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 /* ---- Section header ---- */
 .section-header {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 20px;
+    margin-bottom: var(--sp-5);
 }
-.section-title {
-    font-size: 11px; font-weight: 700;
-    letter-spacing: 0.12em; text-transform: uppercase;
-    color: var(--dim);
-}
+.section-title { color: var(--dim); }
 
 /* ---- Empty state ---- */
 .empty {
-    padding: 48px; text-align: center;
-    color: var(--dim); font-size: 13px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--r-lg);
+    padding: var(--sp-12); text-align: center;
+    color: var(--dim); font-size: var(--fs-base);
+    background: var(--surface); border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
 }
 
 /* Small muted footer link inside entry panels (landing, join). */
 .panel-foot {
-    margin-top: 24px;
+    margin-top: var(--sp-6);
     text-align: center;
-    font-size: 12px;
+    font-size: var(--fs-sm);
 }
 .panel-foot a { color: var(--dim); }
 .panel-foot a:hover { color: var(--text); }
+
+/* ---- Entry-screen branding + copy ----
+   Shared by the viewer's landing screen, the standalone landing page and the
+   privacy page, which previously carried byte-identical copies. */
+.screen-logo:not(.u-hidden) {
+    height: var(--sp-12); opacity: 0.6;
+    margin: 0 auto var(--sp-6); display: block;
+}
+.brand-wordmark {
+    font-size: var(--fs-md); font-weight: var(--fw-bold);
+    letter-spacing: var(--ls-label); text-transform: uppercase;
+    text-align: center; color: var(--text);
+    margin: 0 auto var(--sp-6);
+}
+.landing-title { font-size: var(--fs-xl); font-weight: var(--fw-semi); margin-bottom: var(--sp-1-5); }
+.landing-sub { font-size: var(--fs-base); color: var(--dim); margin-bottom: var(--sp-8); line-height: var(--lh-body); }
+.landing-error { color: var(--danger); font-size: var(--fs-sm); margin-top: var(--sp-2-5); min-height: var(--sp-4); }

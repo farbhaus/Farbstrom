@@ -19,17 +19,13 @@ body {
     min-height: 100dvh;
 }
 
-.screen-logo:not(.u-hidden) { height: 48px; opacity: 0.6; margin: 0 auto 24px; display: block; }
-.brand-wordmark { font-size: 15px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; color: var(--text); margin: 0 auto 24px; }
-.landing-title { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
-.landing-sub { font-size: 13px; color: var(--dim); margin-bottom: 32px; line-height: 1.5; }
-.landing-error { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
+/* .screen-logo, .brand-wordmark and .landing-* live in components.css — they
+   were byte-identical here and in the viewer's landing screen. */
 
-/* Mobile (700px = shared breakpoint, see tokens.css): trim the card's generous
-   desktop padding/spacing so it sits comfortably on a phone. */
+/* Mobile (700px = shared breakpoint, see tokens.css): .panel-box trims its own
+   padding at this width; only the copy spacing is page-specific. */
 @media (max-width: 700px) {
-    .panel-box { padding: 32px 24px; }
-    .landing-sub { margin-bottom: 24px; }
+    .landing-sub { margin-bottom: var(--sp-6); }
 }
 </style>
 </head>

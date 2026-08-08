@@ -19,13 +19,14 @@
     position: fixed; inset: 0; background: var(--bg);
     display: flex; align-items: center; justify-content: center; z-index: var(--z-screen);
 }
-.login-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); padding: 52px; width: 400px; }
-.login-box h1 { font-size: 15px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; margin-bottom: 32px; color: var(--text); }
+.login-box { background: var(--surface); border: var(--bw-hair) solid var(--border); border-radius: var(--r-card); padding: var(--sp-12); width: 400px; }
+.login-box h1 { font-size: var(--fs-md); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; text-align: center; margin-bottom: 32px; color: var(--text); }
 .login-logo:not(.u-hidden) { max-height: 48px; margin: 0 auto 32px; display: block; }
-.login-box input { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-md); padding: 10px 14px; font: inherit; font-size: 14px; width: 100%; outline: none; }
-.login-box input:focus { border-color: var(--dim); }
+.login-box input { background: var(--surface2); border: var(--bw-hair) solid var(--border); color: var(--text); border-radius: var(--r-control); padding: 10px 14px; font: inherit; font-size: var(--fs-base); width: 100%; outline: none; }
+/* Same accent + ring as every other input in the product. */
+.login-box input:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
 .login-box input::placeholder { color: var(--faint); }
-.login-error { color: var(--danger); font-size: 12px; margin-top: 12px; min-height: 16px; }
+.login-error { color: var(--danger); font-size: var(--fs-sm); margin-top: 12px; min-height: 16px; }
 
 /* ---- Nav — floating pill (#186): top on desktop, bottom on mobile ---- */
 nav {
@@ -36,11 +37,11 @@ nav {
     max-width: calc(100vw - 24px); z-index: var(--z-pill);
 }
 /* Corner radius matches the cards/other elements (override .nav-pill's pill radius). */
-#main-nav { border-radius: var(--r-lg); }
+#main-nav { border-radius: var(--r-card); }
 /* Logo + Sign out live outside the pill — fixed to the top corners on desktop
    (logo left, sign out right). */
 .brand {
-    font-weight: 700; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    font-weight: var(--fw-bold); font-size: var(--fs-sm); letter-spacing: var(--ls-label); text-transform: uppercase;
     display: inline-flex; align-items: center;
     position: fixed; top: 22px; left: 32px; z-index: var(--z-pill);
 }
@@ -65,15 +66,15 @@ nav {
     border-radius: var(--r-pill); border-bottom: none;
     transition: background var(--dur-fast) var(--ease-out),
                 color var(--dur-fast) var(--ease-out),
-                transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+                transform var(--dur-med) var(--ease-spring);
 }
 .btn-tab:hover {
-    background: color-mix(in srgb, var(--text) 9%, transparent);
+    background: var(--tint-hover);
     transform: translateY(-2px) scale(1.06);
 }
 .btn-tab.active {
     color: var(--text); border-bottom-color: transparent;
-    background: color-mix(in srgb, var(--text) 15%, transparent);
+    background: var(--tint-active);
 }
 
 /* ---- Main ---- */
@@ -81,84 +82,84 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 .content-wrap { max-width: 70%; margin: 0 auto; }
 
 /* ---- Admin-specific button variants ---- */
-.btn-copy { padding: 7px 18px; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; }
+.btn-copy { padding: 7px 18px; font-size: var(--fs-sm); font-weight: var(--fw-bold); letter-spacing: var(--ls-btn); }
 
 /* ---- Waiting inline ---- */
 /* ---- Participants panel (collapsible roster + waiting + blocked) ---- */
-.participants-panel { border-top: 1px solid var(--border); background: var(--surface2); }
+.participants-panel { border-top: var(--bw-hair) solid var(--border); background: var(--surface2); }
 .participants-toggle {
     display: flex; align-items: center; gap: 10px; width: 100%;
-    padding: 13px 24px; background: none; border: none; cursor: pointer;
+    padding: var(--sp-3) var(--sp-6); background: none; border: none; cursor: pointer;
     font: inherit; color: var(--text); text-align: left;
 }
 .participants-toggle:hover { background: var(--surface); }
-.participants-title { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }
-.participants-counts { font-size: 12px; color: var(--faint); margin-left: auto; }
-.chevron { display: inline-block; font-size: 10px; color: var(--dim); transition: transform 0.15s ease; }
+.participants-title { color: var(--dim); }
+.participants-counts { font-size: var(--fs-sm); color: var(--faint); margin-left: auto; }
+.chevron { display: inline-block; font-size: var(--fs-2xs); color: var(--dim); transition: transform var(--dur-fast) var(--ease-out); }
 .chevron.open { transform: rotate(90deg); }
 .participants-body { padding: 0 24px 16px; }
 .participants-group { margin-top: 14px; }
 .participants-group:first-child { margin-top: 4px; }
 .participants-group-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.participants-group-title { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
+.participants-group-title { color: var(--dim); margin-bottom: var(--sp-2); }
 .participants-group-header .participants-group-title { margin-bottom: 0; }
-.participant-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.participant-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: var(--bw-hair) solid var(--border); }
 .participant-row:last-child { border-bottom: none; }
-.role-tag { font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
-.waiting-empty { font-size: 12px; color: var(--faint); }
+.role-tag { font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--accent); border: var(--bw-hair) solid var(--accent); border-radius: var(--r-inset); padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
+.waiting-empty { font-size: var(--fs-sm); color: var(--faint); }
 
 /* ---- Dashboard stat cards ---- */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-.stat-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
-    padding: 24px;
-    transition: border-color var(--dur-fast) var(--ease-out),
-                transform var(--dur-fast) var(--ease-out),
-                box-shadow var(--dur-fast) var(--ease-out);
-}
-.stat-label { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin-bottom: 12px; }
-.stat-value { font-size: 28px; font-weight: 600; }
-.stat-value-sm { font-size: 18px; margin-bottom: 4px; }
-.stat-sub { font-size: 12px; color: var(--dim); margin-top: 4px; }
-.stat-dim { color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin-left: 6px; }
-.stat-bar { height: 6px; background: var(--surface2); border-radius: 3px; margin-top: 14px; overflow: hidden; }
-.stat-bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.3s, background-color 0.3s; }
+.stat-card { padding: var(--sp-6); }
+.stat-label { color: var(--dim); margin-bottom: var(--sp-3); }
+.stat-value { font-size: var(--fs-2xl); font-weight: var(--fw-semi); }
+.stat-value-sm { font-size: var(--fs-lg); margin-bottom: 4px; }
+.stat-sub { font-size: var(--fs-sm); color: var(--dim); margin-top: 4px; }
+.stat-dim { color: var(--dim); margin-left: var(--sp-1-5); }
+.stat-bar { height: 6px; background: var(--surface2); border-radius: var(--r-pill); margin-top: 14px; overflow: hidden; }
+.stat-bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width var(--dur-slow) var(--ease-out), background-color var(--dur-slow) var(--ease-out); }
 .stat-bar-fill.ok   { background: var(--green); }
 .stat-bar-fill.warn { background: var(--accent); }
 .stat-bar-fill.crit { background: var(--danger); }
 .stat-bar-tight { height: 4px; margin-top: 2px; }
 /* Per-CPU mini-bars */
 .cpu-cores { display: grid; grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); gap: 4px 8px; margin-top: 12px; }
-.cpu-core { font-size: 10px; color: var(--dim); }
-.cpu-core-label { display: flex; justify-content: space-between; font-family: monospace; }
+.cpu-core { font-size: var(--fs-2xs); color: var(--dim); }
+.cpu-core-label { display: flex; justify-content: space-between; font-family: var(--ff-mono); }
 /* Stacked memory segments */
-.mem-stack { display: flex; height: 6px; background: var(--surface2); border-radius: 3px; margin-top: 14px; overflow: hidden; }
-.mem-seg { height: 100%; transition: width 0.3s; }
+.mem-stack { display: flex; height: 6px; background: var(--surface2); border-radius: var(--r-pill); margin-top: 14px; overflow: hidden; }
+.mem-seg { height: 100%; transition: width var(--dur-slow) var(--ease-out); }
 .mem-seg.used    { background: var(--green); }
 .mem-seg.buffers { background: var(--accent); }
 .mem-seg.cached  { background: var(--dim); opacity: 0.5; }
-.mem-legend { display: flex; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--dim); flex-wrap: wrap; }
-.mem-legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.mem-legend { display: flex; gap: 12px; margin-top: 8px; font-size: var(--fs-xs); color: var(--dim); flex-wrap: wrap; }
+.mem-legend-dot { display: inline-block; width: var(--sp-2); height: var(--sp-2); border-radius: var(--r-circle); margin-right: var(--sp-1); vertical-align: middle; }
 
 /* ---- Room cards ---- */
-.room-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
-    margin-bottom: 16px; overflow: hidden;
-    transition: border-color var(--dur-fast) var(--ease-out),
-                box-shadow var(--dur-fast) var(--ease-out);
+/* .room-card / .key-card / .stream-card / .stat-card / .files-storage-widget
+   were five copies of one component (three of them byte-identical). Shared
+   shell here; only padding differs per card. The box-shadow transitions these
+   carried are gone — none of them sets a box-shadow in any state. */
+.room-card, .key-card, .stream-card, .stat-card, .files-storage-widget {
+    background: var(--surface);
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
+    margin-bottom: var(--sp-4);
+    overflow: hidden;
+    transition: border-color var(--dur-fast) var(--ease-out);
 }
 .room-card-header {
     display: flex; align-items: flex-start; gap: 16px;
-    padding: 20px 24px; border-bottom: 1px solid var(--border);
+    padding: var(--sp-5) var(--sp-6); border-bottom: var(--bw-hair) solid var(--border);
 }
 .room-card-info { flex: 1; min-width: 0; }
-.room-card-name { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
-.room-card-meta { font-size: 12px; color: var(--dim); }
+.room-card-name { font-size: var(--fs-lg); font-weight: var(--fw-bold); margin-bottom: 4px; }
+.room-card-meta { font-size: var(--fs-sm); color: var(--dim); }
 .room-card-badges { display: flex; gap: 6px; align-items: center; padding-top: 2px; flex-shrink: 0; }
 .room-card-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-.room-card-body { padding: 20px 24px; }
+.room-card-body { padding: var(--sp-5) var(--sp-6); }
 .room-card-footer {
-    padding: 12px 24px; border-top: 1px solid var(--border);
+    padding: var(--sp-3) var(--sp-6); border-top: var(--bw-hair) solid var(--border);
     display: flex; align-items: center; gap: 12px; background: var(--surface2);
 }
 
@@ -169,92 +170,72 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 .url-row:last-child { margin-bottom: 0; }
 /* Multi-button host action row — buttons match the .url-input height so the
    row aligns vertically with the Viewer link row above it. */
-.url-row .btn-sm { line-height: 1.2; height: 32px; padding: 0 14px; }
-.url-label {
-    font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--dim); width: 90px; flex-shrink: 0;
-}
+.url-row .btn-sm { line-height: var(--lh-tight); height: 32px; padding: 0 14px; }
+.url-label { color: var(--dim); width: 90px; flex-shrink: 0; }
 .url-input {
-    flex: 1; min-width: 0; padding: 8px 12px; background: var(--surface2); border: 1px solid var(--border);
-    font-family: monospace; font-size: 12px; color: var(--text); outline: none; border-radius: var(--r-btn);
+    flex: 1; min-width: 0; padding: 8px 12px; background: var(--surface2); border: var(--bw-hair) solid var(--border);
+    font-family: var(--ff-mono); font-size: var(--fs-sm); color: var(--text); outline: none; border-radius: var(--r-control);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
 .url-input:hover { border-color: var(--dim); }
 .url-input:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
-.url-divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
-.url-group { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+.url-divider { border: none; border-top: var(--bw-hair) solid var(--border); margin: 16px 0; }
+.url-group { border: var(--bw-hair) solid var(--border); border-radius: var(--r-control); overflow: hidden; }
 .url-group > summary {
-    cursor: pointer; padding: 10px 14px; list-style: none;
-    font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim);
-    background: var(--surface2); user-select: none;
+    cursor: pointer; padding: var(--sp-2-5) var(--sp-4); list-style: none;
+    color: var(--dim); background: var(--surface2); user-select: none;
 }
 .url-group > summary::-webkit-details-marker { display: none; }
 .url-group > summary::before { content: '▸ '; color: var(--faint); }
 .url-group[open] > summary::before { content: '▾ '; }
-.url-group[open] > summary { border-bottom: 1px solid var(--border); }
+.url-group[open] > summary { border-bottom: var(--bw-hair) solid var(--border); }
 .url-group > .url-row { padding: 10px 14px 0; }
 .url-group > .url-row:last-child { padding-bottom: 10px; }
 
 /* ---- Stream key cards ---- */
-.key-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
-    margin-bottom: 16px; overflow: hidden;
-    transition: border-color var(--dur-fast) var(--ease-out),
-                box-shadow var(--dur-fast) var(--ease-out);
-}
 .key-card-header {
     display: flex; align-items: center; gap: 16px;
-    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    padding: var(--sp-5) var(--sp-6); border-bottom: var(--bw-hair) solid var(--border);
 }
-.key-card-name { font-size: 17px; font-weight: 700; flex: 1; }
-.key-card-rooms { font-size: 12px; color: var(--dim); }
-.key-card-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 10px; }
+.key-card-name { font-size: var(--fs-lg); font-weight: var(--fw-bold); flex: 1; }
+.key-card-rooms { font-size: var(--fs-sm); color: var(--dim); }
+.key-card-body { padding: var(--sp-5) var(--sp-6); display: flex; flex-direction: column; gap: 10px; }
 
 /* ---- OME stream cards ---- */
-.stream-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
-    margin-bottom: 16px; overflow: hidden;
-    transition: border-color var(--dur-fast) var(--ease-out),
-                box-shadow var(--dur-fast) var(--ease-out);
-}
 .stream-card-header {
     display: flex; align-items: center; gap: 12px;
-    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    padding: var(--sp-5) var(--sp-6); border-bottom: var(--bw-hair) solid var(--border);
 }
 .stream-live-dot {
-    width: 8px; height: 8px; border-radius: 50%; background: var(--green);
-    flex-shrink: 0; animation: live-pulse 2s ease-in-out infinite;
+    width: var(--sp-2); height: var(--sp-2); border-radius: var(--r-circle); background: var(--green);
+    flex-shrink: 0; animation: dot-pulse 2s ease-in-out infinite;
 }
-@keyframes live-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 .stream-card-info { flex: 1; min-width: 0; }
-.stream-card-name { font-size: 17px; font-weight: 700; }
-.stream-card-room { font-size: 12px; color: var(--dim); margin-top: 2px; }
-.stream-card-body { padding: 14px 24px; display: flex; flex-direction: column; gap: 6px; }
-.stream-stat { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
+.stream-card-name { font-size: var(--fs-lg); font-weight: var(--fw-bold); }
+.stream-card-room { font-size: var(--fs-sm); color: var(--dim); margin-top: 2px; }
+.stream-card-body { padding: var(--sp-5) var(--sp-6); display: flex; flex-direction: column; gap: 6px; }
+.stream-stat { display: flex; align-items: baseline; gap: 10px; font-size: var(--fs-base); }
 .stream-stat .stat-label { width: 52px; flex-shrink: 0; }
-.stream-meta { font-size: 12px; color: var(--dim); padding: 8px 24px 14px; }
-.ome-subheader { font-size: 12px; color: var(--dim); margin-bottom: 20px; min-height: 18px; }
+.stream-meta { font-size: var(--fs-sm); color: var(--dim); padding: 8px 24px 14px; }
+.ome-subheader { font-size: var(--fs-sm); color: var(--dim); margin-bottom: 20px; min-height: 18px; }
 
 /* ---- Files tab ---- */
-.files-storage-widget {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-    padding: 18px 24px; margin-bottom: 16px;
-}
+.files-storage-widget { padding: var(--sp-5) var(--sp-6); }
 .files-storage-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
-.files-storage-total { font-size: 18px; font-weight: 700; }
-.files-storage-count { font-size: 12px; color: var(--dim); }
-.files-storage-bar { display: flex; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
-.files-storage-bar > span { height: 100%; transition: width 0.3s; }
-.files-storage-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--dim); }
+.files-storage-total { font-size: var(--fs-lg); font-weight: var(--fw-bold); }
+.files-storage-count { font-size: var(--fs-sm); color: var(--dim); }
+.files-storage-bar { display: flex; height: 8px; background: var(--surface2); border-radius: var(--r-pill); overflow: hidden; }
+.files-storage-bar > span { height: 100%; transition: width var(--dur-slow) var(--ease-out); }
+.files-storage-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: var(--fs-xs); color: var(--dim); }
 .files-storage-legend-item { display: inline-flex; align-items: center; gap: 6px; }
-.files-storage-legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+.files-storage-legend-dot { width: var(--sp-2-5); height: var(--sp-2-5); border-radius: var(--r-circle); }
 
 .files-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
 .files-toolbar input[type=text], .files-toolbar select {
-    padding: 8px 12px; border: 1px solid var(--border); background: var(--surface2);
-    color: var(--text); font: inherit; font-size: 13px; border-radius: var(--r-btn); outline: none;
+    padding: 8px 12px; border: var(--bw-hair) solid var(--border); background: var(--surface2);
+    color: var(--text); font: inherit; font-size: var(--fs-base); border-radius: var(--r-control); outline: none;
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
@@ -262,23 +243,23 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 .files-toolbar input[type=text]:focus, .files-toolbar select:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
 .files-toolbar .search-input { min-width: 220px; flex: 1; }
 .files-toolbar .spacer { flex: 1; }
-.files-toolbar label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: pointer; }
+.files-toolbar label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--dim); cursor: pointer; }
 
 .files-bulk-bar {
     display: none; align-items: center; gap: 10px; padding: 10px 14px;
-    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
-    margin-bottom: 12px; font-size: 13px;
+    background: var(--surface2); border: var(--bw-hair) solid var(--border); border-radius: var(--r-control);
+    margin-bottom: 12px; font-size: var(--fs-base);
 }
 .files-bulk-bar.active { display: flex; }
-.files-bulk-count { font-weight: 700; color: var(--accent); }
+.files-bulk-count { font-weight: var(--fw-bold); color: var(--accent); }
 .files-bulk-spacer { flex: 1; }
 
 .files-dropzone {
-    background: var(--surface); border: 1px dashed var(--border); border-radius: 10px;
-    min-height: 80px; transition: border-color 0.15s, background 0.15s;
+    background: var(--surface); border: var(--bw-hair) dashed var(--border); border-radius: var(--r-card);
+    min-height: 80px; transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
     overflow: hidden;
 }
-.files-dropzone.dragover { border-color: var(--accent); background: #1a1508; }
+.files-dropzone.dragover { border-color: var(--accent); background: var(--accent-tint); }
 
 .files-upload-queue { margin-bottom: 12px; display: none; }
 .files-upload-queue.active { display: block; }
@@ -286,18 +267,18 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     display: grid;
     grid-template-columns: minmax(0, 1fr) 90px 60px 28px;
     gap: 12px; align-items: center;
-    padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; border: var(--bw-hair) solid var(--border); border-radius: var(--r-control);
     background: var(--surface); margin-bottom: 6px;
 }
-.upload-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
-.upload-item-bar { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
-.upload-item-bar > span { display: block; height: 100%; width: 0%; background: var(--accent); transition: width 0.15s; }
+.upload-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-base); font-weight: var(--fw-semi); }
+.upload-item-bar { height: 6px; background: var(--surface2); border-radius: var(--r-pill); overflow: hidden; }
+.upload-item-bar > span { display: block; height: 100%; width: 0%; background: var(--accent); transition: width var(--dur-fast) var(--ease-out); }
 .upload-item-bar.error > span { background: var(--danger); }
 .upload-item-bar.done > span  { background: var(--green); }
-.upload-item-pct { font-size: 12px; color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+.upload-item-pct { font-size: var(--fs-sm); color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
 .upload-item-cancel {
     background: none; border: none; color: var(--dim); cursor: pointer;
-    font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+    font-size: var(--fs-md); line-height: 1; padding: 2px 4px; border-radius: var(--r-inset);
 }
 .upload-item-cancel:hover { color: var(--danger); background: var(--surface2); }
 .upload-item-cancel:disabled { visibility: hidden; }
@@ -314,37 +295,37 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
         minmax(80px, 1.5fr)
         200px;
     align-items: center; column-gap: 10px; padding: 10px 16px;
-    border-bottom: 1px solid var(--border); font-size: 13px;
+    border-bottom: var(--bw-hair) solid var(--border); font-size: var(--fs-base);
 }
 /* Don't anchor actions to the right of its grid cell — if button widths
    exceed the 200px cell, the element would extend leftward into the
    chips column. Keep it stretched and right-align buttons internally. */
 .file-row:last-child { border-bottom: none; }
 .file-row:hover { background: var(--surface2); }
-.file-row.selected { background: #1a1508; }
+.file-row.selected { background: var(--accent-tint); }
 .file-row input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
 .file-icon {
-    width: 36px; height: 36px; border-radius: 6px; background: var(--surface2);
-    display: flex; align-items: center; justify-content: center; font-size: 16px;
+    width: 36px; height: 36px; border-radius: var(--r-control); background: var(--surface2);
+    display: flex; align-items: center; justify-content: center; font-size: var(--fs-md);
     cursor: pointer; user-select: none; flex-shrink: 0;
 }
-.file-icon img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
-.file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.file-icon img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--r-control); }
+.file-name { font-weight: var(--fw-semi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
 .file-name.editing { cursor: text; }
-.file-name-input { width: 100%; padding: 4px 6px; background: var(--surface); border: 1px solid var(--accent); color: var(--text); font: inherit; font-size: 13px; border-radius: var(--r-md); outline: none; box-shadow: var(--ring-accent); }
-.file-meta { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-name-input { width: 100%; padding: 4px 6px; background: var(--surface); border: var(--bw-hair) solid var(--accent); color: var(--text); font: inherit; font-size: var(--fs-base); border-radius: var(--r-control); outline: none; box-shadow: var(--ring-accent); }
+.file-meta { font-size: var(--fs-sm); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-chips { display: flex; flex-wrap: wrap; gap: 4px; overflow: hidden; margin-right: 12px; }
 .file-chip {
     display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
-    background: #1a1508; color: var(--accent); border-radius: 10px;
-    font-size: 11px; font-weight: 600; white-space: nowrap;
+    background: var(--accent-tint); color: var(--accent); border-radius: var(--r-pill);
+    font-size: var(--fs-xs); font-weight: var(--fw-semi); white-space: nowrap;
 }
 .file-chip button {
     background: none; border: none; color: var(--accent); cursor: pointer;
-    font-size: 13px; line-height: 1; padding: 0; opacity: 0.6;
+    font-size: var(--fs-base); line-height: 1; padding: 0; opacity: 0.6;
 }
 .file-chip button:hover { opacity: 1; }
-.file-chip-empty { color: var(--faint); font-size: 11px; font-style: italic; }
+.file-chip-empty { color: var(--faint); font-size: var(--fs-xs); font-style: italic; }
 .file-actions { display: flex; gap: 4px; flex-shrink: 0; justify-content: flex-end; }
 
 .files-list-head {
@@ -358,9 +339,8 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
         minmax(72px, 1.5fr)
         minmax(80px, 1.5fr)
         200px;
-    align-items: center; column-gap: 10px; padding: 10px 16px;
-    font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--dim); border-bottom: 1px solid var(--border); background: var(--surface2);
+    align-items: center; column-gap: var(--sp-2-5); padding: var(--sp-2-5) var(--sp-4);
+    color: var(--dim); border-bottom: var(--bw-hair) solid var(--border); background: var(--surface2);
 }
 .files-list-actions-spacer {} /* placeholder cell in the actions column */
 .files-list-head input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
@@ -372,22 +352,22 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 
 .assign-room-row {
     display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-    border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px;
-    cursor: pointer; font-size: 13px;
+    border: var(--bw-hair) solid var(--border); border-radius: var(--r-control); margin-bottom: 8px;
+    cursor: pointer; font-size: var(--fs-base);
 }
 .assign-room-row:hover { background: var(--surface2); }
 .assign-room-row input { width: 16px; height: 16px; }
 .assign-room-name { flex: 1; }
-.assign-room-slug { font-family: monospace; font-size: 11px; color: var(--dim); }
+.assign-room-slug { font-family: var(--ff-mono); font-size: var(--fs-xs); color: var(--dim); }
 
 .preview-body {
     min-height: 240px; max-height: 70vh; display: flex; align-items: center; justify-content: center;
-    background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 16px;
+    background: var(--media-bg); border-radius: var(--r-card); overflow: hidden; margin-bottom: 16px;
 }
 .preview-body img, .preview-body video { max-width: 100%; max-height: 70vh; }
 .preview-body audio { width: 100%; }
-.preview-body iframe { width: 100%; height: 70vh; border: none; background: #fff; }
-.preview-unsupported { color: var(--dim); font-size: 13px; padding: 40px; text-align: center; }
+.preview-body iframe { width: 100%; height: 70vh; border: none; background: var(--on-media); }
+.preview-unsupported { color: var(--dim); font-size: var(--fs-base); padding: 40px; text-align: center; }
 
 /* Below ~1000px, the 8-column single-row layout can't fit without the
    actions column getting clipped. Reflow into three rows: name on top,
@@ -467,22 +447,22 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     .content-wrap { max-width: 100%; }
 
     /* Cards */
-    .room-card-header { flex-wrap: wrap; gap: 10px; padding: 16px; }
+    .room-card-header { flex-wrap: wrap; gap: var(--sp-2-5); padding: var(--sp-4); }
     /* Full-width name+meta so "/slug · Key · Expires" uses the whole card
        instead of being squeezed into a narrow column beside the badges. */
     .room-card-info { flex-basis: 100%; }
     .room-card-badges { order: 2; }
     .room-card-actions { order: 3; flex-wrap: wrap; gap: 6px; }
-    .room-card-body { padding: 14px 16px; }
-    .room-card-footer { flex-wrap: wrap; gap: 8px; padding: 12px 16px; }
+    .room-card-body { padding: var(--sp-4); }
+    .room-card-footer { flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-4); }
 
     /* URL rows: stack label above input */
     .url-row { flex-direction: column; align-items: stretch; gap: 4px; }
     .url-label { width: auto; }
 
     /* Stream key cards */
-    .key-card-header { flex-wrap: wrap; gap: 8px; padding: 14px 16px; }
-    .key-card-body { padding: 14px 16px; }
+    .key-card-header { flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-4); }
+    .key-card-body { padding: var(--sp-4); }
 
     /* Form grid: single column. min-width:0 lets the native datetime-local
        input shrink to the modal width instead of forcing horizontal scroll.
@@ -494,7 +474,7 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     .form-row input, .form-row select, .form-row textarea { min-width: 0; }
 
     /* Login box */
-    .login-box { width: calc(100vw - 32px); padding: 36px 24px; }
+    .login-box { width: calc(100vw - var(--sp-8)); padding: var(--sp-8) var(--sp-6); }
 
     /* Modal: size to the dynamic viewport (dvh) so the iOS URL bar can't push
        it taller than the screen — that overshoot is what made it "move" and
@@ -516,21 +496,35 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     .participant-row { flex-wrap: wrap; gap: 8px; }
 
     /* Stream cards */
-    .stream-card-header { flex-wrap: wrap; gap: 8px; padding: 14px 16px; }
-    .stream-card-body { padding: 12px 16px; }
+    .stream-card-header { flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-4); }
+    .stream-card-body { padding: var(--sp-4); }
     .stream-meta { padding: 6px 16px 12px; }
 }
 
-/* Branding color-palette hex inputs — inline styles skip the shared focus ring,
-   so reinstate it here via an attribute selector. */
-input[id^="color-"][id$="-hex"] {
-    border: 1px solid var(--border); color: var(--text); background: var(--surface2);
-    border-radius: var(--r-md); outline: none;
+/* ---- Branding color palette ----
+   Six identical picker rows. Defaults come from tokens.css via branding.ts,
+   never from the markup, so the palette has exactly one source of truth. */
+.color-row { display: flex; gap: var(--sp-1-5); align-items: center; }
+.color-swatch {
+    width: 36px; height: 30px; padding: 0; cursor: pointer;
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-inset);
+    background: var(--surface2);
+}
+.color-hex {
+    flex: 1; min-width: 0;
+    padding: var(--sp-1-5) var(--sp-2);
+    font-family: var(--ff-mono); font-size: var(--fs-sm);
+    border: var(--bw-hair) solid var(--border); color: var(--text);
+    background: var(--surface2);
+    border-radius: var(--r-control); outline: none;
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
-input[id^="color-"][id$="-hex"]:hover { border-color: var(--dim); }
-input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
+.color-swatch:hover, .color-hex:hover { border-color: var(--dim); }
+.color-swatch:focus-visible, .color-hex:focus {
+    border-color: var(--accent); box-shadow: var(--ring-accent);
+}
 </style>
 </head>
 <body>
@@ -701,7 +695,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
                 </div>
                 <div class="room-card-body u-p-card-tight">
                     <img id="favicon-preview" src="" alt="Favicon preview" style="height:32px;width:32px;object-fit:contain;display:none;margin-bottom:4px">
-                    <span id="favicon-empty" style="font-size:13px;color:var(--dim)">No custom favicon — using default.</span>
+                    <span id="favicon-empty" style="font-size:var(--fs-base);color:var(--dim)">No custom favicon — using default.</span>
                     <input type="file" id="favicon-file-input" accept="image/png,image/x-icon,image/vnd.microsoft.icon,.ico" class="u-hidden">
                 </div>
             </div>
@@ -721,7 +715,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
                 </div>
                 <div class="room-card-body u-p-card-tight">
                     <img id="logo-preview" src="" alt="Logo preview" style="max-height:48px;display:none;opacity:0.8;margin-bottom:4px;">
-                    <span id="logo-empty" style="font-size:13px;color:var(--dim)">No custom logo — using default.</span>
+                    <span id="logo-empty" style="font-size:var(--fs-base);color:var(--dim)">No custom logo — using default.</span>
                     <input type="file" id="logo-file-input" accept="image/png" class="u-hidden">
                 </div>
             </div>
@@ -738,8 +732,8 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
                     </div>
                 </div>
                 <div class="room-card-body u-p-card-tight">
-                    <img id="bg-preview" src="" alt="Background preview" style="max-height:100px;max-width:100%;object-fit:cover;border-radius:6px;display:none;margin-bottom:4px;">
-                    <span id="bg-empty" style="font-size:13px;color:var(--dim)">No custom background — using default.</span>
+                    <img id="bg-preview" src="" alt="Background preview" style="max-height:100px;max-width:100%;object-fit:cover;border-radius:var(--r-control);display:none;margin-bottom:4px;">
+                    <span id="bg-empty" style="font-size:var(--fs-base);color:var(--dim)">No custom background — using default.</span>
                     <input type="file" id="bg-file-input" accept="image/jpeg" class="u-hidden">
                 </div>
             </div>
@@ -760,44 +754,44 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
                     <div class="form-row" style="margin:0">
                         <label>Accent</label>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <input type="color" id="color-accent" value="#ffbd2e" style="width:36px;height:30px;padding:0;border:1px solid var(--border);border-radius:4px;background:var(--surface2);cursor:pointer">
-                            <input type="text" id="color-accent-hex" placeholder="#ffbd2e" style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace">
+                        <div class="color-row">
+                            <input type="color" id="color-accent" class="color-swatch">
+                            <input type="text" id="color-accent-hex" class="color-hex" spellcheck="false">
                         </div>
                     </div>
                     <div class="form-row" style="margin:0">
                         <label>Background</label>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <input type="color" id="color-bg" value="#171717" style="width:36px;height:30px;padding:0;border:1px solid var(--border);border-radius:4px;background:var(--surface2);cursor:pointer">
-                            <input type="text" id="color-bg-hex" placeholder="#171717" style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace">
+                        <div class="color-row">
+                            <input type="color" id="color-bg" class="color-swatch">
+                            <input type="text" id="color-bg-hex" class="color-hex" spellcheck="false">
                         </div>
                     </div>
                     <div class="form-row" style="margin:0">
                         <label>Surface</label>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <input type="color" id="color-surface" value="#1d1d1d" style="width:36px;height:30px;padding:0;border:1px solid var(--border);border-radius:4px;background:var(--surface2);cursor:pointer">
-                            <input type="text" id="color-surface-hex" placeholder="#1d1d1d" style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace">
+                        <div class="color-row">
+                            <input type="color" id="color-surface" class="color-swatch">
+                            <input type="text" id="color-surface-hex" class="color-hex" spellcheck="false">
                         </div>
                     </div>
                     <div class="form-row" style="margin:0">
                         <label>Text</label>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <input type="color" id="color-text" value="#dfdfdf" style="width:36px;height:30px;padding:0;border:1px solid var(--border);border-radius:4px;background:var(--surface2);cursor:pointer">
-                            <input type="text" id="color-text-hex" placeholder="#dfdfdf" style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace">
+                        <div class="color-row">
+                            <input type="color" id="color-text" class="color-swatch">
+                            <input type="text" id="color-text-hex" class="color-hex" spellcheck="false">
                         </div>
                     </div>
                     <div class="form-row" style="margin:0">
                         <label>Danger</label>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <input type="color" id="color-danger" value="#ff6159" style="width:36px;height:30px;padding:0;border:1px solid var(--border);border-radius:4px;background:var(--surface2);cursor:pointer">
-                            <input type="text" id="color-danger-hex" placeholder="#ff6159" style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace">
+                        <div class="color-row">
+                            <input type="color" id="color-danger" class="color-swatch">
+                            <input type="text" id="color-danger-hex" class="color-hex" spellcheck="false">
                         </div>
                     </div>
                     <div class="form-row" style="margin:0">
                         <label>Success</label>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <input type="color" id="color-green" value="#28c941" style="width:36px;height:30px;padding:0;border:1px solid var(--border);border-radius:4px;background:var(--surface2);cursor:pointer">
-                            <input type="text" id="color-green-hex" placeholder="#28c941" style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace">
+                        <div class="color-row">
+                            <input type="color" id="color-green" class="color-swatch">
+                            <input type="text" id="color-green-hex" class="color-hex" spellcheck="false">
                         </div>
                     </div>
                 </div>
@@ -969,7 +963,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
                 <input type="text" id="room-name" placeholder="e.g. Client Review — Project X">
             </div>
             <div class="form-row">
-                <label>Password <span style="font-weight:400;text-transform:none;letter-spacing:0">(leave blank to keep current)</span></label>
+                <label>Password <span style="font-weight:var(--fw-normal);text-transform:none;letter-spacing:0">(leave blank to keep current)</span></label>
                 <input type="text" id="room-password" placeholder="Optional">
             </div>
             <div class="form-row checkbox" id="clear-password-row" style="display:none">
@@ -1097,7 +1091,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
             <span class="modal-title" id="stream-preview-title">Stream Preview</span>
             <button class="btn btn-sm" id="stream-preview-close">✕</button>
         </div>
-        <div class="preview-body"><div id="stream-preview-player" style="width:100%;aspect-ratio:16/9;background:#000"></div></div>
+        <div class="preview-body"><div id="stream-preview-player" style="width:100%;aspect-ratio:16/9;background:var(--media-bg)"></div></div>
         <div class="modal-footer">
             <button class="btn" id="stream-preview-dismiss">Close</button>
         </div>
@@ -1111,7 +1105,7 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
             <span class="modal-title">Delete Files</span>
             <button class="btn btn-sm" id="files-delete-close">✕</button>
         </div>
-        <div id="files-delete-body" style="font-size:13px;line-height:1.55"></div>
+        <div id="files-delete-body" style="font-size:var(--fs-base);line-height:var(--lh-body)"></div>
         <div class="modal-footer">
             <button class="btn" id="files-delete-cancel">Cancel</button>
             <button class="btn btn-danger" id="files-delete-confirm">Delete</button>
@@ -1126,12 +1120,12 @@ input[id^="color-"][id$="-hex"]:focus { border-color: var(--accent); box-shadow:
             <span class="modal-title">Replace File</span>
             <button class="btn btn-sm" id="files-replace-close">✕</button>
         </div>
-        <div id="files-replace-old" style="font-size:13px;margin-bottom:16px;color:var(--dim)"></div>
+        <div id="files-replace-old" style="font-size:var(--fs-base);margin-bottom:16px;color:var(--dim)"></div>
         <div class="form-row">
             <label>New File</label>
             <input type="file" id="files-replace-input">
         </div>
-        <div id="files-replace-new" style="font-size:12px;color:var(--dim)"></div>
+        <div id="files-replace-new" style="font-size:var(--fs-sm);color:var(--dim)"></div>
         <div class="modal-footer">
             <button class="btn" id="files-replace-cancel">Cancel</button>
             <button class="btn btn-primary" id="files-replace-confirm">Replace</button>

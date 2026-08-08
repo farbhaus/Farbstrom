@@ -176,12 +176,46 @@ CDN-loaded runtime deps stay as `<script>` tags in the HTML: OvenPlayer, HLS.js,
 
 CSS tokens in [`www/shared/tokens.css`](www/shared/tokens.css), shared components in `components.css`, utilities in `utils.css`. The admin Branding API overrides `--bg/surface/text/accent/danger/green` at runtime via inline style on `:root`.
 
+**`tokens.css` is the only file allowed to contain raw values.** Everything else
+— `components.css`, `utils.css`, and every page's `<style>` block — references
+tokens. The one sanctioned exception is `.btn-tab { border-radius: 0 }`, a
+deliberate reset.
+
+**Radii — pick by the element's role, never by eye.** The scale has only three
+size steps, deliberately far enough apart to be distinguishable. A previous
+`4/6/8/10/12` ramp drifted badly (43 hardcoded values, 28 of them restating a
+token) precisely because 6px, 8px and 10px are indistinguishable, so nobody
+could tell which was correct.
+
+| Token | Value | Use for |
+|---|---|---|
+| `--r-inset` | 4px | micro-elements nested inside a control: swatches, tags, status badges |
+| `--r-control` | 8px | buttons, inputs, selects, icon buttons, chips |
+| `--r-card` | 12px | cards, panels, tiles, modals, entry cards, toasts, toolbars, sheets |
+| `--r-pill` | 999px | nav pills, count badges, progress bars and tracks |
+| `--r-circle` | 50% | status dots, slider thumbs |
+
+**Typography** is `--fs-2xs/xs/sm/base/md/lg/xl/2xl` (10/11/12/13/15/18/20/28px);
+`--fs-base` is 13px, the product's actual body size. Weights are
+`--fw-normal/semi/bold`. If a size isn't on the scale, round to the nearest
+step rather than adding one. The uppercase micro-label is **one** recipe —
+`.label-micro` / `.label-micro-sm` in `components.css`, which also owns the
+size/weight/tracking/casing of every named label selector (`.section-title`,
+`.stat-label`, `.panel-tab`, …). Page CSS keeps only its own layout and color.
+
+**Derived colors must use `color-mix()` off a brandable base** (`--accent-tint`,
+`--green-tint`, `--text-hover`, `--tint-hover`, …). A hardcoded tint freezes
+when an admin rebrands — that was a live bug in four places. `--media-bg` /
+`--on-media` are the deliberate exceptions: video chrome stays black/white.
+
 Conventions:
-- Reference tokens (colors, spacing, radii, motion, z-index) — no hardcoded values in shared CSS.
+- Reference tokens (colors, spacing, radii, typography, motion, borders, z-index) — no hardcoded values outside `tokens.css`.
 - No `!important` in shared CSS. `.u-hidden` deliberately omits it so an inline `style.display` set from JS still wins.
 - Class names: descriptive, hyphenated. No BEM. No CSS-in-JS.
-- Z-index only from the `--z-*` scale; new layers extend the scale, not invent ad-hoc values.
+- Z-index only from the `--z-*` scale; new layers extend the scale, not invent ad-hoc values. The scale includes a sub-100 band (`--z-tile-*`, 5–8) for the stacking context *inside* a video tile.
+- Every button uses `--bw-control` (1.5px); dividers and containers use `--bw-hair` (1px).
 - Page-specific CSS stays inline in the page's `<style>` block. Promote duplicated styles to `components.css`.
+- Looping animations must be guarded by `@media (prefers-reduced-motion: reduce)`.
 
 ## Key implementation details
 
