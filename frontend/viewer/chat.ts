@@ -121,19 +121,19 @@ export function appendFileMessage(msg: FileMsg, notify = true): void {
   if (!list) return;
   const url = dlUrl(msg.id);
   const isPresenter = viewerStore.get().role === 'presenter';
-  const showBtn = isPresenter && canShow(msg.mime) ? showBtnHtml(msg.id, 'file-row-show') : '';
-  const delBtn = isPresenter ? deleteBtnHtml(msg.id, 'file-row-del') : '';
+  const showBtn = isPresenter && canShow(msg.mime) ? showBtnHtml(msg.id, 'shared-file-show') : '';
+  const delBtn = isPresenter ? deleteBtnHtml(msg.id, 'shared-file-del') : '';
   const d = document.createElement('div');
   d.className = 'chat-msg';
-  // The file element reuses the Files-tab `.file-row` look so a shared file
+  // The file element reuses the Files-tab `.shared-file` look so a shared file
   // reads identically in both tabs. (The draft chip keeps `.chat-file`.)
   d.innerHTML =
     `<div class="chat-meta"><span class="chat-who ${esc(msg.role)}">${esc(msg.uploaderName)}</span><span class="chat-time">${fmtTime(msg.ts)}</span></div>` +
-    `<div class="file-row" data-file-id="${esc(msg.id)}" data-mime="${esc(msg.mime || '')}">` +
-    `<div class="file-row-name" title="${esc(msg.name)}">${esc(msg.name)}</div>` +
-    `<span class="file-row-size">${fmtBytes(msg.size)}</span>` +
+    `<div class="shared-file" data-file-id="${esc(msg.id)}" data-mime="${esc(msg.mime || '')}">` +
+    `<div class="shared-file-name" title="${esc(msg.name)}">${esc(msg.name)}</div>` +
+    `<span class="shared-file-size">${fmtBytes(msg.size)}</span>` +
     showBtn +
-    `<a class="file-row-dl" href="${url}" download="${esc(msg.name)}">Get</a>` +
+    `<a class="shared-file-dl" href="${url}" download="${esc(msg.name)}">Get</a>` +
     delBtn +
     `</div>`;
   list.appendChild(d);
@@ -148,21 +148,21 @@ export function addFileToSection(f: SessionFile, notify = true): void {
   if (list.querySelector(`[data-fid="${CSS.escape(f.id)}"]`)) return;
   const url = dlUrl(f.id);
   const isPresenter = viewerStore.get().role === 'presenter';
-  const showBtn = isPresenter && canShow(f.mime) ? showBtnHtml(f.id, 'file-row-show') : '';
-  const delBtn = isPresenter ? deleteBtnHtml(f.id, 'file-row-del') : '';
+  const showBtn = isPresenter && canShow(f.mime) ? showBtnHtml(f.id, 'shared-file-show') : '';
+  const delBtn = isPresenter ? deleteBtnHtml(f.id, 'shared-file-del') : '';
   const row = document.createElement('div');
-  row.className = 'file-row';
+  row.className = 'shared-file';
   row.dataset['fid'] = f.id;
   if (f.mime) row.dataset['mime'] = f.mime;
   row.innerHTML =
-    `<div class="file-row-name" title="${esc(f.name)}">${esc(f.name)}</div>` +
-    `<span class="file-row-size">${fmtBytes(f.size)}</span>` +
+    `<div class="shared-file-name" title="${esc(f.name)}">${esc(f.name)}</div>` +
+    `<span class="shared-file-size">${fmtBytes(f.size)}</span>` +
     showBtn +
-    `<a class="file-row-dl" href="${url}" download="${esc(f.name)}">Get</a>` +
+    `<a class="shared-file-dl" href="${url}" download="${esc(f.name)}">Get</a>` +
     delBtn;
   list.appendChild(row);
   const count = document.getElementById('files-count');
-  if (count) count.textContent = String(list.querySelectorAll('.file-row').length);
+  if (count) count.textContent = String(list.querySelectorAll('.shared-file').length);
   // Dot the Files tab when a file arrives while another tab is showing, so the
   // (now hidden) list still signals new arrivals.
   if (notify) {
@@ -654,9 +654,9 @@ export function removeFileEverywhere(fileId: string): void {
   // Update the files-count badge.
   const list = document.getElementById('files-list');
   const count = document.getElementById('files-count');
-  if (list && count) count.textContent = String(list.querySelectorAll('.file-row').length);
+  if (list && count) count.textContent = String(list.querySelectorAll('.shared-file').length);
   // If the list is now empty, restore the placeholder.
-  if (list && !list.querySelector('.file-row') && !list.querySelector('#files-empty')) {
+  if (list && !list.querySelector('.shared-file') && !list.querySelector('#files-empty')) {
     const empty = document.createElement('div');
     empty.id = 'files-empty';
     empty.textContent = 'No files shared yet.';

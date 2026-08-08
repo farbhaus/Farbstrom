@@ -217,6 +217,13 @@ Conventions:
 - Page-specific CSS stays inline in the page's `<style>` block. Promote duplicated styles to `components.css`.
 - Looping animations must be guarded by `@media (prefers-reduced-motion: reduce)`.
 
+**File rows are two different components, named differently on purpose.**
+`.file-row` is admin's 8-column grid table row (`frontend/admin/files.ts`);
+`.shared-file` (+ `-name/-size/-dl/-show/-del`) is the viewer's flex chip row in
+chat and the Files tab (`frontend/viewer/chat.ts`). They both used to be called
+`.file-row`, which was harmless only because they never shared a page — and it
+meant neither could be promoted to `components.css`. Keep them distinct.
+
 ## Key implementation details
 
 **Authentication roles:**
