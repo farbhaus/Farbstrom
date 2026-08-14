@@ -8,7 +8,7 @@
 # PULL farbhaus/farbstrom get whatever CI baked — pin the whole image there with
 # FARBSTROM_TAG; the *_TAG vars only affect a local/source build.
 ARG OME_VERSION=v0.21.0
-ARG LIVEKIT_VERSION=v1.12.0
+ARG LIVEKIT_VERSION=v1.13.5
 ARG CADDY_VERSION=2.11.4
 ARG VALKEY_VERSION=9.1.1
 
