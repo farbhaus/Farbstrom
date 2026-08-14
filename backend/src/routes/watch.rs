@@ -65,7 +65,9 @@ struct WatchQuery {
 /// `srt://default/live/<stream>?policy=…` (scheme + vhost as host) and signs
 /// **that** — so the HMAC must be computed over the `srt://`-prefixed URL, not
 /// the bare path. OME then validates the HMAC + `url_expire` on connect.
-/// (Verified against OME v0.20.5 by matching its logged `expected` signature.)
+/// (Verified against OME v0.20.5 by matching its logged `expected` signature.
+/// Still valid on v0.21.0: its `signed_policy.cpp` is byte-identical to v0.20.5's.
+/// Re-check this the same way whenever the OME pin moves.)
 fn sign_streamid(secret: &str, stream_name: &str, expire_ms: u128) -> Result<String, AppError> {
     let path = format!("default/live/{}", stream_name);
     let policy_json = json!({ "url_expire": expire_ms }).to_string();

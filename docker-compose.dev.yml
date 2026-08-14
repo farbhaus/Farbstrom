@@ -22,7 +22,7 @@ services:
       # Honor the component pins from .env for local source builds. (Defaults
       # live in the Dockerfile and are what CI bakes into the published image.)
       args:
-        OME_VERSION: ${OME_TAG:-v0.20.5}
+        OME_VERSION: ${OME_TAG:-v0.21.0}
         LIVEKIT_VERSION: ${LIVEKIT_TAG:-v1.12.0}
         CADDY_VERSION: ${CADDY_TAG:-2.11.3}
         VALKEY_VERSION: ${VALKEY_TAG:-8.1.7}
