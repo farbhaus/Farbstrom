@@ -173,6 +173,15 @@ Firewall ports (the script opens these via ufw/firewalld when active): tcp `80 4
 | RTMP | `1935/tcp` | Universal encoder support. URL: `rtmp://<host>:1935/live`, stream name = stream key |
 | WHIP | via Caddy `/live/*` | OBS 30+, browser-based encoders |
 
+**Codecs.** Video is passed through untouched (`<Bypass>true</Bypass>`), so whatever the encoder
+sends is what every viewer's browser must decode. H.264 is the safe default. H.265 works everywhere
+in Farbplay and in browsers with hardware HEVC decode. **AV1 (new in OME v0.21.0) is experimental
+and WHIP / enhanced-RTMP only — SRT cannot carry it**, because OME's SRT ingest is MPEG-TS and its
+demuxer has no AV1 support. AV1 is also undecodable in Safari without M3-or-later hardware, so
+roughly three quarters of macOS viewers would see nothing; the admin dashboard flags an AV1 ingest
+and the viewer shows an explicit message rather than a black tile. Transcoding *to* AV1 is not an
+option either — OME's only AV1 encoder is libaom in non-realtime mode.
+
 ### Native SRT playback (Farbplay room link)
 
 The native HDR SRT viewer [Farbplay] connects from a room link instead of a raw SRT URL, and

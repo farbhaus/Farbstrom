@@ -67,12 +67,25 @@ function setRoomStatus(status: RoomStatus, playerPlaying?: boolean): void {
 // player mode, and live-player state. Pure DOM read/write — never
 // touches viewerStore, so it's safe to call from the store subscriber
 // without recursing.
+// Set by player.ts when this browser can't decode the stream's codec. Outranks
+// every status below: the room really is live, so the normal overlay copy
+// ("Waiting for livestream source...") would be a lie, and the live badge
+// would sit on top of a black tile.
+let blockedMsg: string | null = null;
+
 function refreshStatusOverlay(playerPlaying?: boolean): void {
   const status = getState().status;
   const offline = document.getElementById('offline-screen');
   const badge = document.getElementById('live-badge');
   const msg = document.getElementById('offline-msg');
   if (!offline || !badge || !msg) return;
+
+  if (blockedMsg) {
+    msg.textContent = blockedMsg;
+    offline.classList.add('visible');
+    badge.classList.remove('visible');
+    return;
+  }
 
   // The unified stage is showing a file (image or video) — that's valid
   // content in its own right, no offline overlay or live badge.
@@ -286,6 +299,10 @@ function init(): void {
       // overlay won't return when the file is later cleared.
       if (getPlayerMode() === 'live') setRoomStatus('live', true);
       updateFocusAspect();
+    },
+    onPlaybackBlocked: (message) => {
+      blockedMsg = message;
+      refreshStatusOverlay();
     },
     send: wsSend,
   });

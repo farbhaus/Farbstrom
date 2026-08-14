@@ -37,14 +37,22 @@ let isScrubbing = false;
 let lastFileState: DisplayFileState | null = null;
 let fileSyncPending = false;
 
+// Set when the browser can't decode a codec the stream is actually using, so
+// the error handler stops retrying a source that will never play. Cleared on
+// every (re)mount.
+let blockedCodec: string | null = null;
+
 let onPlayingChange: () => void = () => {};
+let onPlaybackBlocked: (message: string | null) => void = () => {};
 let wsSend: (msg: WsClientMessage) => void = () => {};
 
 export function configurePlayer(opts: {
   onPlayingChange: () => void;
+  onPlaybackBlocked: (message: string | null) => void;
   send: (msg: WsClientMessage) => void;
 }): void {
   onPlayingChange = opts.onPlayingChange;
+  onPlaybackBlocked = opts.onPlaybackBlocked;
   wsSend = opts.send;
 }
 
@@ -98,6 +106,8 @@ export function destroyPlayer(): void {
   currentFileId = null;
   lastFileState = null;
   fileSyncPending = false;
+  blockedCodec = null;
+  onPlaybackBlocked(null);
 }
 
 // Reload current source. For live mode that pings OvenPlayer's load();
@@ -132,6 +142,47 @@ export function initPlayer(): void {
   if (viewerStore.get().displayFile) return;
   if (player) return;
   initLivePlayer();
+}
+
+// ---- Codec support probe ---------------------------------------------------
+
+// The LL-HLS master playlist names the exact codecs OME is packaging (avc1.*,
+// hvc1.*, av01.*). Browser support for those diverges sharply — Safari ships no
+// AV1 software decoder and needs M3-or-later hardware, and HEVC is
+// hardware-gated nearly everywhere — so a perfectly healthy stream can render
+// as a permanent black tile. Nothing else in the pipeline can tell the viewer
+// that: OvenPlayer just errors, and the handler below would retry every 8 s
+// forever. Returns the first codec this browser can't decode, or null.
+async function findUnplayableCodec(playlistUrl: string): Promise<string | null> {
+  if (typeof MediaSource === 'undefined') return null;
+  let manifest: string;
+  try {
+    const res = await fetch(playlistUrl);
+    // Not live yet, or a transient blip — that's the retry loop's job, not ours.
+    if (!res.ok) return null;
+    manifest = await res.text();
+  } catch {
+    return null;
+  }
+  const codecs = new Set<string>();
+  for (const match of manifest.matchAll(/CODECS="([^"]+)"/g)) {
+    const list = match[1];
+    if (!list) continue;
+    for (const codec of list.split(',')) codecs.add(codec.trim());
+  }
+  for (const codec of codecs) {
+    // Video and audio codecs are listed together; each needs its own container.
+    const container = /^(mp4a|opus|ac-3|ec-3)/.test(codec) ? 'audio/mp4' : 'video/mp4';
+    if (!MediaSource.isTypeSupported(`${container}; codecs="${codec}"`)) return codec;
+  }
+  return null;
+}
+
+function codecLabel(codec: string): string {
+  if (codec.startsWith('av01')) return 'AV1';
+  if (codec.startsWith('hvc1') || codec.startsWith('hev1')) return 'H.265 (HEVC)';
+  if (codec.startsWith('avc1')) return 'H.264';
+  return codec;
 }
 
 // ---- Live broadcast mount --------------------------------------------------
@@ -172,6 +223,26 @@ function initLivePlayer(): void {
   });
   mode = 'live';
   currentFileId = null;
+  blockedCodec = null;
+  onPlaybackBlocked(null);
+
+  // LL-HLS only — the playlist is the one place the packaged codecs are stated
+  // up front. (WebRTC negotiates codecs in SDP instead, so an undecodable
+  // stream there simply yields no video track; the admin dashboard flags the
+  // ingest codec so an operator catches it before viewers do.)
+  const playlistUrl = deliveryMode === 'llhls' ? sources[0]?.file : null;
+  if (playlistUrl) {
+    void findUnplayableCodec(playlistUrl).then((codec) => {
+      if (!codec || mode !== 'live') return;
+      blockedCodec = codec;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      destroyPlayerInstance();
+      onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
+    });
+  }
 
   enablePlayerControls(true);
   showSeekBar(false);
@@ -187,8 +258,9 @@ function initLivePlayer(): void {
       onPlayingChange();
     } else if (e?.newstate === 'error') {
       // Retry silently. Offline overlay is driven by setRoomStatus /
-      // room:pending — don't race it from here.
-      if (viewerStore.get().status !== 'ended') {
+      // room:pending — don't race it from here. A codec this browser can't
+      // decode is the one error retrying can never fix, so don't loop on it.
+      if (viewerStore.get().status !== 'ended' && !blockedCodec) {
         retryTimer = setTimeout(reloadPlayer, 8000);
       }
     }
