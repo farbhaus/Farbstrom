@@ -10,3 +10,24 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+
+  # Watches only the literal `FROM` bases: rust, ubuntu, node. It CANNOT see the
+  # OME / LiveKit / Caddy / Valkey pins — those are `ARG`s interpolated into FROM
+  # (`FROM caddy:${CADDY_VERSION}`), which Dependabot does not resolve. Those four
+  # stay manual; see "Updating pinned components" in CLAUDE.md.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

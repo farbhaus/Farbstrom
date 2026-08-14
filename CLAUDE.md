@@ -266,6 +266,33 @@ GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **frontend** — `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
 - **licenses** — regenerates `docs/THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
 
+## Updating pinned components
+
+Dependabot watches `cargo`, `github-actions`, and the literal Docker `FROM` bases
+(`rust`, `ubuntu`, `node`). **It cannot see the four component pins** — they are `ARG`s
+interpolated into `FROM` (`FROM caddy:${CADDY_VERSION}`), which Dependabot does not
+resolve. Nor does anything watch the CDN `<script>` tags. Both lists below are **manual**;
+check them when you touch the stack.
+
+**Component versions — change all three places together**, or a local `make dev` build
+silently disagrees with what CI bakes:
+
+| Where | What it drives |
+|---|---|
+| [`Dockerfile`](Dockerfile) `ARG *_VERSION` | **the source of truth — what CI bakes into the published image** |
+| [`docker-compose.dev.yml`](docker-compose.dev.yml) `args:` | local source builds (`make dev`), via `*_TAG` from `.env` |
+| [`.env.example`](.env.example) `*_TAG` | the documented default for both |
+
+The four are `OME_VERSION`, `LIVEKIT_VERSION`, `CADDY_VERSION`, `VALKEY_VERSION`. CI passes
+no `build-args`, so `Dockerfile` alone decides the published image. `VALKEY_TAG` may carry
+an image suffix (`9.1.1-alpine`); the Dockerfile strips it to the source tag.
+
+**CDN scripts** — in *both* [`www/viewer/index.html`](www/viewer/index.html) and
+[`www/admin/index.html`](www/admin/index.html) (livekit-client is viewer-only). Keep the
+pages in sync. **OvenPlayer is pinned exactly**, the others float on minor: OvenPlayer's
+DOM class names are load-bearing for the chrome-hiding CSS in each page's `<style>` block
+and have drifted before, so it must never move on its own.
+
 ## Useful reference docs
 
 - `README.md` — what Farbstrom is and what it does
