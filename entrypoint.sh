@@ -32,8 +32,6 @@ logging:
   level: info
 EOF
 
-export OME_HOST_IP="${DOMAIN:-localhost}"
-
 # Browser-facing URLs. In the standalone model Caddy is this container's own TLS
 # edge, so SITE_ADDRESS (the Caddy site address, e.g. stream.example.com) is also
 # the public host — PUBLIC_HOST defaults to it and the single-knob deploy needs
@@ -45,5 +43,10 @@ export OME_HOST_IP="${DOMAIN:-localhost}"
 export PUBLIC_HOST="${PUBLIC_HOST:-$SITE_ADDRESS}"
 export PUBLIC_ORIGIN="https://${PUBLIC_HOST}"
 export LIVEKIT_URL="wss://${PUBLIC_HOST}/livekit"
+
+# OME's <Distribution> host. Must come after PUBLIC_HOST is resolved above — it
+# used to read a `DOMAIN` var that this codebase never sets, so it silently
+# resolved to "localhost" everywhere.
+export OME_HOST_IP="${PUBLIC_HOST}"
 
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
