@@ -9,8 +9,8 @@
 # FARBSTROM_TAG; the *_TAG vars only affect a local/source build.
 ARG OME_VERSION=v0.21.0
 ARG LIVEKIT_VERSION=v1.12.0
-ARG CADDY_VERSION=2.11.3
-ARG VALKEY_VERSION=8.1.7
+ARG CADDY_VERSION=2.11.4
+ARG VALKEY_VERSION=9.1.1
 
 # ------------------------------------------------------------------------------
 # Stage 1 — Backend builder (Debian-based, matches final glibc)
