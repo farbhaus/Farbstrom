@@ -41,7 +41,7 @@ RUN VER="${VALKEY_VERSION%%-*}" \
 # Stage 3 — Frontend builder (tsc → www/dist), so the image is self-contained:
 # no Node needed on CI or deploy hosts. outDir is ../www/dist → /www/dist here.
 # ------------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
