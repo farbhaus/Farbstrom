@@ -103,10 +103,20 @@ async fn webhook_handler(
         }
 
         // Find rooms with this stream key and mark them live.
+        //
+        // 'ended' is terminal: an expired or explicitly ended room must not be
+        // resurrected just because an encoder started pushing its old key. The
+        // expiry and start pollers both already treat 'ended' that way; this
+        // was the one path that didn't.
+        //
+        // 'scheduled' deliberately still goes live — a host starting early
+        // opens the room, and `tasks::poll_starts` is written to expect exactly
+        // that (it also releases held viewers for rooms the webhook already
+        // flipped). Don't narrow this to 'pending' without reading that poller.
         let mut stmt = conn.prepare(
             "SELECT r.id, r.slug FROM rooms r \
              JOIN stream_keys sk ON sk.id = r.stream_key_id \
-             WHERE sk.key_token = ?1",
+             WHERE sk.key_token = ?1 AND r.status != 'ended'",
         )?;
         let rooms: Vec<(String, String)> = stmt
             .query_map(params![stream_key], |row| {
@@ -116,11 +126,16 @@ async fn webhook_handler(
 
         let mut slugs = Vec::new();
         for (room_id, slug) in &rooms {
-            conn.execute(
-                "UPDATE rooms SET status = 'live' WHERE id = ?1",
+            // Re-check the status in the UPDATE: a room can be ended between
+            // the SELECT above and here. Only announce rooms we actually
+            // changed, so a lost race can't emit room:live for an ended room.
+            let changed = conn.execute(
+                "UPDATE rooms SET status = 'live' WHERE id = ?1 AND status != 'ended'",
                 params![room_id],
             )?;
-            slugs.push(slug.clone());
+            if changed > 0 {
+                slugs.push(slug.clone());
+            }
         }
         Ok((true, false, slugs))
     })
