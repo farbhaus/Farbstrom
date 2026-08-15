@@ -152,17 +152,19 @@ export function initPlayer(): void {
 // hardware-gated nearly everywhere — so a perfectly healthy stream can render
 // as a permanent black tile. Nothing else in the pipeline can tell the viewer
 // that: OvenPlayer just errors, and the handler below would retry every 8 s
-// forever. Returns the first codec this browser can't decode, or null.
-async function findUnplayableCodec(playlistUrl: string): Promise<string | null> {
-  if (typeof MediaSource === 'undefined') return null;
+// forever.
+//
+// OME publishes LL-HLS for every stream regardless of the room's delivery mode,
+// so this playlist is the codec source of truth for WebRTC rooms too.
+async function playlistCodecs(playlistUrl: string): Promise<string[]> {
   let manifest: string;
   try {
     const res = await fetch(playlistUrl);
     // Not live yet, or a transient blip — that's the retry loop's job, not ours.
-    if (!res.ok) return null;
+    if (!res.ok) return [];
     manifest = await res.text();
   } catch {
-    return null;
+    return [];
   }
   const codecs = new Set<string>();
   for (const match of manifest.matchAll(/CODECS="([^"]+)"/g)) {
@@ -170,10 +172,59 @@ async function findUnplayableCodec(playlistUrl: string): Promise<string | null> 
     if (!list) continue;
     for (const codec of list.split(',')) codecs.add(codec.trim());
   }
+  return [...codecs];
+}
+
+const isAudioCodec = (codec: string): boolean => /^(mp4a|opus|ac-3|ec-3)/.test(codec);
+
+// LL-HLS goes through MSE, which takes the playlist's codec strings verbatim.
+// Returns the first codec this browser can't decode, or null.
+function unplayableViaMse(codecs: string[]): string | null {
+  if (typeof MediaSource === 'undefined') return null;
   for (const codec of codecs) {
-    // Video and audio codecs are listed together; each needs its own container.
-    const container = /^(mp4a|opus|ac-3|ec-3)/.test(codec) ? 'audio/mp4' : 'video/mp4';
+    const container = isAudioCodec(codec) ? 'audio/mp4' : 'video/mp4';
     if (!MediaSource.isTypeSupported(`${container}; codecs="${codec}"`)) return codec;
+  }
+  return null;
+}
+
+// Playlist fourcc -> the mime type WebRTC negotiates under. The two namespaces
+// are unrelated, so the mapping has to be explicit.
+const WEBRTC_MIME: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^avc[13]/, 'video/h264'],
+  [/^(hvc1|hev1)/, 'video/h265'],
+  [/^av01/, 'video/av1'],
+  [/^vp0?8/, 'video/vp8'],
+  [/^vp0?9/, 'video/vp9'],
+];
+
+// WebRTC negotiates codecs in SDP, so MSE support is the wrong question — what
+// matters is whether the browser will *accept* the codec in its answer. When it
+// won't, OME finds no matching rendition and 403s the session, which is the
+// Firefox-plus-H.265 case that looks like a dead stream.
+//
+// Audio is deliberately ignored: OME transcodes to Opus for WebRTC while the
+// playlist advertises the AAC variant, so the playlist's audio entry says
+// nothing about this path.
+//
+// Fails open. Only blocks when the browser reports a non-empty codec list that
+// doesn't contain ours — an unknown fourcc, a missing API, or an empty list all
+// mean "let it try". A false "can't play" on a working stream would be worse
+// than the black tile this replaces.
+//
+// Catches codec mismatch, NOT profile mismatch: getCapabilities exposes no
+// profile detail for HEVC, so a browser advertising video/h265 can still fail on
+// profile 4 (Range Extensions, 4:2:2). Don't treat this guard as total.
+function unplayableViaWebrtc(codecs: string[]): string | null {
+  if (typeof RTCRtpReceiver === 'undefined' || !RTCRtpReceiver.getCapabilities) return null;
+  const supported = RTCRtpReceiver.getCapabilities('video')?.codecs ?? [];
+  if (supported.length === 0) return null;
+  const mimes = new Set(supported.map((c) => c.mimeType.toLowerCase()));
+
+  for (const codec of codecs) {
+    if (isAudioCodec(codec)) continue;
+    const mapped = WEBRTC_MIME.find(([re]) => re.test(codec))?.[1];
+    if (mapped && !mimes.has(mapped)) return codec;
   }
   return null;
 }
@@ -226,23 +277,23 @@ function initLivePlayer(): void {
   blockedCodec = null;
   onPlaybackBlocked(null);
 
-  // LL-HLS only — the playlist is the one place the packaged codecs are stated
-  // up front. (WebRTC negotiates codecs in SDP instead, so an undecodable
-  // stream there simply yields no video track; the admin dashboard flags the
-  // ingest codec so an operator catches it before viewers do.)
-  const playlistUrl = deliveryMode === 'llhls' ? sources[0]?.file : null;
-  if (playlistUrl) {
-    void findUnplayableCodec(playlistUrl).then((codec) => {
-      if (!codec || mode !== 'live') return;
-      blockedCodec = codec;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-      destroyPlayerInstance();
-      onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
-    });
-  }
+  // Codec pre-flight, both transports. The playlist is the one place the
+  // packaged codecs are stated up front, and OME serves it for every stream
+  // regardless of delivery mode — so a WebRTC room reads it too and then asks a
+  // different question of it (see unplayableViaWebrtc).
+  const isLlhls = deliveryMode === 'llhls';
+  void playlistCodecs(`${proto}://${host}/live/${streamKey}/llhls.m3u8`).then((codecs) => {
+    if (codecs.length === 0 || mode !== 'live') return;
+    const codec = isLlhls ? unplayableViaMse(codecs) : unplayableViaWebrtc(codecs);
+    if (!codec) return;
+    blockedCodec = codec;
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    destroyPlayerInstance();
+    onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
+  });
 
   enablePlayerControls(true);
   showSeekBar(false);
