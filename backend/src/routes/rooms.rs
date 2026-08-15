@@ -202,6 +202,8 @@ async fn create_room(
     let starts_at = body.starts_at.map(|s| normalize_datetime(&s));
     let expires_at = body.expires_at.map(|s| normalize_datetime(&s));
     let stream_key_id = body.stream_key_id;
+    // Captured before the value is moved into the INSERT params below.
+    let has_stream_key = stream_key_id.is_some();
 
     let password_hash = match body.password {
         Some(ref pw) if !pw.is_empty() => {
@@ -216,7 +218,7 @@ async fn create_room(
     };
 
     let conn = state.db.get()?;
-    let room = {
+    let mut room = {
         let id = id.clone();
         tokio::task::spawn_blocking(move || {
             // status: a future starts_at schedules the room (issue #200) so
@@ -282,7 +284,42 @@ async fn create_room(
         .map_err(|e| AppError::Internal(e.to_string()))?
     }?;
 
+    if has_stream_key {
+        promote_if_already_live(&state, &mut room).await;
+    }
+
     Ok(Json(room))
+}
+
+/// After a room is pointed at a stream key, reconcile against OME so a key that
+/// is *already* broadcasting takes the room live now, rather than on the
+/// poller's next 30 s tick (gh #225). The admission webhook can't cover this:
+/// it fires once, when a publisher starts, which has already happened.
+///
+/// Best-effort on purpose. If OME is unreachable the admin's create/update must
+/// still succeed — `tasks::spawn_ome_poller` stays the backstop — so a failure
+/// here is logged and swallowed.
+///
+/// Reuses `tasks::reconcile_and_announce` rather than repeating the promotion
+/// logic, which keeps the two hard-won guards (pending-only, and never a blocked
+/// key) in exactly one place. It also emits the WS events, so viewers already in
+/// the room react. Patches `status` on the response so the admin UI shows the
+/// change immediately instead of on its next refresh.
+async fn promote_if_already_live(state: &Arc<AppState>, room: &mut Value) {
+    let Some(slug) = room.get("slug").and_then(|v| v.as_str()).map(String::from) else {
+        return;
+    };
+    match crate::tasks::reconcile_and_announce(state).await {
+        Ok(t) => {
+            if t.went_live.contains(&slug) {
+                room["status"] = Value::String("live".into());
+            }
+        }
+        Err(e) => tracing::debug!(
+            "[rooms] OME reconcile after stream-key change failed: {}",
+            e
+        ),
+    }
 }
 
 // PUT /:id - partial update
@@ -500,7 +537,7 @@ async fn update_room(
 
     let conn = state.db.get()?;
     let id_clone = id.clone();
-    let room = tokio::task::spawn_blocking(move || {
+    let mut room = tokio::task::spawn_blocking(move || {
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
             .iter()
             .map(|p| p.as_ref() as &dyn rusqlite::types::ToSql)
@@ -585,32 +622,33 @@ async fn update_room(
             .get("stream_key_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        match (old_sk_id.is_some(), new_sk_id.is_some()) {
-            (false, true) => {
-                // Pull the fresh key_token off the row we just returned so
-                // the WS event can ship it to clients (avoids a second query
-                // and keeps the value consistent with what /join would give).
-                let key_token = room
-                    .get("key_token")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let _ =
-                    state
-                        .events
-                        .stream_key_assigned
-                        .send(crate::events::StreamKeyAssignedEvent {
-                            slug: slug_for_event,
-                            stream_key: key_token,
-                        });
-            }
-            (true, false) => {
-                // Mirror the OME poller's live -> pending transition for viewers
-                // in the room (the DB status was reset above).
-                let _ = state.events.room_pending.send(slug_for_event.clone());
-                let _ = state.events.stream_key_removed.send(slug_for_event);
-            }
-            _ => {}
+        let attached = new_sk_id.is_some() && old_sk_id.is_none();
+        if attached {
+            // Pull the fresh key_token off the row we just returned so
+            // the WS event can ship it to clients (avoids a second query
+            // and keeps the value consistent with what /join would give).
+            let key_token = room
+                .get("key_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let _ = state
+                .events
+                .stream_key_assigned
+                .send(crate::events::StreamKeyAssignedEvent {
+                    slug: slug_for_event.clone(),
+                    stream_key: key_token,
+                });
+        } else if old_sk_id.is_some() && new_sk_id.is_none() {
+            // Mirror the OME poller's live -> pending transition for viewers
+            // in the room (the DB status was reset above).
+            let _ = state.events.room_pending.send(slug_for_event.clone());
+            let _ = state.events.stream_key_removed.send(slug_for_event.clone());
+        }
+
+        // The newly-pointed-at key may already be broadcasting.
+        if attached {
+            promote_if_already_live(&state, &mut room).await;
         }
     }
 
