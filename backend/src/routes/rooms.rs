@@ -622,7 +622,10 @@ async fn update_room(
             .get("stream_key_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let attached = new_sk_id.is_some() && old_sk_id.is_none();
+        // A swap (one key replaced by a different one) has to behave like an
+        // assignment: viewers are still pointed at the old stream and will never
+        // re-mount without being told. Re-saving the SAME key stays silent.
+        let attached = new_sk_id.is_some() && old_sk_id != new_sk_id;
         if attached {
             // Pull the fresh key_token off the row we just returned so
             // the WS event can ship it to clients (avoids a second query

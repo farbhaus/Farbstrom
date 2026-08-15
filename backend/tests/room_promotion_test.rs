@@ -96,6 +96,34 @@ async fn creating_a_room_with_an_already_broadcasting_key_starts_live() {
     assert_eq!(body["status"], "live");
 }
 
+#[tokio::test]
+async fn swapping_to_another_broadcasting_key_promotes_immediately() {
+    let (state, broadcasting) = state_with_fake_ome().await;
+    let server = common::test_app(state.clone());
+    let (old_id, _old_token) = common::seed_stream_key(&state, "Idle");
+    let (new_id, new_token) = common::seed_stream_key(&state, "Live");
+    let room_id = common::seed_room_full(
+        &state,
+        "Room",
+        "promote-swap",
+        "pending",
+        false,
+        Some(&old_id),
+    );
+    broadcasting.lock().unwrap().push(new_token);
+
+    let (n, v) = auth(&common::admin_token(&state));
+    let res = server
+        .put(&format!("/api/rooms/{}", room_id))
+        .add_header(n, v)
+        .json(&json!({ "stream_key_id": new_id }))
+        .await;
+
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["status"], "live");
+}
+
 /// The kick guard has to hold on the new fast path, not just in the poller.
 #[tokio::test]
 async fn attaching_a_blocked_key_does_not_promote() {
@@ -173,6 +201,30 @@ async fn attaching_still_succeeds_when_ome_is_unreachable() {
 // Swap notification — replacing one key with another used to emit nothing, so
 // viewers stayed pointed at the old stream and never re-mounted.
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn swapping_the_stream_key_notifies_viewers() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let (old_id, _old_token) = common::seed_stream_key(&state, "Old");
+    let (new_id, new_token) = common::seed_stream_key(&state, "New");
+    let room_id =
+        common::seed_room_full(&state, "Room", "swap-room", "pending", false, Some(&old_id));
+
+    let mut rx = state.events.stream_key_assigned.subscribe();
+
+    let (n, v) = auth(&common::admin_token(&state));
+    let res = server
+        .put(&format!("/api/rooms/{}", room_id))
+        .add_header(n, v)
+        .json(&json!({ "stream_key_id": new_id }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+
+    let evt = rx.try_recv().expect("a swap must emit stream_key_assigned");
+    assert_eq!(evt.slug, "swap-room");
+    assert_eq!(evt.stream_key, new_token, "must carry the NEW key token");
+}
 
 /// Re-saving the same key is a no-op save from the admin form; it must not make
 /// every viewer tear down and re-mount the player.
