@@ -296,7 +296,22 @@
                         <LLHLS>
                             <ChunkDuration>0.2</ChunkDuration>
                             <PartHoldBack>0.6</PartHoldBack>
-                            <SegmentDuration>6</SegmentDuration>
+                            <!--
+                                Startup latency, not live latency. OME does not publish
+                                the master playlist until the first segment completes, so
+                                this value is the floor on how soon a viewer can start:
+                                measured 5.82s at 6, 1.69s at 1 (cold start).
+                                ChunkDuration/PartHoldBack still govern live latency.
+
+                                1 means "one GOP per segment" — segments can never be
+                                shorter than the encoder's keyframe interval, so a 2s GOP
+                                yields 2s segments whatever this says. If startup feels
+                                slow, the encoder's keyframe interval is the real lever.
+
+                                Rewind window is SegmentCount x segment length (~20s at a
+                                2s GOP). Nothing here exposes seeking on a live stream.
+                            -->
+                            <SegmentDuration>1</SegmentDuration>
                             <SegmentCount>10</SegmentCount>
                             <DVR>
                                 <Enable>false</Enable>
