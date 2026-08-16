@@ -79,6 +79,48 @@ async fn webhook_handler(
     let stream_key = extract_stream_key(url)
         .ok_or_else(|| AppError::BadRequest("Cannot extract stream key".into()))?;
 
+    // OME calls back with status "closing" when the publisher disconnects.
+    // Acting on it drops the room to 'pending' at once instead of leaving
+    // viewers on a dead stream for up to a poll cycle. The poller stays the
+    // backstop for ingests that die without a clean close (killed encoder,
+    // dropped network), which is why it isn't replaced by this.
+    let status = request.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status == "closing" {
+        let conn = state.db.get()?;
+        let events = state.events.clone();
+        let key = stream_key.clone();
+        let slugs = tokio::task::spawn_blocking(move || {
+            let mut stmt = conn.prepare(
+                "SELECT r.id, r.slug FROM rooms r \
+                 JOIN stream_keys sk ON sk.id = r.stream_key_id \
+                 WHERE sk.key_token = ?1 AND r.status = 'live'",
+            )?;
+            let rooms: Vec<(String, String)> = stmt
+                .query_map(params![key], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let mut slugs = Vec::new();
+            for (room_id, slug) in &rooms {
+                conn.execute(
+                    "UPDATE rooms SET status = 'pending' WHERE id = ?1",
+                    params![room_id],
+                )?;
+                slugs.push(slug.clone());
+            }
+            Ok::<_, rusqlite::Error>(slugs)
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??;
+
+        for slug in &slugs {
+            let _ = events.room_pending.send(slug.clone());
+        }
+        // A close is a notification, not a request to authorise.
+        return Ok(Json(json!({ "allowed": true })));
+    }
+
     // Authorize the ingest: the key must be one an admin explicitly created.
     // The HMAC check above only proves the request came from OME — this is the
     // actual stream-key gate. An unrecognised key (e.g. someone guessing
@@ -103,10 +145,20 @@ async fn webhook_handler(
         }
 
         // Find rooms with this stream key and mark them live.
+        //
+        // 'ended' is terminal: an expired or explicitly ended room must not be
+        // resurrected just because an encoder started pushing its old key. The
+        // expiry and start pollers both already treat 'ended' that way; this
+        // was the one path that didn't.
+        //
+        // 'scheduled' deliberately still goes live — a host starting early
+        // opens the room, and `tasks::poll_starts` is written to expect exactly
+        // that (it also releases held viewers for rooms the webhook already
+        // flipped). Don't narrow this to 'pending' without reading that poller.
         let mut stmt = conn.prepare(
             "SELECT r.id, r.slug FROM rooms r \
              JOIN stream_keys sk ON sk.id = r.stream_key_id \
-             WHERE sk.key_token = ?1",
+             WHERE sk.key_token = ?1 AND r.status != 'ended'",
         )?;
         let rooms: Vec<(String, String)> = stmt
             .query_map(params![stream_key], |row| {
@@ -116,11 +168,16 @@ async fn webhook_handler(
 
         let mut slugs = Vec::new();
         for (room_id, slug) in &rooms {
-            conn.execute(
-                "UPDATE rooms SET status = 'live' WHERE id = ?1",
+            // Re-check the status in the UPDATE: a room can be ended between
+            // the SELECT above and here. Only announce rooms we actually
+            // changed, so a lost race can't emit room:live for an ended room.
+            let changed = conn.execute(
+                "UPDATE rooms SET status = 'live' WHERE id = ?1 AND status != 'ended'",
                 params![room_id],
             )?;
-            slugs.push(slug.clone());
+            if changed > 0 {
+                slugs.push(slug.clone());
+            }
         }
         Ok((true, false, slugs))
     })

@@ -266,6 +266,33 @@ GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **frontend** — `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
 - **licenses** — regenerates `docs/THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
 
+## Updating pinned components
+
+Dependabot watches `cargo`, `github-actions`, and the literal Docker `FROM` bases
+(`rust`, `ubuntu`, `node`). **It cannot see the four component pins** — they are `ARG`s
+interpolated into `FROM` (`FROM caddy:${CADDY_VERSION}`), which Dependabot does not
+resolve. Nor does anything watch the CDN `<script>` tags. Both lists below are **manual**;
+check them when you touch the stack.
+
+**Component versions — change all three places together**, or a local `make dev` build
+silently disagrees with what CI bakes:
+
+| Where | What it drives |
+|---|---|
+| [`Dockerfile`](Dockerfile) `ARG *_VERSION` | **the source of truth — what CI bakes into the published image** |
+| [`docker-compose.dev.yml`](docker-compose.dev.yml) `args:` | local source builds (`make dev`), via `*_TAG` from `.env` |
+| [`.env.example`](.env.example) `*_TAG` | the documented default for both |
+
+The four are `OME_VERSION`, `LIVEKIT_VERSION`, `CADDY_VERSION`, `VALKEY_VERSION`. CI passes
+no `build-args`, so `Dockerfile` alone decides the published image. `VALKEY_TAG` may carry
+an image suffix (`9.1.1-alpine`); the Dockerfile strips it to the source tag.
+
+**CDN scripts** — in *both* [`www/viewer/index.html`](www/viewer/index.html) and
+[`www/admin/index.html`](www/admin/index.html) (livekit-client is viewer-only). Keep the
+pages in sync. **OvenPlayer is pinned exactly**, the others float on minor: OvenPlayer's
+DOM class names are load-bearing for the chrome-hiding CSS in each page's `<style>` block
+and have drifted before, so it must never move on its own.
+
 ## Useful reference docs
 
 - `README.md` — what Farbstrom is and what it does
@@ -295,7 +322,18 @@ Non-obvious facts that aren't derivable from reading the code.
 - `ovenplayer.js` does NOT bundle `hls.js` — load it separately or LLHLS fails silently.
 - `controls: false` is a silent no-op. Hide the UI via CSS `.op-ui-container { display: none !important }`.
 - Error/notification overlay sits OUTSIDE `.op-ui-container` — also hide `.op-message-container, .op-notification-container`.
-- LLHLS + Safari + H.265 fails (Safari MSE blocks HEVC) — rely on WebRTC-first with LLHLS autoFallback.
+- **Browser support, measured on OME v0.21.0** (WebRTC delivery, real 1080p ingests): H.264 plays in Chrome, Safari **and** Firefox; H.265 plays in Chrome and Safari, not Firefox. The H.265 tested was `hvc1.4.10.L120.bd.8` — profile 4 (Range Extensions, 4:2:2 10-bit), decoded via Apple Silicon hardware. So HEVC over WebRTC is **not** Farbplay-only, and `deliveryMode` is a genuine per-room choice rather than a codec workaround.
+- LLHLS + Safari + H.265 historically failed because Safari MSE rejects the `hev1` sample entry. **v0.21.0 changed the packaging** (upstream #2258): verified that an H.265 ingest now yields `CODECS="hvc1…"` in the LL-HLS master playlist and an `hvc1`/`hvcC` sample entry in the fMP4 init segment — the form Safari requires. **Whether Safari decodes H.265 over LL-HLS is still untested** (the tests above all ran through WebRTC). Test it before relying on LLHLS for an H.265 room, and record the result here.
+
+**WebRTC transport (OME)**
+- Both `<IceCandidates>` blocks in [`ome/origin_conf/Server.xml`](ome/origin_conf/Server.xml) **force the built-in TURN relay** (`<TcpRelayForce>true</TcpRelayForce>` — v0.21.0's rename of the deprecated `<TcpForce>`). This looks wasteful and it is tempting to "fix"; **don't, without testing Firefox.** Direct ICE was tried on v0.21.0 (`${PublicIP}` candidates + RFC 6544 TCP ICE on `10000/tcp`, `TcpRelayForce=false`) and Chrome and Safari worked while **Firefox never nominated a candidate**, looping `Added session`/`Removed session` at OvenPlayer's 8 s `connectionTimeout` forever. Offering the relay *alongside* direct candidates (`<DefaultTransport>all</DefaultTransport>`) does not rescue it either: behind Docker NAT, OME can only advertise the relay at `${PublicIP}` and `172.x`, and neither is reachable as `localhost`. Relay-forced is the only configuration verified to work in all three browsers.
+- **Adding a new ICE port means three edits**: `Server.xml`, the `EXPOSE`/`ports:` entries, and `FW_TCP`/`FW_UDP` in [`deploy.sh`](deploy.sh).
+- Debugging ICE: OME logs `nominated candidate` + `DTLS peer certificate verified` on success. A repeating `Added session`/`Removed session` pair with neither line in between is ICE connectivity failure, not codec or signalling — signalling clearly succeeded if a session was created at all.
+- `OME_HOST_IP` (feeding `<Distribution>`) is derived in [`entrypoint.sh`](entrypoint.sh) from `PUBLIC_HOST`, so its export must stay *below* where `PUBLIC_HOST` is resolved. It previously read a `DOMAIN` var nothing sets and silently resolved to `localhost`.
+
+**Codecs**
+- Video is `<Bypass>true</Bypass>` — never transcoded. The ingest codec is exactly what every viewer's browser must decode, so codec choice is a product decision, not a server one. Audio *is* transcoded (AAC for LLHLS/SRT, Opus for WebRTC) with `BypassIfMatch` short-circuits.
+- AV1 (OME v0.21.0) is **WHIP / enhanced-RTMP only — SRT cannot carry it**, because OME's SRT ingest is MPEG-TS and its demuxer has no AV1 support. Transcoding *to* AV1 isn't viable either: the only encoder is libaom, and upstream disabled its realtime/RC/tiling options (`#if 0`) over a crash. Two guards exist because an undecodable stream otherwise looks like a black tile: `findUnplayableCodec()` in [`frontend/viewer/player.ts`](frontend/viewer/player.ts) reads `CODECS` from the LL-HLS playlist and `MediaSource.isTypeSupported()`s each one (LL-HLS only — WebRTC negotiates codecs in SDP, so there's no equivalent pre-flight), and `browserCodecWarning()` in [`frontend/admin/dashboard.ts`](frontend/admin/dashboard.ts) flags AV1/H.265 ingests on the dashboard.
 
 **Player sizing**
 - CSS `aspect-ratio` is unreliable in flex containers — the viewer uses JS `sizePlayer()` for exact 16:9 pixel dimensions.
@@ -308,7 +346,7 @@ Non-obvious facts that aren't derivable from reading the code.
 **SRT encryption** (DB-managed runtime toggle, gh #208)
 - Toggled at runtime from the admin **Settings** tab (`POST /api/stream-keys/srt-encryption` `{ingest, playback}`). **No `.env` — the DB is the sole source of truth.** The two legs are **independent**: ingest (encoder → server, 9999) and playback (server → viewers, 9998) each have their own `srt_ingest_enabled` / `srt_playback_enabled` flag + generated passphrase (`srt_{ingest,playback}_passphrase`) in the `settings` table (`src/srt.rs`, hex via `rand`). Playback is the exposed leg (public internet), so the UI recommends it; ingest is usually a trusted network. `pbkeylen` is fixed at 16 (`srt::PBKEYLEN`). Absent flag ⇒ that leg disabled.
 - The UI is **two checkboxes + one Apply button** (`frontend/admin/settings.ts`): the checkboxes stage a desired state and Apply sends the full `{ingest, playback}` state so OME restarts **once** even when both legs change. The Stream Keys tab still reads `srt-config` to append the passphrase to its SRT URLs, but the toggle lives in Settings.
-- **Why it must restart OME, not hot-reload:** OME (v0.20.5) reads its SRT passphrase from `Server.xml` `${env:...}` only at process startup — `SIGHUP` reloads just `logger.xml`, and its REST API returns 403 for bind changes. So the backend can't push a new passphrase into a running OME. The bridge: `Server.xml` is unchanged (still `${env:...}`, one bind per leg); the backend writes both passphrases to `<data>/srt.env`; the `[program:ome]` command is the `ome_start.sh` wrapper that **sources `srt.env` then execs `ome_launcher.sh`**; the handler runs `supervisorctl restart ome` (`srt::restart_ome`) to re-read it. For that restart the unprivileged backend (`user=app`) needs the supervisor socket — `[unix_http_server]` is `chown=app:app chmod=0700` in `supervisord.conf`. The passphrases reach OME **only** via `srt.env` (the wrapper), never the container env.
+- **Why it must restart OME, not hot-reload:** OME (v0.21.0) reads its SRT passphrase from `Server.xml` `${env:...}` only at process startup — `SIGHUP` reloads just `logger.xml`, and its REST API returns 403 for bind changes. So the backend can't push a new passphrase into a running OME. The bridge: `Server.xml` is unchanged (still `${env:...}`, one bind per leg); the backend writes both passphrases to `<data>/srt.env`; the `[program:ome]` command is the `ome_start.sh` wrapper that **sources `srt.env` then execs `ome_launcher.sh`**; the handler runs `supervisorctl restart ome` (`srt::restart_ome`) to re-read it. For that restart the unprivileged backend (`user=app`) needs the supervisor socket — `[unix_http_server]` is `chown=app:app chmod=0700` in `supervisord.conf`. The passphrases reach OME **only** via `srt.env` (the wrapper), never the container env.
 - OME's SRT passphrase is **bind-level (per-port), not per-stream**. Wire confidentiality only, *not* access control (still the admission webhook + SignedPolicy). Restarting OME briefly drops **every** stream (SRT + browser), and enabling a leg is a **hard cutover** (that leg's encoders / Farbplay clients must reconnect with the passphrase) — the admin UI confirms before applying.
 - Reads are live: `srt-config` (admin) and `/api/watch/:slug` (playback → Farbplay) resolve from the DB (`srt::resolve`). A disabled leg writes an empty passphrase to `srt.env`, so its bind stays plaintext.
 - Cold-boot ordering: the backend writes `srt.env` from the DB on startup (`srt::init_startup`, which also migrates the pre-split combined `srt_encryption_enabled` flag into the two per-leg flags); `ome_start.sh` waits up to ~10 s for the backend (priority 20) to write it before OME (priority 30) launches; fail-open to unencrypted is safe because ingest admission is fail-closed while the backend is down. Tests set `STREAM_DISABLE_OME_RESTART=1` to skip the `supervisorctl` shell-out.

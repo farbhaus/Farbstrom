@@ -7,9 +7,13 @@
 <link rel="icon" type="image/svg+xml" href="/shared/favicon.svg">
 <link rel="icon" type="image/png" href="/shared/favicon.png">
 <link rel="apple-touch-icon" href="/shared/favicon.png">
-<script src="https://cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5/dist/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.19/dist/livekit-client.umd.min.js"></script>
+<!-- OvenPlayer is pinned EXACTLY, unlike the two below: its DOM class names are
+     load-bearing for the chrome-hiding CSS in this page's <style> block
+     (.op-ui, .op-spinner-container, .op-bigbutton-container) and they have
+     drifted before. Bump it deliberately, and re-check that CSS when you do. -->
+<script src="https://cdn.jsdelivr.net/npm/ovenplayer@0.10.53/dist/ovenplayer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.21/dist/livekit-client.umd.min.js"></script>
 <link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/shared/components.css">
 <link rel="stylesheet" href="/shared/utils.css">

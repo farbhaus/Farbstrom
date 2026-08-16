@@ -62,9 +62,20 @@
                     <WorkerCount>1</WorkerCount>
                 </Signalling>
                 <IceCandidates>
+                    <!--
+                        Relay-forced on purpose. Direct ICE was tried on OME v0.21.0
+                        (${PublicIP} candidates + RFC 6544 TCP ICE, TcpRelayForce=false)
+                        and broke Firefox: it never nominated a candidate and looped
+                        "Added session"/"Removed session" forever. Offering the relay
+                        alongside direct candidates did not fix it either, because with
+                        the container behind Docker NAT the relay is only advertised at
+                        ${PublicIP} and 172.x — neither reachable as localhost. Forcing
+                        the relay is the configuration that works in every browser.
+                        TcpRelayForce is v0.21.0's rename of the deprecated TcpForce.
+                    -->
                     <IceCandidate>*:10000-10009/udp</IceCandidate>
                     <TcpRelay>*:3478</TcpRelay>
-                    <TcpForce>true</TcpForce>
+                    <TcpRelayForce>true</TcpRelayForce>
                     <TcpRelayWorkerCount>1</TcpRelayWorkerCount>
                 </IceCandidates>
             </WebRTC>
@@ -85,9 +96,11 @@
                     <WorkerCount>2</WorkerCount>
                 </Signalling>
                 <IceCandidates>
+                    <!-- Same transport policy as the WebRTC provider above — see there
+                         for why the relay is forced rather than direct ICE. -->
                     <IceCandidate>*:10000-10009/udp</IceCandidate>
                     <TcpRelay>*:3478</TcpRelay>
-                    <TcpForce>true</TcpForce>
+                    <TcpRelayForce>true</TcpRelayForce>
                     <TcpRelayWorkerCount>2</TcpRelayWorkerCount>
                 </IceCandidates>
             </WebRTC>
@@ -194,11 +207,12 @@
                     <Type>live</Type>
 
                     <OutputProfiles>
-                        <HWAccels>
-                            <Decoder><Enable>false</Enable></Decoder>
-                            <Encoder><Enable>false</Enable></Encoder>
-                        </HWAccels>
-
+                        <!--
+                            No <HWAccels> block: OME deprecated hardware acceleration in
+                            v0.21.0 (Intel QSV removed outright) and warns-and-disables it
+                            when enabled. Farbstrom bypasses video anyway, so there is
+                            nothing to accelerate.
+                        -->
                         <OutputProfile>
                             <Name>bypass</Name>
                             <OutputStreamName>${OriginStreamName}</OutputStreamName>
@@ -282,7 +296,22 @@
                         <LLHLS>
                             <ChunkDuration>0.2</ChunkDuration>
                             <PartHoldBack>0.6</PartHoldBack>
-                            <SegmentDuration>6</SegmentDuration>
+                            <!--
+                                Startup latency, not live latency. OME does not publish
+                                the master playlist until the first segment completes, so
+                                this value is the floor on how soon a viewer can start:
+                                measured 5.82s at 6, 1.69s at 1 (cold start).
+                                ChunkDuration/PartHoldBack still govern live latency.
+
+                                1 means "one GOP per segment" — segments can never be
+                                shorter than the encoder's keyframe interval, so a 2s GOP
+                                yields 2s segments whatever this says. If startup feels
+                                slow, the encoder's keyframe interval is the real lever.
+
+                                Rewind window is SegmentCount x segment length (~20s at a
+                                2s GOP). Nothing here exposes seeking on a live stream.
+                            -->
+                            <SegmentDuration>1</SegmentDuration>
                             <SegmentCount>10</SegmentCount>
                             <DVR>
                                 <Enable>false</Enable>

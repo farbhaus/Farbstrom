@@ -124,6 +124,23 @@ function renderDashboard(): void {
   setText('dash-uptime', uptime_secs ? fmtDuration(uptime_secs) : '');
 }
 
+// Codecs that reach OME but not every viewer. AV1 is the only one worth
+// flagging here: Safari has no software decoder for it (M3-or-later hardware
+// only), so it plays fine for the operator and black for most of the room.
+//
+// H.265 deliberately isn't flagged. It plays in Chrome and Safari, which is the
+// normal case for this product, so warning on every H.265 ingest was crying
+// wolf — and the viewer now pre-flights codec support per browser and says so
+// itself (`findUnplayableCodec` in frontend/viewer/player.ts), which is both
+// more accurate and shown to the person actually affected.
+function browserCodecWarning(codec: string): string {
+  const c = codec.toLowerCase();
+  if (c.includes('av1')) {
+    return 'AV1 ingest — Safari needs M3-or-later hardware to decode this; most Macs will show no video.';
+  }
+  return '';
+}
+
 function renderOme(): void {
   const container = document.getElementById('ome-list');
   const subheader = document.getElementById('ome-subheader');
@@ -160,6 +177,13 @@ function renderOme(): void {
       const videoStr = v
         ? `${v.codec} · ${v.width}×${v.height} · ${Math.round(v.framerate)}fps · ${fmtBitrate(v.bitrateLatest)}`
         : '—';
+      // Farbstrom passes video through untouched, so the ingest codec is what
+      // every viewer's browser has to decode. Two of them can't be relied on:
+      // Safari ships no AV1 software decoder (needs M3-or-later hardware), and
+      // HEVC decoding is hardware-gated nearly everywhere. Flag it here so an
+      // operator finds out before the room does. (The viewer detects the same
+      // condition on its own for LL-HLS and says so instead of showing black.)
+      const codecWarning = v ? browserCodecWarning(v.codec) : '';
       const audioStr = a
         ? `${a.codec} · ${Math.round(a.samplerate / 1000)}kHz · ${a.channel}ch · ${fmtBitrate(a.bitrateLatest)}`
         : '—';
@@ -193,6 +217,7 @@ function renderOme(): void {
           <div class="stream-stat"><span class="stat-label">Video</span><span>${videoStr}</span></div>
           <div class="stream-stat"><span class="stat-label">Audio</span><span>${audioStr}</span></div>
         </div>
+        ${codecWarning ? `<div class="stream-meta" style="color:var(--danger)">${esc(codecWarning)}</div>` : ''}
         ${meta ? `<div class="stream-meta">${meta}</div>` : ''}
       </div>`;
     })

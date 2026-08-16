@@ -7,10 +7,10 @@
 # .env: CADDY_TAG / LIVEKIT_TAG / OME_TAG / VALKEY_TAG). NOTE: deploy hosts that
 # PULL farbhaus/farbstrom get whatever CI baked — pin the whole image there with
 # FARBSTROM_TAG; the *_TAG vars only affect a local/source build.
-ARG OME_VERSION=v0.20.5
-ARG LIVEKIT_VERSION=v1.12.0
-ARG CADDY_VERSION=2.11.3
-ARG VALKEY_VERSION=8.1.7
+ARG OME_VERSION=v0.21.0
+ARG LIVEKIT_VERSION=v1.13.5
+ARG CADDY_VERSION=2.11.4
+ARG VALKEY_VERSION=9.1.1
 
 # ------------------------------------------------------------------------------
 # Stage 1 — Backend builder (Debian-based, matches final glibc)
@@ -41,7 +41,7 @@ RUN VER="${VALKEY_VERSION%%-*}" \
 # Stage 3 — Frontend builder (tsc → www/dist), so the image is self-contained:
 # no Node needed on CI or deploy hosts. outDir is ../www/dist → /www/dist here.
 # ------------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci

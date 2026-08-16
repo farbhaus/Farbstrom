@@ -22,7 +22,9 @@ on:
       - 'caddy/**'
       - 'Dockerfile'
       - 'entrypoint.sh'
+      - 'ome_start.sh'
       - 'supervisord.conf'
+      - 'docker-compose*.yml'
       - '.dockerignore'
       - '.github/workflows/docker-single.yml'
 

@@ -11,7 +11,7 @@
 //! passphrase, so the exposed playback leg can be encrypted without cutting over
 //! every encoder. OME already binds them separately.
 //!
-//! OME still only reads its SRT passphrase at process startup (v0.20.5 can't
+//! OME still only reads its SRT passphrase at process startup (v0.21.0 can't
 //! hot-reload `Server.xml`; its REST API rejects bind changes), so applying a
 //! change is unavoidably an **OME restart**. To bridge that: the backend writes
 //! the current passphrases to `<data>/srt.env`; the `ome_start.sh` wrapper sources
