@@ -256,12 +256,23 @@ fn db_status(state: &std::sync::Arc<stream_backend::state::AppState>, id: &str) 
 
 /// Posts a valid, signed admission request for `key_token`.
 async fn admit(server: &axum_test::TestServer, key_token: &str) -> u16 {
-    let body = json!({
-        "request": {
-            "direction": "incoming",
-            "url": format!("rtmp://host/live/{}", key_token)
-        }
+    admit_with_status(server, key_token, None).await
+}
+
+/// Same, with OME's `status` field ("opening" / "closing") set.
+async fn admit_with_status(
+    server: &axum_test::TestServer,
+    key_token: &str,
+    status: Option<&str>,
+) -> u16 {
+    let mut request = json!({
+        "direction": "incoming",
+        "url": format!("rtmp://host/live/{}", key_token)
     });
+    if let Some(s) = status {
+        request["status"] = json!(s);
+    }
+    let body = json!({ "request": request });
     let body_bytes = serde_json::to_vec(&body).unwrap();
     let sig = sign_webhook(TEST_WEBHOOK_SECRET, &body_bytes);
     server
@@ -272,6 +283,84 @@ async fn admit(server: &axum_test::TestServer, key_token: &str) -> u16 {
         .await
         .status_code()
         .as_u16()
+}
+
+// ---------------------------------------------------------------------------
+// status: "closing" — the publisher disconnected
+// ---------------------------------------------------------------------------
+
+/// Without this the room sat on a dead stream until the next 30s poll, so
+/// viewers kept staring at a frozen tile with no "waiting" overlay.
+#[tokio::test]
+async fn closing_webhook_drops_a_live_room_to_pending() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+
+    let (sk_id, key_token) = common::seed_stream_key(&state, "K");
+    let room_id =
+        common::seed_room_full(&state, "Room", "closing-room", "live", false, Some(&sk_id));
+
+    let mut rx = state.events.room_pending.subscribe();
+
+    assert_eq!(
+        admit_with_status(&server, &key_token, Some("closing")).await,
+        200
+    );
+
+    assert_eq!(db_status(&state, &room_id), "pending");
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        "closing-room",
+        "viewers must be told the stream stopped"
+    );
+}
+
+/// A close must not resurrect or otherwise disturb a room that already ended.
+#[tokio::test]
+async fn closing_webhook_leaves_an_ended_room_alone() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+
+    let (sk_id, key_token) = common::seed_stream_key(&state, "K");
+    let room_id = common::seed_room_full(
+        &state,
+        "Room",
+        "closing-ended",
+        "ended",
+        false,
+        Some(&sk_id),
+    );
+
+    assert_eq!(
+        admit_with_status(&server, &key_token, Some("closing")).await,
+        200
+    );
+
+    assert_eq!(db_status(&state, &room_id), "ended");
+}
+
+/// "opening" is the normal admission path and must still promote.
+#[tokio::test]
+async fn opening_webhook_still_sets_the_room_live() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+
+    let (sk_id, key_token) = common::seed_stream_key(&state, "K");
+    let room_id = common::seed_room_full(
+        &state,
+        "Room",
+        "opening-room",
+        "pending",
+        false,
+        Some(&sk_id),
+    );
+
+    assert_eq!(
+        admit_with_status(&server, &key_token, Some("opening")).await,
+        200
+    );
+
+    assert_eq!(db_status(&state, &room_id), "live");
 }
 
 /// An expired or explicitly ended room must not come back just because an

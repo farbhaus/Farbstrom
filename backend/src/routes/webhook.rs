@@ -79,6 +79,48 @@ async fn webhook_handler(
     let stream_key = extract_stream_key(url)
         .ok_or_else(|| AppError::BadRequest("Cannot extract stream key".into()))?;
 
+    // OME calls back with status "closing" when the publisher disconnects.
+    // Acting on it drops the room to 'pending' at once instead of leaving
+    // viewers on a dead stream for up to a poll cycle. The poller stays the
+    // backstop for ingests that die without a clean close (killed encoder,
+    // dropped network), which is why it isn't replaced by this.
+    let status = request.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status == "closing" {
+        let conn = state.db.get()?;
+        let events = state.events.clone();
+        let key = stream_key.clone();
+        let slugs = tokio::task::spawn_blocking(move || {
+            let mut stmt = conn.prepare(
+                "SELECT r.id, r.slug FROM rooms r \
+                 JOIN stream_keys sk ON sk.id = r.stream_key_id \
+                 WHERE sk.key_token = ?1 AND r.status = 'live'",
+            )?;
+            let rooms: Vec<(String, String)> = stmt
+                .query_map(params![key], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let mut slugs = Vec::new();
+            for (room_id, slug) in &rooms {
+                conn.execute(
+                    "UPDATE rooms SET status = 'pending' WHERE id = ?1",
+                    params![room_id],
+                )?;
+                slugs.push(slug.clone());
+            }
+            Ok::<_, rusqlite::Error>(slugs)
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??;
+
+        for slug in &slugs {
+            let _ = events.room_pending.send(slug.clone());
+        }
+        // A close is a notification, not a request to authorise.
+        return Ok(Json(json!({ "allowed": true })));
+    }
+
     // Authorize the ingest: the key must be one an admin explicitly created.
     // The HMAC check above only proves the request came from OME — this is the
     // actual stream-key gate. An unrecognised key (e.g. someone guessing
