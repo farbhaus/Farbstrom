@@ -124,17 +124,19 @@ function renderDashboard(): void {
   setText('dash-uptime', uptime_secs ? fmtDuration(uptime_secs) : '');
 }
 
-// Codecs that reach OME but not every viewer. AV1 has no Safari software
-// decoder at all (M3-or-later hardware only), and HEVC decoding is
-// hardware-gated on most machines — either one plays fine for the operator and
-// black for half the room.
+// Codecs that reach OME but not every viewer. AV1 is the only one worth
+// flagging here: Safari has no software decoder for it (M3-or-later hardware
+// only), so it plays fine for the operator and black for most of the room.
+//
+// H.265 deliberately isn't flagged. It plays in Chrome and Safari, which is the
+// normal case for this product, so warning on every H.265 ingest was crying
+// wolf — and the viewer now pre-flights codec support per browser and says so
+// itself (`findUnplayableCodec` in frontend/viewer/player.ts), which is both
+// more accurate and shown to the person actually affected.
 function browserCodecWarning(codec: string): string {
   const c = codec.toLowerCase();
   if (c.includes('av1')) {
     return 'AV1 ingest — Safari needs M3-or-later hardware to decode this; most Macs will show no video.';
-  }
-  if (c.includes('h265') || c.includes('hevc')) {
-    return 'H.265 ingest — browser playback depends on hardware HEVC support. Farbplay (SRT) always works.';
   }
   return '';
 }
