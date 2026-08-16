@@ -22,6 +22,7 @@ import {
   getPlayerMode,
   initPlayer,
   initPlayerControls,
+  remountLivePlayer,
   configurePlayer,
 } from './player.js';
 import { configurePointer, initPointer } from './pointer.js';
@@ -68,9 +69,11 @@ function setRoomStatus(status: RoomStatus, playerPlaying?: boolean): void {
 // touches viewerStore, so it's safe to call from the store subscriber
 // without recursing.
 // Set by player.ts when this browser can't decode the stream's codec. Outranks
-// every status below: the room really is live, so the normal overlay copy
-// ("Waiting for livestream source...") would be a lie, and the live badge
-// would sit on top of a black tile.
+// every status below *while the room is live*: the stream really is running, so
+// the normal overlay copy ("Waiting for livestream source...") would be a lie,
+// and the live badge would sit on top of a black tile. Once the stream stops
+// the codec is no longer why there's nothing to watch, so the normal copy takes
+// over again — and the probe re-runs on the next mount.
 let blockedMsg: string | null = null;
 
 function refreshStatusOverlay(playerPlaying?: boolean): void {
@@ -80,7 +83,7 @@ function refreshStatusOverlay(playerPlaying?: boolean): void {
   const msg = document.getElementById('offline-msg');
   if (!offline || !badge || !msg) return;
 
-  if (blockedMsg) {
+  if (blockedMsg && status === 'live') {
     msg.textContent = blockedMsg;
     offline.classList.add('visible');
     badge.classList.remove('visible');
@@ -110,16 +113,20 @@ function refreshStatusOverlay(playerPlaying?: boolean): void {
   const pState =
     playerPlaying ??
     (getPlayerMode() === 'live' && getPlayer()?.getState() === 'playing');
-  if (status === 'live') {
-    // Live + actually playing → live badge on, overlay off.
-    // Live + player mounted but not yet playing → also clear the overlay;
-    // the player.ts error handler will re-show it after a 3 s timeout if
-    // the source genuinely fails. Keeping it up here would leave the
-    // "Waiting for livestream source..." text on top of the video any
-    // time the room flips to live before OvenPlayer reports `playing`.
+  if (status === 'live' && pState) {
+    // Actually playing → live badge on, overlay off.
     offline.classList.remove('visible');
-    if (pState) badge.classList.add('visible');
-    else badge.classList.remove('visible');
+    badge.classList.add('visible');
+  } else if (status === 'live') {
+    // Live but not playing yet. 'live' means OME *admitted* the ingest, which
+    // it does within ~0.2s, but the first segments aren't packaged for another
+    // ~6s. Clearing the overlay here (as this used to) shows a black tile for
+    // that whole gap on every stream start. Hold the waiting copy until the
+    // player reports `playing` — the same signal the live badge already
+    // depends on, so this doesn't add a new way to get stuck.
+    msg.textContent = 'Waiting for livestream source...';
+    offline.classList.add('visible');
+    badge.classList.remove('visible');
   } else if (status === 'ended') {
     msg.textContent = 'Session has ended.';
     offline.classList.add('visible');
@@ -147,7 +154,10 @@ function handleStreamAssigned(newKey: string): void {
     return;
   }
   document.getElementById('tile-stream')?.classList.remove('hidden');
-  initPlayer();
+  // Remount, not initPlayer: on a key *swap* a player is already mounted on the
+  // old key, and initPlayer no-ops whenever one exists — which left the viewer
+  // watching the previous stream and skipped the codec probe for the new one.
+  remountLivePlayer();
   setRoomStatus(getState().status);
   syncConferenceTiles();
   requestAutoFocus('stream');

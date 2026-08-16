@@ -144,6 +144,33 @@ export function initPlayer(): void {
   initLivePlayer();
 }
 
+// Tear down and mount again, for the two events that mean "this is a different
+// stream than the one you have": the room going live, and a stream key being
+// assigned or swapped.
+//
+// `reloadPlayer` is not enough for either. It calls `player.load()` when an
+// instance already exists, which re-fetches the same source but never re-runs
+// the codec probe — so a viewer sitting in the room while the stream was down
+// (probe found no playlist, gave up) would keep a mounted player and get no
+// warning when an undecodable stream came up. Likewise `initPlayer` no-ops when
+// a player exists, so a key swap left the old key mounted.
+//
+// Skips the remount when playback is already healthy, so a duplicate room:live
+// can't cause a visible blip for someone happily watching.
+export function remountLivePlayer(): void {
+  if (viewerStore.get().displayFile) return;
+  try {
+    if (player && player.getState() === 'playing') return;
+  } catch {
+    // getState can throw on a half-torn-down instance; fall through and remount.
+  }
+  destroyPlayerInstance();
+  blockedCodec = null;
+  onPlaybackBlocked(null);
+  mode = null;
+  initLivePlayer();
+}
+
 // ---- Codec support probe ---------------------------------------------------
 
 // The LL-HLS master playlist names the exact codecs OME is packaging (avc1.*,
@@ -236,6 +263,16 @@ function codecLabel(codec: string): string {
   return codec;
 }
 
+// Bumped on every (re)mount and teardown so a poll still in flight from a
+// previous stream can't apply its verdict to the current one.
+let probeGeneration = 0;
+
+// Polled while a stream is starting, so the interval is the granularity of
+// perceived startup: at 1000ms a stream ready at 1.65s isn't mounted until 2s.
+// The request is a small playlist fetch and only runs during startup.
+const PROBE_INTERVAL_MS = 250;
+const PROBE_TIMEOUT_MS = 30000;
+
 // ---- Live broadcast mount --------------------------------------------------
 
 function initLivePlayer(): void {
@@ -255,13 +292,70 @@ function initLivePlayer(): void {
     return;
   }
 
+  mode = 'live';
+  currentFileId = null;
+  blockedCodec = null;
+  onPlaybackBlocked(null);
+  // Don't mount yet — wait until OME has actually packaged the stream. See
+  // waitForStreamThenMount.
+  waitForStreamThenMount(streamKey, deliveryMode === 'llhls');
+}
+
+// The room flips to 'live' the moment OME *admits* the ingest, but the stream
+// isn't playable for a moment after that. Mounting straight away means
+// OvenPlayer fails against a stream that isn't there and then sits on its 8s
+// `connectionTimeout` before trying again — which is why a stream start took a
+// stopwatch-measured 11s, and up to 17s when it burned two retries, even though
+// the stream itself was ready in well under a second.
+//
+// So: poll until the stream is packaged, then mount once, already knowing the
+// codec. First frame now tracks OME's actual readiness instead of a retry
+// timer, and the codec verdict is available at mount time rather than after a
+// mount-then-tear-down flash.
+function waitForStreamThenMount(streamKey: string, isLlhls: boolean): void {
+  const generation = ++probeGeneration;
+  const host = location.host;
+  const proto = location.protocol === 'https:' ? 'https' : 'http';
+  const url = `${proto}://${host}/live/${streamKey}/llhls.m3u8`;
+  const deadline = Date.now() + PROBE_TIMEOUT_MS;
+
+  const attempt = async (): Promise<void> => {
+    if (generation !== probeGeneration || mode !== 'live') return;
+    const codecs = await playlistCodecs(url);
+    if (generation !== probeGeneration || mode !== 'live') return;
+
+    if (codecs.length === 0) {
+      if (Date.now() < deadline) {
+        setTimeout(() => void attempt(), PROBE_INTERVAL_MS);
+      } else {
+        // Never showed up. Mount anyway rather than leaving a permanently dead
+        // tile — LL-HLS could be disabled, or this could be a stream shape the
+        // playlist doesn't describe. The player's own retry takes it from here.
+        mountLivePlayer(streamKey, isLlhls);
+      }
+      return;
+    }
+
+    const codec = isLlhls ? unplayableViaMse(codecs) : unplayableViaWebrtc(codecs);
+    if (codec) {
+      blockedCodec = codec;
+      onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
+      return;
+    }
+    mountLivePlayer(streamKey, isLlhls);
+  };
+
+  void attempt();
+}
+
+function mountLivePlayer(streamKey: string, isLlhls: boolean): void {
+  if (player || mode !== 'live') return;
   const host = location.host;
   const proto = location.protocol === 'https:' ? 'https' : 'http';
   const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const sources =
-    deliveryMode === 'llhls'
-      ? [{ type: 'll-hls', file: `${proto}://${host}/live/${streamKey}/llhls.m3u8` }]
-      : [{ type: 'webrtc', file: `${wsproto}://${host}/live/${streamKey}` }];
+  const sources = isLlhls
+    ? [{ type: 'll-hls', file: `${proto}://${host}/live/${streamKey}/llhls.m3u8` }]
+    : [{ type: 'webrtc', file: `${wsproto}://${host}/live/${streamKey}` }];
 
   player = OvenPlayer.create('player', {
     autoStart: true,
@@ -271,28 +365,6 @@ function initLivePlayer(): void {
     parseStream: { enabled: true },
     webrtcConfig: { timeoutMaxRetry: 3, connectionTimeout: 8000 },
     hlsConfig: { liveSyncDuration: 1, liveMaxLatencyDuration: 2, maxLiveSyncPlaybackRate: 1 },
-  });
-  mode = 'live';
-  currentFileId = null;
-  blockedCodec = null;
-  onPlaybackBlocked(null);
-
-  // Codec pre-flight, both transports. The playlist is the one place the
-  // packaged codecs are stated up front, and OME serves it for every stream
-  // regardless of delivery mode — so a WebRTC room reads it too and then asks a
-  // different question of it (see unplayableViaWebrtc).
-  const isLlhls = deliveryMode === 'llhls';
-  void playlistCodecs(`${proto}://${host}/live/${streamKey}/llhls.m3u8`).then((codecs) => {
-    if (codecs.length === 0 || mode !== 'live') return;
-    const codec = isLlhls ? unplayableViaMse(codecs) : unplayableViaWebrtc(codecs);
-    if (!codec) return;
-    blockedCodec = codec;
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
-    destroyPlayerInstance();
-    onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
   });
 
   enablePlayerControls(true);
