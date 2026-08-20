@@ -221,6 +221,20 @@ non-kicked participant. Missing `participantId`/`token` or a kicked/not-yet-admi
 Kick and room-end ride the existing SSE (`kicked` / `room_ended`) for an instant self-disconnect;
 the gated GET (403/404) + 30 s TTL is the reconnect backstop, so a kicked viewer cannot reconnect.
 
+**Collaboration WebSocket (optional, for pointer sharing).** A native client that also joins
+`/ws/room/<slug>` should identify itself in the auth frame so the host roster can tell it apart from
+a browser viewer — it holds both the SSE and the WS, so presence alone no longer distinguishes it:
+
+```jsonc
+{ "type": "auth", "participantId": "…", "token": "…", "client": "farbplay" }
+```
+
+`client` is optional and whitelisted server-side (anything other than `"farbplay"` is stored as
+`null`, so a browser cannot masquerade). It is echoed back on every `participants:update` entry,
+where the viewer UI routes marked participants into the roster's Farbplay section. Omitting it is
+valid — such a client simply renders as an ordinary browser participant. Clients that open no
+WebSocket at all are still listed via their SSE presence.
+
 > **Security note:** SignedPolicy here provides *expiry / replay-limiting*, not secrecy. The OME
 > stream name is the ingest stream key (`OutputStreamName=${OriginStreamName}`), so the key appears
 > in the `streamid` in plaintext — and is already handed to web viewers on join. Treat the room

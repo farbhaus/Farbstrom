@@ -16,9 +16,10 @@ interface ModParticipant {
 
 let waiting: ModParticipant[] = [];
 let kicked: ModParticipant[] = [];
-// Admitted, non-kicked participants (presenter-only). We render the ones with
-// no live WS presence — native SRT (Farbplay) viewers, which never open a WS —
-// so the host can see and kick them.
+// Admitted, non-kicked participants (presenter-only). We render the ones with no
+// live WS presence — Farbplay builds predating pointer collaboration, which open
+// no WS at all — so the host can see and kick them. Current Farbplay builds are
+// identified by their `client` marker on the WS roster instead (gh #227).
 let admitted: ModParticipant[] = [];
 
 function esc(s: string): string {
@@ -48,7 +49,11 @@ export function applyHostMode(): void {
 export function renderRoster(): void {
   const { roster } = viewerStore.get();
   const self = getParticipantId();
-  const inRoom = roster.filter((p) => p.id !== self);
+  // Farbplay holds a WS of its own (pointer collaboration), so it lands in the
+  // roster like any browser viewer — its `client` marker is what keeps it out of
+  // the in-room list and in the Farbplay section below (gh #227).
+  const inRoom = roster.filter((p) => p.id !== self && p.client !== 'farbplay');
+  const fpInRoster = roster.filter((p) => p.id !== self && p.client === 'farbplay');
 
   const inEl = document.getElementById('roster-inroom');
   const inCount = document.getElementById('roster-inroom-count');
@@ -60,12 +65,16 @@ export function renderRoster(): void {
         : inRoom.map((p) => rosterRow(p.id, p.name, p.role)).join('');
   }
 
-  // Connected Farbplay (SRT) viewers: admitted participants with a live SSE
-  // connection but no WS presence. Shown to everyone in a dedicated section so
-  // the roster matches the participant count; the Kick control is host-only.
-  // The whole section is hidden when there are no app viewers.
+  // Connected Farbplay (SRT) viewers, from two sources: the WS roster's `client`
+  // marker, plus admitted participants with SSE presence but no WS at all —
+  // Farbplay builds predating pointer collaboration. The two sets are disjoint by
+  // construction (a marked viewer has WS presence, so it can't be in the second),
+  // so the union needs no dedupe. Shown to everyone in a dedicated section so the
+  // roster matches the participant count; the Kick control is host-only. The
+  // whole section is hidden when there are no app viewers.
   const presentIds = new Set(roster.map((p) => p.id));
-  const srtViewers = admitted.filter((p) => p.id !== self && !presentIds.has(p.id));
+  const legacy = admitted.filter((p) => p.id !== self && !presentIds.has(p.id));
+  const srtViewers = [...fpInRoster.map((p) => ({ id: p.id, name: p.name })), ...legacy];
   const sSection = document.getElementById('roster-srt-section');
   const sEl = document.getElementById('roster-srt');
   const sCount = document.getElementById('roster-srt-count');
@@ -83,10 +92,13 @@ export function renderRoster(): void {
       .join('');
   }
 
-  // Participant-count badge: WS-present (browser) participants plus connected
-  // Farbplay viewers, so the button matches what the roster box shows.
+  // Participant-count badge: browser participants plus connected Farbplay
+  // viewers, so the button matches what the roster box shows. Marked viewers are
+  // subtracted out of `roster` first — they're counted again in srtViewers.
   const numEl = document.getElementById('participant-num');
-  if (numEl) numEl.textContent = String(roster.length + srtViewers.length);
+  if (numEl) {
+    numEl.textContent = String(roster.length - fpInRoster.length + srtViewers.length);
+  }
 
   const wEl = document.getElementById('roster-waiting');
   const wCount = document.getElementById('roster-waiting-count');
