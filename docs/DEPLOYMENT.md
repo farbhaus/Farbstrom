@@ -240,6 +240,14 @@ WebSocket at all are still listed via their SSE presence.
 > in the `streamid` in plaintext — and is already handed to web viewers on join. Treat the room
 > link as a capability and keep slugs unguessable.
 
+Because SignedPolicy rejects an *unsigned* streamid just as it rejects an invalid one, there is no
+static SRT playback URL. For one-off playback outside a room — testing an ingest in ffplay or VLC —
+the admin **Stream Keys → Playback URLs → SRT** row has a **Generate** button
+(`GET /api/stream-keys/<id>/srt-playback`, admin JWT) that mints the same signed streamid with a
+300 s TTL. `url_expire` is only checked at connect time, so a session started inside that window
+keeps running. The streamid is percent-encoded inside the `srt://…?streamid=` URL — its own
+`?policy=…&signature=…` would otherwise be read as SRT socket options.
+
 ### SRT encryption
 
 The SRT legs (encoder → OME, OME → Farbplay) are unencrypted by default. Enable AES from the admin

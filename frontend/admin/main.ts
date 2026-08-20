@@ -176,7 +176,11 @@ function initDelegatedClicks(): void {
   document.addEventListener('click', (e) => {
     const el = (e.target as HTMLElement).closest<HTMLInputElement>('input.url-input');
     if (!el || !el.readOnly) return;
-    copyToClipboard(el.dataset.full ?? el.value);
+    const value = el.dataset.full ?? el.value;
+    // A not-yet-generated row (SRT playback, gh #226) is empty — copying "" there
+    // would just look broken.
+    if (!value) return;
+    copyToClipboard(value);
   });
 
   // Single delegated handler dispatches all data-action clicks to the right module.
@@ -199,6 +203,7 @@ function initDelegatedClicks(): void {
       case 'delete-key':
       case 'reveal-key':
       case 'unblock-key':
+      case 'gen-srt-play':
         handleKeyAction(action, target);
         return;
       case 'kick-stream':

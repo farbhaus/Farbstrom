@@ -1,5 +1,6 @@
 mod common;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -248,4 +249,74 @@ async fn delete_key_succeeds() {
     assert_eq!(res.status_code(), 200);
     let body: Value = res.json();
     assert_eq!(body["ok"], true);
+}
+
+// ---------------------------------------------------------------------------
+// Admin SRT playback URL (gh #226)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn srt_playback_requires_admin() {
+    let state = common::test_state();
+    let (key_id, _) = common::seed_stream_key(&state, "Cam A");
+    let server = common::test_app(state);
+    let res = server
+        .get(&format!("/api/stream-keys/{}/srt-playback", key_id))
+        .await;
+    assert_eq!(res.status_code(), 401);
+}
+
+#[tokio::test]
+async fn srt_playback_returns_404_for_nonexistent() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state);
+    let res = server
+        .get("/api/stream-keys/nonexistent/srt-playback")
+        .add_header("Authorization", format!("Bearer {}", token))
+        .await;
+    assert_eq!(res.status_code(), 404);
+}
+
+#[tokio::test]
+async fn srt_playback_returns_signed_streamid() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let (key_id, key_token) = common::seed_stream_key(&state, "Cam A");
+    let server = common::test_app(state.clone());
+
+    let res = server
+        .get(&format!("/api/stream-keys/{}/srt-playback", key_id))
+        .add_header("Authorization", format!("Bearer {}", token))
+        .await;
+    assert_eq!(res.status_code(), 200);
+
+    let body: Value = res.json();
+    assert_eq!(body["host"], "stream.example.com");
+    assert_eq!(body["port"], 9998);
+    assert_eq!(body["ttlSeconds"], 300);
+
+    // Same shape the Farbplay flow mints (both go through signed_policy):
+    // default/live/<key>?policy=<b64url>&signature=<b64url-hmac>. No `/playlist`
+    // suffix — the SRT publisher's default playlist is named `master`, and
+    // SignedPolicy signs the path, so the two forms are not interchangeable.
+    let streamid = body["streamid"].as_str().unwrap();
+    let (signed, sig) = streamid.split_once("&signature=").unwrap();
+    assert!(signed.starts_with(&format!("default/live/{}?policy=", key_token)));
+    assert!(!streamid.contains("/playlist"));
+
+    let expected = common::expected_signature(&state.config.ome_signed_policy_secret, signed);
+    assert_eq!(sig, expected);
+
+    // Policy decodes to a url_expire ~300 s out (epoch ms).
+    let policy_b64 = signed.split("?policy=").nth(1).unwrap();
+    let policy_json =
+        String::from_utf8(base64::Engine::decode(&URL_SAFE_NO_PAD, policy_b64).unwrap()).unwrap();
+    let policy: Value = serde_json::from_str(&policy_json).unwrap();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let expire = policy["url_expire"].as_u64().unwrap();
+    assert!(expire > now_ms + 290_000 && expire <= now_ms + 300_000);
 }

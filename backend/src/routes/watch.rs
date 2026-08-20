@@ -33,19 +33,12 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
-use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha1::Sha1;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::AppError;
 use crate::state::AppState;
-
-type HmacSha1 = Hmac<Sha1>;
 
 /// Token lifetime. The app re-fetches on every (re)connect, so this only needs
 /// to outlast the SRT handshake.
@@ -56,35 +49,6 @@ struct WatchQuery {
     #[serde(rename = "participantId")]
     participant_id: Option<String>,
     token: Option<String>,
-}
-
-/// Mint an OME SignedPolicy streamid for SRT playback.
-///
-/// The client transmits only the path form `default/live/<stream>?policy=…&signature=…`
-/// as the SRT `streamid`, but OME reconstructs the request URL as
-/// `srt://default/live/<stream>?policy=…` (scheme + vhost as host) and signs
-/// **that** — so the HMAC must be computed over the `srt://`-prefixed URL, not
-/// the bare path. OME then validates the HMAC + `url_expire` on connect.
-/// (Verified against OME v0.20.5 by matching its logged `expected` signature.
-/// Still valid on v0.21.0: its `signed_policy.cpp` is byte-identical to v0.20.5's.
-/// Re-check this the same way whenever the OME pin moves.)
-fn sign_streamid(secret: &str, stream_name: &str, expire_ms: u128) -> Result<String, AppError> {
-    let path = format!("default/live/{}", stream_name);
-    let policy_json = json!({ "url_expire": expire_ms }).to_string();
-    let policy = URL_SAFE_NO_PAD.encode(policy_json);
-
-    // String OME signs (includes the srt:// scheme).
-    let signed_url = format!("srt://{}?policy={}", path, policy);
-    let mut mac = HmacSha1::new_from_slice(secret.as_bytes())
-        .map_err(|e| AppError::Internal(format!("HMAC init error: {}", e)))?;
-    mac.update(signed_url.as_bytes());
-    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-
-    // Streamid the client actually sends (path form, no scheme).
-    Ok(format!(
-        "{}?policy={}&signature={}",
-        path, policy, signature
-    ))
 }
 
 /// GET /:slug?participantId=&token= — admission-gated SRT connection details.
@@ -164,15 +128,10 @@ async fn watch(
     // 404 if no stream key is assigned — there is nothing to watch.
     let stream_name = key_token.ok_or_else(|| AppError::NotFound("Room not found".into()))?;
 
-    let expire_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        + (TTL_SECONDS as u128 * 1000);
-    let streamid = sign_streamid(
+    let streamid = crate::signed_policy::sign_streamid(
         &state.config.ome_signed_policy_secret,
         &stream_name,
-        expire_ms,
+        TTL_SECONDS,
     )?;
 
     // SRT playback details. When playback encryption is enabled (DB-managed,

@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
 use axum_test::TestServer;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use std::sync::Arc;
 
 use stream_backend::auth;
@@ -168,6 +172,17 @@ pub fn seed_participant(
         rusqlite::params![id, room_id, name, role, adm, kick, token],
     ).unwrap();
     (id, token)
+}
+
+/// Recompute the expected HMAC-SHA1 signature for the path-form prefix
+/// (`default/live/<key>?policy=<...>`) of an OME SignedPolicy streamid. OME signs
+/// the `srt://`-prefixed URL, so the recompute must prepend the scheme just like
+/// `signed_policy::sign_streamid` does. Shared by the Farbplay `/api/watch` tests
+/// and the admin `/srt-playback` ones — both mint through the same helper.
+pub fn expected_signature(secret: &str, signed_path: &str) -> String {
+    let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(format!("srt://{}", signed_path).as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
 #[allow(dead_code)]
