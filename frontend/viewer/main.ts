@@ -26,6 +26,7 @@ import {
   configurePlayer,
 } from './player.js';
 import { configurePointer, initPointer } from './pointer.js';
+import { closeScopes, initScopes } from './scopes.js';
 import { initShortcuts } from './shortcuts.js';
 import {
   configureJoinOutcome,
@@ -238,6 +239,7 @@ function leaveRoom(): void {
   closeWs();
   void disconnectLiveKit();
   destroyPlayer();
+  closeScopes();
   showLeft(getState().roomInfo?.name || slug);
 }
 
@@ -338,6 +340,7 @@ function init(): void {
   initLayout();
   initPlayerControls();
   initPointer();
+  initScopes();
   initChat();
   initRoster();
   initConference();
