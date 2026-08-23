@@ -31,3 +31,11 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Ubuntu's numbers are calendar-based, not semver. 22.04 -> 22.10 looks
+      # like a routine minor bump, so it slipped past the wildcard above,
+      # auto-merged (#234) and broke every image build on main: the `.10`
+      # interims are EOL and their apt repos 404. The valkey-builder base is
+      # also glibc-matched to the final OME image, so it cannot advance to a
+      # newer LTS either. Pinned by hand — see the note in the Dockerfile.
+      - dependency-name: "ubuntu"
+        update-types: ["version-update:semver-minor"]
