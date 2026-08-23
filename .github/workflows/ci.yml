@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install mold and clang
         # Required by backend/.cargo/config.toml, which uses mold as the
         # linker for x86_64-unknown-linux-gnu builds.
@@ -36,7 +36,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -61,7 +61,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # cargo-audit is a self-contained binary that reads Cargo.lock — no
       # Rust toolchain or workspace cache needed. Prebuilt install avoids
       # the multi-minute from-source `cargo install` on every run.

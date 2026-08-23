@@ -35,7 +35,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Publish ONLY on a v*.*.* release tag. Pushes to main and PRs build the
       # image as a CI safety net but push nothing to Docker Hub.
@@ -103,7 +103,7 @@ jobs:
     steps:
       # Commit onto main, not the tag: a tag is not a branch, and releases are
       # cut from main so its lockfile is the one the tag was built from.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       - uses: dtolnay/rust-toolchain@stable
