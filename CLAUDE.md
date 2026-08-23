@@ -269,7 +269,17 @@ GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
 - **audit** — `cargo audit` (advisory DB check).
 - **frontend** — `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
-- **licenses** — regenerates `docs/THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
+
+Third-party notices are **not** a CI gate. `docs/THIRD_PARTY_NOTICES.md` is a
+generated file, and gating it per-PR turned CI red on every dependabot cargo
+bump while blocking nothing (`main` is unprotected, so auto-merge shipped the
+drift regardless — that is how a stale line reached `main` and broke unrelated
+PRs). It is now produced where it actually matters: the Dockerfile's
+backend-builder stage generates it from the tree it just compiled and ships it
+at `/usr/share/doc/farbstrom/THIRD_PARTY_NOTICES.md` inside the image, and the
+`notices` job in `docker-single.yml` refreshes the repo copy on `v*.*.*` tags
+only. Regenerate by hand any time with the `cargo about` command above; nothing
+fails if you don't.
 
 ## Updating pinned components
 

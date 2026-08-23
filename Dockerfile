@@ -24,6 +24,25 @@ COPY backend/src/ ./src/
 COPY backend/schema.sql ./
 RUN touch src/main.rs && cargo build --release
 
+# Third-party attribution, generated from the tree that was just compiled.
+# The MIT/BSD/Apache crates linked into the binary above require their notices
+# to travel with binary redistribution, and this image IS that redistribution —
+# so the notices are produced here rather than gated in CI, where a checked-in
+# copy could (and repeatedly did) drift from the actual dependency tree.
+# cargo-about is version-pinned: notice output differs across versions. The musl
+# builds are static, so they run on this Debian base; pick by build arch so an
+# arm64 `make dev` works the same as CI's amd64. about.toml pins the target
+# triples it reports on, so the output is identical on either arch.
+ARG CARGO_ABOUT_VERSION=0.9.0
+COPY backend/about.toml backend/about.hbs ./
+RUN case "$(uname -m)" in \
+        aarch64|arm64) ABOUT_ARCH=aarch64 ;; \
+        *)             ABOUT_ARCH=x86_64  ;; \
+    esac \
+    && curl -fsSL "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/cargo-about-${CARGO_ABOUT_VERSION}-${ABOUT_ARCH}-unknown-linux-musl.tar.gz" \
+        | tar -xz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-about' \
+    && cargo about generate about.hbs -o /app/THIRD_PARTY_NOTICES.md
+
 # ------------------------------------------------------------------------------
 # Stage 2 — Valkey builder
 # ------------------------------------------------------------------------------
@@ -89,6 +108,10 @@ COPY --from=caddy-src /usr/bin/caddy /usr/local/bin/caddy
 # Backend binary + schema
 COPY --from=backend-builder /app/target/release/stream-backend /usr/local/bin/stream-backend
 COPY --from=backend-builder /app/schema.sql /app/schema.sql
+
+# Dependency attribution notices, so the published image carries the licences of
+# what is compiled into it (see the generating stage above).
+COPY --from=backend-builder /app/THIRD_PARTY_NOTICES.md /usr/share/doc/farbstrom/THIRD_PARTY_NOTICES.md
 
 # Static web assets (HTML/CSS), then the freshly compiled JS bundle on top.
 COPY www/ /www/
