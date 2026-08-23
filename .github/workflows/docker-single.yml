@@ -48,7 +48,7 @@ jobs:
             echo "push=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to Docker Hub
         if: steps.pub.outputs.push == 'true'
