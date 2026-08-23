@@ -46,7 +46,12 @@ RUN case "$(uname -m)" in \
 # ------------------------------------------------------------------------------
 # Stage 2 — Valkey builder
 # ------------------------------------------------------------------------------
-FROM ubuntu:22.10 AS valkey-builder
+# Pinned to 22.04 LTS by hand, and NOT floatable in either direction: the
+# `.10` interim releases go EOL fast (their apt repos move to old-releases and
+# every `apt-get update` 404s — that is what a dependabot 22.04 -> 22.10 bump did
+# to main in #234), while a newer LTS would compile valkey against a glibc the
+# final OME image does not have. Dependabot ignores `ubuntu` accordingly.
+FROM ubuntu:22.04 AS valkey-builder
 RUN apt-get update && apt-get install -y build-essential curl && rm -rf /var/lib/apt/lists/*
 ARG VALKEY_VERSION
 # Build from source against this base's glibc (an alpine/musl prebuilt won't run
