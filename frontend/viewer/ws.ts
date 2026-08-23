@@ -3,7 +3,7 @@
 
 import { addFileToSection, appendChatHistory, appendChatMessage, appendFileMessage, loadSessionFiles, removeFileEverywhere, setChatEnabled } from './chat.js';
 import { disconnectLiveKit, requestAutoFocus, requestSelfUnmute, setFocus, syncConferenceTiles } from './conference.js';
-import { applyDisplayState, destroyPlayer, reloadPlayer } from './player.js';
+import { applyDisplayState, destroyPlayer, remountLivePlayer } from './player.js';
 import { applyModerationUpdate } from './roster.js';
 import { clearAllPointers, hidePointer, pruneCursorsToRoster, renderPointer } from './pointer.js';
 import {
@@ -118,7 +118,9 @@ function handleMessage(msg: WsMessage): void {
       return;
     case 'room:live':
       onRoomLive();
-      reloadPlayer();
+      // Remount rather than reload: the stream may be a different one than
+      // the player is holding, and only a remount re-runs the codec probe.
+      remountLivePlayer();
       return;
     case 'room:pending':
       onRoomPending();

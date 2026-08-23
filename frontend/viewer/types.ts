@@ -66,6 +66,8 @@ export interface RosterEntry {
   id: string;
   name: string;
   role: Role;
+  /** Native client id ("farbplay"); absent or null for browser viewers (gh #227). */
+  client?: string | null;
 }
 
 export interface SessionFile {
@@ -100,7 +102,8 @@ export type WsMessage =
       waiting: { id: string; name: string }[];
       kicked: { id: string; name: string }[];
       // Admitted, non-kicked participants. The roster shows the ones not in the
-      // live WS presence list — i.e. native SRT (Farbplay) viewers.
+      // live WS presence list — Farbplay builds predating pointer collaboration,
+      // which open no WS. Current ones are marked on the WS roster (gh #227).
       admitted: { id: string; name: string }[];
       newWaiting: string[];
     }

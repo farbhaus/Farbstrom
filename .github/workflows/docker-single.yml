@@ -22,7 +22,9 @@ on:
       - 'caddy/**'
       - 'Dockerfile'
       - 'entrypoint.sh'
+      - 'ome_start.sh'
       - 'supervisord.conf'
+      - 'docker-compose*.yml'
       - '.dockerignore'
       - '.github/workflows/docker-single.yml'
 
@@ -80,3 +82,52 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Refresh the repo-visible attribution file on a release tag.
+  #
+  # The image generates its own copy at build time (Dockerfile stage 1) — that
+  # is the one that matters for compliance, since it ships inside the artifact
+  # being redistributed. This job only keeps docs/THIRD_PARTY_NOTICES.md, which
+  # README and CONTRIBUTING link to, in step with the release.
+  #
+  # Deliberately NOT a per-PR diff gate. It used to be one in ci.yml, and every
+  # dependabot cargo bump turned CI red for a generated file — while blocking
+  # nothing, since main is unprotected and auto-merge shipped the drift anyway
+  # (that is how a stale uuid line reached main and broke unrelated PRs).
+  notices:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Commit onto main, not the tag: a tag is not a branch, and releases are
+      # cut from main so its lockfile is the one the tag was built from.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Install cargo-about
+        # Pinned to match the Dockerfile's CARGO_ABOUT_VERSION — notice output
+        # differs across versions, so an unpinned binary would churn the file.
+        run: |
+          curl -fsSL https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.0/cargo-about-0.9.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-about'
+      - name: Regenerate third-party notices
+        run: cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
+        working-directory: backend
+      - name: Commit if changed
+        # Pushes with GITHUB_TOKEN do not trigger workflows, so this cannot loop.
+        run: |
+          if git diff --quiet -- docs/THIRD_PARTY_NOTICES.md; then
+            echo "Notices already current — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/THIRD_PARTY_NOTICES.md
+          git commit -m "chore(licenses): refresh third-party notices for ${GITHUB_REF_NAME}"
+          git push origin HEAD:main

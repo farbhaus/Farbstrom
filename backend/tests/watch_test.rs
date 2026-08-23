@@ -2,11 +2,7 @@ mod common;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use hmac::{Hmac, Mac};
 use serde_json::Value;
-use sha1::Sha1;
-
-type HmacSha1 = Hmac<Sha1>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -36,15 +32,6 @@ fn set_room_expiry(
         rusqlite::params![expires_at, room_id],
     )
     .unwrap();
-}
-
-/// Recompute the expected HMAC-SHA1 signature for the path-form prefix
-/// (`default/live/<key>?policy=<...>`). OME signs the `srt://`-prefixed URL, so
-/// the recompute must prepend the scheme just like the endpoint does.
-fn expected_signature(secret: &str, signed_path: &str) -> String {
-    let mut mac = HmacSha1::new_from_slice(secret.as_bytes()).unwrap();
-    mac.update(format!("srt://{}", signed_path).as_bytes());
-    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
 fn watch_url(slug: &str, participant_id: &str, token: &str) -> String {
@@ -156,7 +143,7 @@ async fn admitted_participant_gets_signed_srt_details() {
     let (signed, sig) = streamid.split_once("&signature=").unwrap();
     assert!(signed.starts_with(&format!("default/live/{}?policy=", key_token)));
 
-    let expected = expected_signature(&state.config.ome_signed_policy_secret, signed);
+    let expected = common::expected_signature(&state.config.ome_signed_policy_secret, signed);
     assert_eq!(sig, expected);
 
     // Policy decodes to a future url_expire (epoch ms).

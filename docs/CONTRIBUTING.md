@@ -78,4 +78,7 @@ cd backend
 cargo about generate about.hbs -o ../docs/THIRD_PARTY_NOTICES.md
 ```
 
-Run this whenever dependencies change.
+You do **not** have to run it to get a green CI — the notices are a generated
+file, not a gate. The published Docker image generates its own copy at build
+time, and the release workflow refreshes the committed one on each `v*.*.*`
+tag, so a dependency bump never needs a follow-up "regenerate notices" commit.

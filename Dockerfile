@@ -7,10 +7,10 @@
 # .env: CADDY_TAG / LIVEKIT_TAG / OME_TAG / VALKEY_TAG). NOTE: deploy hosts that
 # PULL farbhaus/farbstrom get whatever CI baked — pin the whole image there with
 # FARBSTROM_TAG; the *_TAG vars only affect a local/source build.
-ARG OME_VERSION=v0.20.5
-ARG LIVEKIT_VERSION=v1.12.0
-ARG CADDY_VERSION=2.11.3
-ARG VALKEY_VERSION=8.1.7
+ARG OME_VERSION=v0.21.0
+ARG LIVEKIT_VERSION=v1.13.5
+ARG CADDY_VERSION=2.11.4
+ARG VALKEY_VERSION=9.1.1
 
 # ------------------------------------------------------------------------------
 # Stage 1 — Backend builder (Debian-based, matches final glibc)
@@ -23,6 +23,25 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release 2>/d
 COPY backend/src/ ./src/
 COPY backend/schema.sql ./
 RUN touch src/main.rs && cargo build --release
+
+# Third-party attribution, generated from the tree that was just compiled.
+# The MIT/BSD/Apache crates linked into the binary above require their notices
+# to travel with binary redistribution, and this image IS that redistribution —
+# so the notices are produced here rather than gated in CI, where a checked-in
+# copy could (and repeatedly did) drift from the actual dependency tree.
+# cargo-about is version-pinned: notice output differs across versions. The musl
+# builds are static, so they run on this Debian base; pick by build arch so an
+# arm64 `make dev` works the same as CI's amd64. about.toml pins the target
+# triples it reports on, so the output is identical on either arch.
+ARG CARGO_ABOUT_VERSION=0.9.0
+COPY backend/about.toml backend/about.hbs ./
+RUN case "$(uname -m)" in \
+        aarch64|arm64) ABOUT_ARCH=aarch64 ;; \
+        *)             ABOUT_ARCH=x86_64  ;; \
+    esac \
+    && curl -fsSL "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/cargo-about-${CARGO_ABOUT_VERSION}-${ABOUT_ARCH}-unknown-linux-musl.tar.gz" \
+        | tar -xz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-about' \
+    && cargo about generate about.hbs -o /app/THIRD_PARTY_NOTICES.md
 
 # ------------------------------------------------------------------------------
 # Stage 2 — Valkey builder
@@ -41,7 +60,7 @@ RUN VER="${VALKEY_VERSION%%-*}" \
 # Stage 3 — Frontend builder (tsc → www/dist), so the image is self-contained:
 # no Node needed on CI or deploy hosts. outDir is ../www/dist → /www/dist here.
 # ------------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -89,6 +108,10 @@ COPY --from=caddy-src /usr/bin/caddy /usr/local/bin/caddy
 # Backend binary + schema
 COPY --from=backend-builder /app/target/release/stream-backend /usr/local/bin/stream-backend
 COPY --from=backend-builder /app/schema.sql /app/schema.sql
+
+# Dependency attribution notices, so the published image carries the licences of
+# what is compiled into it (see the generating stage above).
+COPY --from=backend-builder /app/THIRD_PARTY_NOTICES.md /usr/share/doc/farbstrom/THIRD_PARTY_NOTICES.md
 
 # Static web assets (HTML/CSS), then the freshly compiled JS bundle on top.
 COPY www/ /www/

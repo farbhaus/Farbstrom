@@ -1,11 +1,13 @@
 //! In-memory presence registry for native SRT (Farbplay) viewers.
 //!
 //! Browser viewers signal presence by holding a WebSocket open (tracked in
-//! `ws::WS_ROOMS`). Native SRT viewers never open a WS — but per the Farbplay
-//! contract they hold the admission SSE
+//! `ws::WS_ROOMS`). Native SRT viewers instead hold the admission SSE
 //! (`GET /api/public/rooms/:slug/waiting/events/:pid`) open for the entire
-//! session, so that connection *is* their heartbeat: registered while the SSE
-//! stream is alive, removed when it drops (quit / network loss).
+//! session per the Farbplay contract, so that connection *is* their heartbeat:
+//! registered while the SSE stream is alive, removed when it drops (quit /
+//! network loss). Current Farbplay builds also open a WS (pointer
+//! collaboration, gh #227) and are marked there with `client: "farbplay"`, but
+//! the SSE remains the heartbeat every build holds.
 //!
 //! The host roster's "admitted" list is scoped to the IDs present here so it
 //! shows only currently-connected SRT viewers (see `ws.rs` `moderation:update`).

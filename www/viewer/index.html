@@ -7,9 +7,13 @@
 <link rel="icon" type="image/svg+xml" href="/shared/favicon.svg">
 <link rel="icon" type="image/png" href="/shared/favicon.png">
 <link rel="apple-touch-icon" href="/shared/favicon.png">
-<script src="https://cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5/dist/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.19/dist/livekit-client.umd.min.js"></script>
+<!-- OvenPlayer is pinned EXACTLY, unlike the two below: its DOM class names are
+     load-bearing for the chrome-hiding CSS in this page's <style> block
+     (.op-ui, .op-spinner-container, .op-bigbutton-container) and they have
+     drifted before. Bump it deliberately, and re-check that CSS when you do. -->
+<script src="https://cdn.jsdelivr.net/npm/ovenplayer@0.10.53/dist/ovenplayer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.21/dist/livekit-client.umd.min.js"></script>
 <link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/shared/components.css">
 <link rel="stylesheet" href="/shared/utils.css">
@@ -850,6 +854,95 @@ body.has-focus.strip-hidden #stage-strip {
     white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 
+/* ---- Scopes window (#229) ----
+   Floating tool window over the stage. Sits on --z-overlay: above the toolbar
+   pill (a window the user parks where they like has to be able to cover it),
+   below the full-page screens and modals. */
+#scopes-window {
+    position: fixed;
+    display: flex; flex-direction: column;
+    background: var(--pill-bg); border: var(--bw-hair) solid var(--pill-border);
+    border-radius: var(--r-card);
+    backdrop-filter: blur(var(--pill-blur)); -webkit-backdrop-filter: blur(var(--pill-blur));
+    z-index: var(--z-overlay);
+    overflow: hidden;
+}
+#scopes-window.hidden { display: none; }
+
+#scopes-head {
+    display: flex; align-items: center; gap: var(--sp-1-5);
+    padding: var(--sp-1-5) var(--sp-2);
+    border-bottom: var(--bw-hair) solid var(--border);
+    /* touch-action:none is what lets a finger drag the window instead of
+       scrolling the page behind it. */
+    cursor: move; user-select: none; touch-action: none;
+    /* Wrap rather than overflow: at the 240px minimum width the chips need a
+       second row, and the window itself clips overflow. */
+    flex-wrap: wrap;
+}
+.scopes-title { font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--text); white-space: nowrap; }
+/* In a narrow window the title is the first thing worth losing — the badges
+   and chips are not. */
+#scopes-window.narrow .scopes-title { display: none; }
+.scopes-chips { display: flex; gap: var(--sp-1); margin-left: auto; }
+.scope-chip {
+    background: var(--surface2); border: var(--bw-control) solid var(--border);
+    border-radius: var(--r-control); color: var(--dim);
+    font-family: var(--ff); font-size: var(--fs-xs);
+    padding: var(--sp-1) var(--sp-2); cursor: pointer; white-space: nowrap;
+    transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.scope-chip:hover { border-color: var(--dim); color: var(--text); }
+.scope-chip.is-active { border-color: var(--accent); color: var(--accent); }
+.scope-chip:focus-visible { outline: none; box-shadow: var(--ring-accent); }
+
+/* Vectorscope zoom. Hidden for the other scopes, where it means nothing. */
+.scopes-zoom { display: none; align-items: center; gap: var(--sp-1); }
+#scopes-window.is-vector .scopes-zoom { display: flex; }
+.scopes-zoom .scope-chip { padding: var(--sp-1) var(--sp-1-5); }
+#scopes-zoom-label {
+    font-family: var(--ff-mono); font-size: var(--fs-2xs); color: var(--dim);
+    min-width: var(--sp-7); text-align: center; font-variant-numeric: tabular-nums;
+}
+/* Sampling resolution. Tabular so cycling 1:1 -> 1:2 -> 1:4 doesn't reflow the
+   header, and set apart from the scope chips — it's a mode, not a selection. */
+.scopes-res {
+    font-family: var(--ff-mono); font-variant-numeric: tabular-nums;
+    font-size: var(--fs-2xs); padding: var(--sp-1) var(--sp-1-5);
+}
+
+/* One scope at a time, its drawing area locked to 16:9 — the window's own
+   height follows its width (fitGeometry in scopes.ts), so the canvas simply
+   fills what's left below the header. */
+#scopes-body {
+    /* No padding: the canvas must fill the body exactly, or the 16:9 the window
+       height is computed for would be off by the padding on each axis. The
+       window's own overflow:hidden rounds the bottom corners. */
+    flex: 1; min-height: 0; padding: 0;
+    background: var(--media-bg);
+}
+#scopes-canvas { display: block; width: 100%; height: 100%; }
+/* "Nothing to measure" state. Driven by a class on the window rather than
+   .u-hidden, which is a class selector and would lose to these id rules —
+   .u-hidden deliberately carries no !important. */
+#scopes-placeholder { display: none; }
+#scopes-window.no-source #scopes-body { display: none; }
+#scopes-window.no-source #scopes-placeholder {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: var(--dim); font-size: var(--fs-sm);
+}
+#scopes-grip {
+    position: absolute; right: 0; bottom: 0;
+    width: var(--sp-4); height: var(--sp-4);
+    cursor: nwse-resize; touch-action: none;
+}
+#scopes-grip::after {
+    content: ''; position: absolute; right: var(--sp-1); bottom: var(--sp-1);
+    width: var(--sp-2); height: var(--sp-2);
+    border-right: var(--bw-control) solid var(--dim);
+    border-bottom: var(--bw-control) solid var(--dim);
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 700px) {
     /* Omit the brand logo (frees room for Leave) and spread the remaining items
@@ -1301,6 +1394,12 @@ body.has-focus.strip-hidden #stage-strip {
             <button class="tb-btn" id="pointer-btn" title="Pointer (D)">
                 <svg viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6" stroke-linecap="round"/></svg>
             </button>
+            <button class="tb-btn" id="scopes-btn" title="Scopes (W)">
+                <!-- Waveform monitor: a screen with a graticule and a stepped
+                     luma trace across it. The stepped trace is what makes it
+                     read as a scope rather than a generic line chart. -->
+                <svg viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M2.5 12h19" stroke-dasharray="2 2.5" opacity="0.45"/><path d="M6 16.6h2.2V10h2.2v3.4h2.2V7.6h2.2v4.6H18"/></svg>
+            </button>
             <button class="tb-btn" id="focus-btn" title="Toggle focus view (X)">
                 <!-- Shown in grid view (click to enter focus): strip-and-main icon. -->
                 <svg class="fb-icon-focus" viewBox="0 0 24 24"><rect x="3" y="4" width="3" height="5" rx="0.5"/><rect x="3" y="10.5" width="3" height="5" rx="0.5"/><rect x="3" y="17" width="3" height="3" rx="0.5"/><rect x="8" y="4" width="13" height="16" rx="1"/></svg>
@@ -1362,6 +1461,38 @@ body.has-focus.strip-hidden #stage-strip {
     <div id="chat-drop-overlay" aria-hidden="true">
         <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         <span>Drop to attach</span>
+    </div>
+
+    <!-- Scopes window (#229) — floating video analysis for the stream tile.
+         Draggable by the header, resizable from the corner grip; geometry, the
+         enabled scopes and the colour settings persist in localStorage. The
+         "display-mapped" badge is load-bearing, not decoration: a canvas
+         readback is the browser's tone-mapped output, so absolute nits are not
+         measurable on that path — see the header of frontend/viewer/scopes.ts. -->
+    <div id="scopes-window" class="hidden" role="dialog" aria-label="Scopes">
+        <div id="scopes-head">
+            <span class="scopes-title">Scopes</span>
+            <div class="scopes-chips">
+                <button class="scope-chip" data-scope="luma">Luma</button>
+                <button class="scope-chip" data-scope="parade">RGB</button>
+                <button class="scope-chip" data-scope="vector">Vector</button>
+            </div>
+            <!-- Vectorscope only; shown via #scopes-window.is-vector. -->
+            <div class="scopes-zoom" id="scopes-zoom">
+                <button class="scope-chip" data-zoom="out" title="Zoom out" aria-label="Zoom out">&minus;</button>
+                <span id="scopes-zoom-label">1&times;</span>
+                <button class="scope-chip" data-zoom="in" title="Zoom in" aria-label="Zoom in">+</button>
+            </div>
+            <!-- Sampling resolution. Cycles 1:1 -> 1:2 -> 1:4; lower samples
+                 fewer pixels per frame, which is the main performance dial. -->
+            <button class="scope-chip scopes-res" id="scopes-res">1:1</button>
+            <button class="btn-icon btn-icon-sm btn-icon-ghost" id="scopes-close" title="Close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div id="scopes-body"><canvas id="scopes-canvas"></canvas></div>
+        <div id="scopes-placeholder">Waiting for video&hellip;</div>
+        <div id="scopes-grip" aria-hidden="true"></div>
     </div>
 
 </div><!-- /app -->

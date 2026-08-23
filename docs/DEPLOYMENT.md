@@ -173,6 +173,15 @@ Firewall ports (the script opens these via ufw/firewalld when active): tcp `80 4
 | RTMP | `1935/tcp` | Universal encoder support. URL: `rtmp://<host>:1935/live`, stream name = stream key |
 | WHIP | via Caddy `/live/*` | OBS 30+, browser-based encoders |
 
+**Codecs.** Video is passed through untouched (`<Bypass>true</Bypass>`), so whatever the encoder
+sends is what every viewer's browser must decode. H.264 is the safe default. H.265 works everywhere
+in Farbplay and in browsers with hardware HEVC decode. **AV1 (new in OME v0.21.0) is experimental
+and WHIP / enhanced-RTMP only — SRT cannot carry it**, because OME's SRT ingest is MPEG-TS and its
+demuxer has no AV1 support. AV1 is also undecodable in Safari without M3-or-later hardware, so
+roughly three quarters of macOS viewers would see nothing; the admin dashboard flags an AV1 ingest
+and the viewer shows an explicit message rather than a black tile. Transcoding *to* AV1 is not an
+option either — OME's only AV1 encoder is libaom in non-realtime mode.
+
 ### Native SRT playback (Farbplay room link)
 
 The native HDR SRT viewer [Farbplay] connects from a room link instead of a raw SRT URL, and
@@ -212,10 +221,32 @@ non-kicked participant. Missing `participantId`/`token` or a kicked/not-yet-admi
 Kick and room-end ride the existing SSE (`kicked` / `room_ended`) for an instant self-disconnect;
 the gated GET (403/404) + 30 s TTL is the reconnect backstop, so a kicked viewer cannot reconnect.
 
+**Collaboration WebSocket (optional, for pointer sharing).** A native client that also joins
+`/ws/room/<slug>` should identify itself in the auth frame so the host roster can tell it apart from
+a browser viewer — it holds both the SSE and the WS, so presence alone no longer distinguishes it:
+
+```jsonc
+{ "type": "auth", "participantId": "…", "token": "…", "client": "farbplay" }
+```
+
+`client` is optional and whitelisted server-side (anything other than `"farbplay"` is stored as
+`null`, so a browser cannot masquerade). It is echoed back on every `participants:update` entry,
+where the viewer UI routes marked participants into the roster's Farbplay section. Omitting it is
+valid — such a client simply renders as an ordinary browser participant. Clients that open no
+WebSocket at all are still listed via their SSE presence.
+
 > **Security note:** SignedPolicy here provides *expiry / replay-limiting*, not secrecy. The OME
 > stream name is the ingest stream key (`OutputStreamName=${OriginStreamName}`), so the key appears
 > in the `streamid` in plaintext — and is already handed to web viewers on join. Treat the room
 > link as a capability and keep slugs unguessable.
+
+Because SignedPolicy rejects an *unsigned* streamid just as it rejects an invalid one, there is no
+static SRT playback URL. For one-off playback outside a room — testing an ingest in ffplay or VLC —
+the admin **Stream Keys → Playback URLs → SRT** row has a **Generate** button
+(`GET /api/stream-keys/<id>/srt-playback`, admin JWT) that mints the same signed streamid with a
+300 s TTL. `url_expire` is only checked at connect time, so a session started inside that window
+keeps running. The streamid is percent-encoded inside the `srt://…?streamid=` URL — its own
+`?policy=…&signature=…` would otherwise be read as SRT socket options.
 
 ### SRT encryption
 

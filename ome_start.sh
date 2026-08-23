@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # OME reads its SRT passphrase from ${env:SRT_*_PASSPHRASE} in Server.xml at
-# process startup only — v0.20.5 can't hot-reload the config and its REST API
+# process startup only — v0.21.0 can't hot-reload the config and its REST API
 # rejects bind changes. So SRT encryption is DB-managed by the backend (gh #208),
 # which owns the runtime value: it writes /data/srt.env and restarts *this*
 # supervisor program to apply a change. Source that file so each (re)start picks

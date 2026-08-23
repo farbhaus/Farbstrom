@@ -37,14 +37,22 @@ let isScrubbing = false;
 let lastFileState: DisplayFileState | null = null;
 let fileSyncPending = false;
 
+// Set when the browser can't decode a codec the stream is actually using, so
+// the error handler stops retrying a source that will never play. Cleared on
+// every (re)mount.
+let blockedCodec: string | null = null;
+
 let onPlayingChange: () => void = () => {};
+let onPlaybackBlocked: (message: string | null) => void = () => {};
 let wsSend: (msg: WsClientMessage) => void = () => {};
 
 export function configurePlayer(opts: {
   onPlayingChange: () => void;
+  onPlaybackBlocked: (message: string | null) => void;
   send: (msg: WsClientMessage) => void;
 }): void {
   onPlayingChange = opts.onPlayingChange;
+  onPlaybackBlocked = opts.onPlaybackBlocked;
   wsSend = opts.send;
 }
 
@@ -98,6 +106,8 @@ export function destroyPlayer(): void {
   currentFileId = null;
   lastFileState = null;
   fileSyncPending = false;
+  blockedCodec = null;
+  onPlaybackBlocked(null);
 }
 
 // Reload current source. For live mode that pings OvenPlayer's load();
@@ -134,6 +144,135 @@ export function initPlayer(): void {
   initLivePlayer();
 }
 
+// Tear down and mount again, for the two events that mean "this is a different
+// stream than the one you have": the room going live, and a stream key being
+// assigned or swapped.
+//
+// `reloadPlayer` is not enough for either. It calls `player.load()` when an
+// instance already exists, which re-fetches the same source but never re-runs
+// the codec probe — so a viewer sitting in the room while the stream was down
+// (probe found no playlist, gave up) would keep a mounted player and get no
+// warning when an undecodable stream came up. Likewise `initPlayer` no-ops when
+// a player exists, so a key swap left the old key mounted.
+//
+// Skips the remount when playback is already healthy, so a duplicate room:live
+// can't cause a visible blip for someone happily watching.
+export function remountLivePlayer(): void {
+  if (viewerStore.get().displayFile) return;
+  try {
+    if (player && player.getState() === 'playing') return;
+  } catch {
+    // getState can throw on a half-torn-down instance; fall through and remount.
+  }
+  destroyPlayerInstance();
+  blockedCodec = null;
+  onPlaybackBlocked(null);
+  mode = null;
+  initLivePlayer();
+}
+
+// ---- Codec support probe ---------------------------------------------------
+
+// The LL-HLS master playlist names the exact codecs OME is packaging (avc1.*,
+// hvc1.*, av01.*). Browser support for those diverges sharply — Safari ships no
+// AV1 software decoder and needs M3-or-later hardware, and HEVC is
+// hardware-gated nearly everywhere — so a perfectly healthy stream can render
+// as a permanent black tile. Nothing else in the pipeline can tell the viewer
+// that: OvenPlayer just errors, and the handler below would retry every 8 s
+// forever.
+//
+// OME publishes LL-HLS for every stream regardless of the room's delivery mode,
+// so this playlist is the codec source of truth for WebRTC rooms too.
+async function playlistCodecs(playlistUrl: string): Promise<string[]> {
+  let manifest: string;
+  try {
+    const res = await fetch(playlistUrl);
+    // Not live yet, or a transient blip — that's the retry loop's job, not ours.
+    if (!res.ok) return [];
+    manifest = await res.text();
+  } catch {
+    return [];
+  }
+  const codecs = new Set<string>();
+  for (const match of manifest.matchAll(/CODECS="([^"]+)"/g)) {
+    const list = match[1];
+    if (!list) continue;
+    for (const codec of list.split(',')) codecs.add(codec.trim());
+  }
+  return [...codecs];
+}
+
+const isAudioCodec = (codec: string): boolean => /^(mp4a|opus|ac-3|ec-3)/.test(codec);
+
+// LL-HLS goes through MSE, which takes the playlist's codec strings verbatim.
+// Returns the first codec this browser can't decode, or null.
+function unplayableViaMse(codecs: string[]): string | null {
+  if (typeof MediaSource === 'undefined') return null;
+  for (const codec of codecs) {
+    const container = isAudioCodec(codec) ? 'audio/mp4' : 'video/mp4';
+    if (!MediaSource.isTypeSupported(`${container}; codecs="${codec}"`)) return codec;
+  }
+  return null;
+}
+
+// Playlist fourcc -> the mime type WebRTC negotiates under. The two namespaces
+// are unrelated, so the mapping has to be explicit.
+const WEBRTC_MIME: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^avc[13]/, 'video/h264'],
+  [/^(hvc1|hev1)/, 'video/h265'],
+  [/^av01/, 'video/av1'],
+  [/^vp0?8/, 'video/vp8'],
+  [/^vp0?9/, 'video/vp9'],
+];
+
+// WebRTC negotiates codecs in SDP, so MSE support is the wrong question — what
+// matters is whether the browser will *accept* the codec in its answer. When it
+// won't, OME finds no matching rendition and 403s the session, which is the
+// Firefox-plus-H.265 case that looks like a dead stream.
+//
+// Audio is deliberately ignored: OME transcodes to Opus for WebRTC while the
+// playlist advertises the AAC variant, so the playlist's audio entry says
+// nothing about this path.
+//
+// Fails open. Only blocks when the browser reports a non-empty codec list that
+// doesn't contain ours — an unknown fourcc, a missing API, or an empty list all
+// mean "let it try". A false "can't play" on a working stream would be worse
+// than the black tile this replaces.
+//
+// Catches codec mismatch, NOT profile mismatch: getCapabilities exposes no
+// profile detail for HEVC, so a browser advertising video/h265 can still fail on
+// profile 4 (Range Extensions, 4:2:2). Don't treat this guard as total.
+function unplayableViaWebrtc(codecs: string[]): string | null {
+  if (typeof RTCRtpReceiver === 'undefined' || !RTCRtpReceiver.getCapabilities) return null;
+  const supported = RTCRtpReceiver.getCapabilities('video')?.codecs ?? [];
+  if (supported.length === 0) return null;
+  const mimes = new Set(supported.map((c) => c.mimeType.toLowerCase()));
+
+  for (const codec of codecs) {
+    if (isAudioCodec(codec)) continue;
+    const mapped = WEBRTC_MIME.find(([re]) => re.test(codec))?.[1];
+    if (mapped && !mimes.has(mapped)) return codec;
+  }
+  return null;
+}
+
+function codecLabel(codec: string): string {
+  if (codec.startsWith('av01')) return 'AV1';
+  if (codec.startsWith('hvc1') || codec.startsWith('hev1')) return 'H.265 (HEVC)';
+  if (codec.startsWith('avc1')) return 'H.264';
+  return codec;
+}
+
+// Bumped on every (re)mount and teardown so a poll still in flight from a
+// previous stream can't apply its verdict to the current one.
+let probeGeneration = 0;
+
+// Polled while a stream is starting, so the interval is the granularity of
+// perceived startup: at 1000ms a stream ready at 1.65s isn't mounted until 2s.
+// The request is a small playlist fetch and only runs during startup.
+const PROBE_INTERVAL_MS = 250;
+const PROBE_TIMEOUT_MS = 30000;
+
 // ---- Live broadcast mount --------------------------------------------------
 
 function initLivePlayer(): void {
@@ -153,13 +292,70 @@ function initLivePlayer(): void {
     return;
   }
 
+  mode = 'live';
+  currentFileId = null;
+  blockedCodec = null;
+  onPlaybackBlocked(null);
+  // Don't mount yet — wait until OME has actually packaged the stream. See
+  // waitForStreamThenMount.
+  waitForStreamThenMount(streamKey, deliveryMode === 'llhls');
+}
+
+// The room flips to 'live' the moment OME *admits* the ingest, but the stream
+// isn't playable for a moment after that. Mounting straight away means
+// OvenPlayer fails against a stream that isn't there and then sits on its 8s
+// `connectionTimeout` before trying again — which is why a stream start took a
+// stopwatch-measured 11s, and up to 17s when it burned two retries, even though
+// the stream itself was ready in well under a second.
+//
+// So: poll until the stream is packaged, then mount once, already knowing the
+// codec. First frame now tracks OME's actual readiness instead of a retry
+// timer, and the codec verdict is available at mount time rather than after a
+// mount-then-tear-down flash.
+function waitForStreamThenMount(streamKey: string, isLlhls: boolean): void {
+  const generation = ++probeGeneration;
+  const host = location.host;
+  const proto = location.protocol === 'https:' ? 'https' : 'http';
+  const url = `${proto}://${host}/live/${streamKey}/llhls.m3u8`;
+  const deadline = Date.now() + PROBE_TIMEOUT_MS;
+
+  const attempt = async (): Promise<void> => {
+    if (generation !== probeGeneration || mode !== 'live') return;
+    const codecs = await playlistCodecs(url);
+    if (generation !== probeGeneration || mode !== 'live') return;
+
+    if (codecs.length === 0) {
+      if (Date.now() < deadline) {
+        setTimeout(() => void attempt(), PROBE_INTERVAL_MS);
+      } else {
+        // Never showed up. Mount anyway rather than leaving a permanently dead
+        // tile — LL-HLS could be disabled, or this could be a stream shape the
+        // playlist doesn't describe. The player's own retry takes it from here.
+        mountLivePlayer(streamKey, isLlhls);
+      }
+      return;
+    }
+
+    const codec = isLlhls ? unplayableViaMse(codecs) : unplayableViaWebrtc(codecs);
+    if (codec) {
+      blockedCodec = codec;
+      onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
+      return;
+    }
+    mountLivePlayer(streamKey, isLlhls);
+  };
+
+  void attempt();
+}
+
+function mountLivePlayer(streamKey: string, isLlhls: boolean): void {
+  if (player || mode !== 'live') return;
   const host = location.host;
   const proto = location.protocol === 'https:' ? 'https' : 'http';
   const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const sources =
-    deliveryMode === 'llhls'
-      ? [{ type: 'll-hls', file: `${proto}://${host}/live/${streamKey}/llhls.m3u8` }]
-      : [{ type: 'webrtc', file: `${wsproto}://${host}/live/${streamKey}` }];
+  const sources = isLlhls
+    ? [{ type: 'll-hls', file: `${proto}://${host}/live/${streamKey}/llhls.m3u8` }]
+    : [{ type: 'webrtc', file: `${wsproto}://${host}/live/${streamKey}` }];
 
   player = OvenPlayer.create('player', {
     autoStart: true,
@@ -170,8 +366,6 @@ function initLivePlayer(): void {
     webrtcConfig: { timeoutMaxRetry: 3, connectionTimeout: 8000 },
     hlsConfig: { liveSyncDuration: 1, liveMaxLatencyDuration: 2, maxLiveSyncPlaybackRate: 1 },
   });
-  mode = 'live';
-  currentFileId = null;
 
   enablePlayerControls(true);
   showSeekBar(false);
@@ -187,8 +381,9 @@ function initLivePlayer(): void {
       onPlayingChange();
     } else if (e?.newstate === 'error') {
       // Retry silently. Offline overlay is driven by setRoomStatus /
-      // room:pending — don't race it from here.
-      if (viewerStore.get().status !== 'ended') {
+      // room:pending — don't race it from here. A codec this browser can't
+      // decode is the one error retrying can never fix, so don't loop on it.
+      if (viewerStore.get().status !== 'ended' && !blockedCodec) {
         retryTimer = setTimeout(reloadPlayer, 8000);
       }
     }

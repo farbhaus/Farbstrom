@@ -30,16 +30,22 @@ pub struct WsParticipant {
     pub id: String,
     pub name: String,
     pub role: String,
+    /// Which client this participant is connected from; `None` = browser viewer.
+    /// Published on the roster so the host can tell a native Farbplay viewer from
+    /// a browser one (gh #227).
+    pub client: Option<String>,
     pub tx: mpsc::UnboundedSender<Message>,
     pub disconnect_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 static WS_ROOMS: LazyLock<WsRooms> = LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
-/// Snapshot of participant IDs with a live WebSocket connection in `slug`
-/// (browser viewers + presenters). Unioned with `presence::present_ids`
-/// (native SRT/Farbplay viewers, which never open a WS) this yields the full
-/// set of currently-connected participants — used by the admin roster (#201).
+/// Snapshot of participant IDs with a live WebSocket connection in `slug`.
+/// Since Farbplay gained pointer collaboration it holds a WS too (gh #227), so
+/// this covers native viewers as well — but only *current* Farbplay builds.
+/// Unioned with `presence::present_ids` (SSE heartbeat, which every Farbplay
+/// build holds) it yields the full set of currently-connected participants —
+/// used by the admin roster (#201).
 pub async fn connected_ids(slug: &str) -> HashSet<String> {
     let rooms = WS_ROOMS.read().await;
     rooms
@@ -109,6 +115,21 @@ struct AuthMsg {
     #[serde(rename = "participantId")]
     participant_id: String,
     token: String,
+    /// Native client identifier (`"farbplay"`). Absent for the browser viewer,
+    /// so absence means browser (gh #227).
+    #[serde(default)]
+    client: Option<String>,
+}
+
+/// Whitelist the client marker rather than echoing whatever the frame carried:
+/// it goes straight into the roster broadcast, and a browser viewer could
+/// otherwise hide itself in the host's Farbplay section. A second native client
+/// means a second arm here.
+fn normalize_client(raw: Option<String>) -> Option<String> {
+    match raw.as_deref() {
+        Some("farbplay") => Some("farbplay".to_string()),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +190,7 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     // Validate participant against DB
     let participant_id = auth.participant_id.clone();
     let token = auth.token.clone();
+    let client = normalize_client(auth.client.clone());
 
     let db_result = {
         let conn = match state.db.get() {
@@ -249,11 +271,15 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
         let room = rooms.entry(slug.clone()).or_default();
 
         if let Some(existing) = room.get_mut(&pid) {
-            // Reconnection: cancel disconnect timer and replace sender
+            // Reconnection: cancel disconnect timer and replace sender. The
+            // client marker is re-read here too — the entry is reused, so
+            // without this a Farbplay viewer would silently demote to the
+            // browser list the first time its socket dropped (gh #227).
             if let Some(timer) = existing.disconnect_timer.take() {
                 timer.abort();
             }
             existing.tx = tx.clone();
+            existing.client = client.clone();
         } else {
             room.insert(
                 pid.clone(),
@@ -261,6 +287,7 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
                     id: pid.clone(),
                     name: name.clone(),
                     role: role.clone(),
+                    client: client.clone(),
                     tx: tx.clone(),
                     disconnect_timer: None,
                 },
@@ -832,6 +859,8 @@ async fn broadcast_participants(rooms: &WsRooms, slug: &str) {
                     "id": p.id,
                     "name": p.name,
                     "role": p.role,
+                    // null for browser viewers (gh #227).
+                    "client": p.client,
                 })
             })
             .collect();
@@ -1154,9 +1183,11 @@ pub fn spawn_event_listeners(state: Arc<AppState>) {
                         kicked.push(row?);
                     }
                     // Admitted, non-kicked participants. The frontend renders the
-                    // ones that aren't in the live WS presence roster (i.e. native
-                    // SRT/Farbplay viewers, which never open a WS) so the host can
-                    // see and kick them. Browser viewers are deduped client-side.
+                    // ones that aren't in the live WS presence roster — Farbplay
+                    // builds predating the pointer feature, which open no WS at
+                    // all — so the host can see and kick them. Current Farbplay
+                    // builds are marked on the WS roster instead (`client`,
+                    // gh #227); browser viewers are deduped client-side.
                     let mut admitted = Vec::new();
                     let mut stmt = conn.prepare(
                         "SELECT p.id, p.name FROM participants p \

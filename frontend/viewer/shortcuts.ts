@@ -16,6 +16,7 @@ const KEY_TO_BTN: Record<string, string> = {
   x: 'focus-btn', // focus view
   c: 'chat-toggle', // chat panel
   v: 'conf-toggle', // call strip (focus/pinned mode only)
+  w: 'scopes-btn', // scopes window
 };
 
 // Whether the mic button is currently actionable (live + visible). A native

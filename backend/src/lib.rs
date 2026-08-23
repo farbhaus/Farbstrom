@@ -7,6 +7,7 @@ pub mod events;
 pub mod livekit;
 pub mod presence;
 pub mod routes;
+pub mod signed_policy;
 pub mod srt;
 pub mod state;
 pub mod tasks;

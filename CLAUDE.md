@@ -144,7 +144,8 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/auth.rs` — JWT (HS256, 7d) + bcrypt helpers
 - `src/livekit.rs` — hand-rolled LiveKit client: AccessToken JWT minting + RoomService HTTP
 - `src/ws.rs` — WebSocket hub, broadcast channels per room
-- `src/presence.rs` — in-memory presence registry for native SRT (Farbplay) viewers; their admission SSE connection is the heartbeat (browser viewers use the WS in `ws.rs` instead)
+- `src/presence.rs` — in-memory presence registry for native SRT (Farbplay) viewers; their admission SSE connection is the heartbeat (browser viewers use the WS in `ws.rs` instead). Current Farbplay builds hold a WS *as well*, marked `client: "farbplay"` — see the roster gotcha below
+- `src/signed_policy.rs` — OME SignedPolicy streamid minting for SRT playback; the single signing helper behind both `/api/watch/:slug` (Farbplay) and the admin `/api/stream-keys/:id/srt-playback`
 - `src/tasks.rs` — background pollers: OME stream status, room expiry, file cleanup
 - `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename)
 - `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages)
@@ -162,8 +163,8 @@ npm run typecheck                 # CI gate
 npm run build                     # production build (CI + prod host)
 ```
 
-- `frontend/admin/` — admin SPA modules (`main`, `auth`, `rooms`, `stream-keys`, `files`, `branding`, `dashboard`, `settings`, `webauthn`, `types`)
-- `frontend/viewer/` — viewer SPA modules (`main`, `types`, `state`, `session`, `screens`, `ws`, `player`, `livekit`/`conference`, `chat`, `pointer`, `roster`, `layout`, plus `globals.d.ts` for the CDN-loaded LiveKit/OvenPlayer globals)
+- `frontend/admin/` — admin SPA modules (`main`, `auth`, `rooms`, `stream-keys`, `files`, `branding`, `dashboard`, `settings`, `webauthn`, `types`). **A new `data-action` needs registering in `initDelegatedClicks()` in `main.ts`** — one delegated listener routes clicks to each module through an explicit `switch`, so an unlisted action is silently inert (the button just does nothing; no console error)
+- `frontend/viewer/` — viewer SPA modules (`main`, `types`, `state`, `session`, `screens`, `ws`, `player`, `livekit`/`conference`, `chat`, `pointer`, `roster`, `layout`, `scopes`/`scope-draw`/`scope-color`, plus `globals.d.ts` for the CDN-loaded LiveKit/OvenPlayer globals). **A new toolbar button needs registering in `layout.ts`** — `TOOLBAR_EXTRA_IDS` (the mobile ⋯ sheet) and one of `LANDSCAPE_{LEFT,RIGHT}_IDS` (the short-landscape side pills). Miss them and the button simply vanishes on mobile, silently, exactly like an unlisted `data-action` does in admin
 - `frontend/landing/` — landing page
 - `frontend/shared/` — `store.ts` (tiny reactive store), `utils.ts` (typed API wrapper, toast, formatters), `branding.ts` (read-only branding loader), `components.ts` (modal helpers)
 - `www/shared/` — design system CSS (`tokens.css`, `components.css`, `utils.css`); conventions in the [Design system](#design-system) section below
@@ -258,13 +259,54 @@ meant neither could be promoted to `components.css`. Keep them distinct.
 
 **Farbplay room-link SRT playback** (`src/routes/watch.rs`, GitHub #165). `GET /api/watch/:slug?participantId=&token=` lets the native SRT viewer (Farbplay) connect from a room link instead of a raw `srt://` URL. The flow mirrors the browser viewer: Farbplay first `POST /api/public/rooms/:slug/join`s to become a `participants` row (password is checked there, not here), waits on the existing admission SSE (`…/waiting/events/:pid`) if the room has a waiting room, then calls this **admission-gated** endpoint. It returns `{srt: {host, port, streamid, latency}, ttlSeconds, title}` where `streamid` is `default/live/<key_token>?policy=<b64url>&signature=<b64url-hmac-sha1>`, signed with `OME_SIGNED_POLICY_SECRET` and expiring after ~30 s (`url_expire`). **OME signs the `srt://`-prefixed URL** (`srt://default/live/<key>?policy=…`, scheme + vhost as host), so the backend must HMAC that form even though the client sends only the path. OME validates it via the `<SignedPolicy>` block (scoped to the SRT publisher only). The signed streamid is minted **only for an admitted, non-kicked participant**: missing `participantId`/`token` or kicked/not-yet-admitted → **403**; unknown participant / wrong token / wrong slug / ended / expired / no stream key → **404**. A kicked viewer therefore can't reconnect (the backstop behind the SSE self-disconnect; no server-side SRT sever today — contract O1/O2). **Security caveat:** this gives expiry/replay-limiting, *not* secrecy — Farbstrom's OME stream name *is* the ingest stream key (`OutputStreamName=${OriginStreamName}`), so the key is in the streamid in plaintext (and is already handed to web viewers on join). Decoupling the playback identity from the ingest key is a separate follow-up.
 
+**Every SRT playback target is signed, by one helper** (`src/signed_policy.rs`, GitHub #226). `<SignedPolicy>` is enabled for the SRT publisher, and OME rejects an **unsigned** streamid exactly as it rejects an invalid one — so there is no such thing as a static, copy-pasteable SRT playback URL. Both callers mint through `signed_policy::sign_streamid(secret, stream_name, ttl)`: `/api/watch/:slug` (Farbplay, 30 s) and `GET /api/stream-keys/:id/srt-playback` (admin JWT, 300 s), which backs the **Generate** button on the Stream Keys tab's playback SRT row. The frontend cannot build this URL — the secret is backend-only — and must **percent-encode the streamid** inside the outer `srt://…?streamid=` URL, or a player reads the streamid's own `?policy=…&signature=…` as sibling SRT socket options. `url_expire` is checked at connect time only, so a session established inside the TTL keeps running.
+
+**Farbplay is marked on the WS roster** (`client: "farbplay"`, GitHub #227). Farbplay used to open no WebSocket at all and was identified purely by *SSE presence without WS presence*; pointer collaboration changed that, and the viewer's Farbplay roster section silently emptied. Its auth frame now carries `"client": "farbplay"` (absent ⇒ browser), which `ws.rs` whitelists via `normalize_client`, stores on `WsParticipant` — **on the reconnect branch too**, or a dropped socket demotes the viewer to the browser list — and republishes in `participants:update`. `roster.ts` renders marked entries in the Farbplay section, unioned with the SSE-only list that older Farbplay builds still produce. Farbplay entries stay in `viewerStore.roster`, so pointer cursors and conference tiles treat them like any other participant.
+
 ## CI
 
 GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
 - **audit** — `cargo audit` (advisory DB check).
 - **frontend** — `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
-- **licenses** — regenerates `docs/THIRD_PARTY_NOTICES.md` via `cargo about` (pinned 0.9.0) and fails if the diff is non-empty.
+
+Third-party notices are **not** a CI gate. `docs/THIRD_PARTY_NOTICES.md` is a
+generated file, and gating it per-PR turned CI red on every dependabot cargo
+bump while blocking nothing (`main` is unprotected, so auto-merge shipped the
+drift regardless — that is how a stale line reached `main` and broke unrelated
+PRs). It is now produced where it actually matters: the Dockerfile's
+backend-builder stage generates it from the tree it just compiled and ships it
+at `/usr/share/doc/farbstrom/THIRD_PARTY_NOTICES.md` inside the image, and the
+`notices` job in `docker-single.yml` refreshes the repo copy on `v*.*.*` tags
+only. Regenerate by hand any time with the `cargo about` command above; nothing
+fails if you don't.
+
+## Updating pinned components
+
+Dependabot watches `cargo`, `github-actions`, and the literal Docker `FROM` bases
+(`rust`, `ubuntu`, `node`). **It cannot see the four component pins** — they are `ARG`s
+interpolated into `FROM` (`FROM caddy:${CADDY_VERSION}`), which Dependabot does not
+resolve. Nor does anything watch the CDN `<script>` tags. Both lists below are **manual**;
+check them when you touch the stack.
+
+**Component versions — change all three places together**, or a local `make dev` build
+silently disagrees with what CI bakes:
+
+| Where | What it drives |
+|---|---|
+| [`Dockerfile`](Dockerfile) `ARG *_VERSION` | **the source of truth — what CI bakes into the published image** |
+| [`docker-compose.dev.yml`](docker-compose.dev.yml) `args:` | local source builds (`make dev`), via `*_TAG` from `.env` |
+| [`.env.example`](.env.example) `*_TAG` | the documented default for both |
+
+The four are `OME_VERSION`, `LIVEKIT_VERSION`, `CADDY_VERSION`, `VALKEY_VERSION`. CI passes
+no `build-args`, so `Dockerfile` alone decides the published image. `VALKEY_TAG` may carry
+an image suffix (`9.1.1-alpine`); the Dockerfile strips it to the source tag.
+
+**CDN scripts** — in *both* [`www/viewer/index.html`](www/viewer/index.html) and
+[`www/admin/index.html`](www/admin/index.html) (livekit-client is viewer-only). Keep the
+pages in sync. **OvenPlayer is pinned exactly**, the others float on minor: OvenPlayer's
+DOM class names are load-bearing for the chrome-hiding CSS in each page's `<style>` block
+and have drifted before, so it must never move on its own.
 
 ## Useful reference docs
 
@@ -295,20 +337,53 @@ Non-obvious facts that aren't derivable from reading the code.
 - `ovenplayer.js` does NOT bundle `hls.js` — load it separately or LLHLS fails silently.
 - `controls: false` is a silent no-op. Hide the UI via CSS `.op-ui-container { display: none !important }`.
 - Error/notification overlay sits OUTSIDE `.op-ui-container` — also hide `.op-message-container, .op-notification-container`.
-- LLHLS + Safari + H.265 fails (Safari MSE blocks HEVC) — rely on WebRTC-first with LLHLS autoFallback.
+- **Browser support, measured on OME v0.21.0** (WebRTC delivery, real 1080p ingests): H.264 plays in Chrome, Safari **and** Firefox; H.265 plays in Chrome and Safari, not Firefox. The H.265 tested was `hvc1.4.10.L120.bd.8` — profile 4 (Range Extensions, 4:2:2 10-bit), decoded via Apple Silicon hardware. So HEVC over WebRTC is **not** Farbplay-only, and `deliveryMode` is a genuine per-room choice rather than a codec workaround.
+- LLHLS + Safari + H.265 historically failed because Safari MSE rejects the `hev1` sample entry. **v0.21.0 changed the packaging** (upstream #2258): verified that an H.265 ingest now yields `CODECS="hvc1…"` in the LL-HLS master playlist and an `hvc1`/`hvcC` sample entry in the fMP4 init segment — the form Safari requires. **Whether Safari decodes H.265 over LL-HLS is still untested** (the tests above all ran through WebRTC). Test it before relying on LLHLS for an H.265 room, and record the result here.
+
+**WebRTC transport (OME)**
+- Both `<IceCandidates>` blocks in [`ome/origin_conf/Server.xml`](ome/origin_conf/Server.xml) **force the built-in TURN relay** (`<TcpRelayForce>true</TcpRelayForce>` — v0.21.0's rename of the deprecated `<TcpForce>`). This looks wasteful and it is tempting to "fix"; **don't, without testing Firefox.** Direct ICE was tried on v0.21.0 (`${PublicIP}` candidates + RFC 6544 TCP ICE on `10000/tcp`, `TcpRelayForce=false`) and Chrome and Safari worked while **Firefox never nominated a candidate**, looping `Added session`/`Removed session` at OvenPlayer's 8 s `connectionTimeout` forever. Offering the relay *alongside* direct candidates (`<DefaultTransport>all</DefaultTransport>`) does not rescue it either: behind Docker NAT, OME can only advertise the relay at `${PublicIP}` and `172.x`, and neither is reachable as `localhost`. Relay-forced is the only configuration verified to work in all three browsers.
+- **Adding a new ICE port means three edits**: `Server.xml`, the `EXPOSE`/`ports:` entries, and `FW_TCP`/`FW_UDP` in [`deploy.sh`](deploy.sh).
+- Debugging ICE: OME logs `nominated candidate` + `DTLS peer certificate verified` on success. A repeating `Added session`/`Removed session` pair with neither line in between is ICE connectivity failure, not codec or signalling — signalling clearly succeeded if a session was created at all.
+- `OME_HOST_IP` (feeding `<Distribution>`) is derived in [`entrypoint.sh`](entrypoint.sh) from `PUBLIC_HOST`, so its export must stay *below* where `PUBLIC_HOST` is resolved. It previously read a `DOMAIN` var nothing sets and silently resolved to `localhost`.
+
+**Codecs**
+- Video is `<Bypass>true</Bypass>` — never transcoded. The ingest codec is exactly what every viewer's browser must decode, so codec choice is a product decision, not a server one. Audio *is* transcoded (AAC for LLHLS/SRT, Opus for WebRTC) with `BypassIfMatch` short-circuits.
+- AV1 (OME v0.21.0) is **WHIP / enhanced-RTMP only — SRT cannot carry it**, because OME's SRT ingest is MPEG-TS and its demuxer has no AV1 support. Transcoding *to* AV1 isn't viable either: the only encoder is libaom, and upstream disabled its realtime/RC/tiling options (`#if 0`) over a crash. Two guards exist because an undecodable stream otherwise looks like a black tile: `findUnplayableCodec()` in [`frontend/viewer/player.ts`](frontend/viewer/player.ts) reads `CODECS` from the LL-HLS playlist and `MediaSource.isTypeSupported()`s each one (LL-HLS only — WebRTC negotiates codecs in SDP, so there's no equivalent pre-flight), and `browserCodecWarning()` in [`frontend/admin/dashboard.ts`](frontend/admin/dashboard.ts) flags AV1/H.265 ingests on the dashboard.
 
 **Player sizing**
 - CSS `aspect-ratio` is unreliable in flex containers — the viewer uses JS `sizePlayer()` for exact 16:9 pixel dimensions.
 - iOS orientation change: call `sizePlayer()` at 0/50/150/300/500 ms because iOS animates rotation over ~300 ms and dimensions are stale mid-transition.
 
+**Scopes** (viewer video analysis, gh #229)
+- **What ships is one scope at a time, locked to Rec.709 / IRE and a 16:9 drawing area.** Luma waveform, RGB parade and vectorscope (which has 1–16× zoom, by button or wheel). `drawHistogram` and `drawFalseColor` are complete and tested but deliberately not offered — adding them back is one line in `PANELS` in `scopes.ts`. Likewise the working-space and scale selectors were removed: `scope-draw`/`scope-color` are still fully parameterised (Display-P3, Rec.2020, PQ-in-nits, ARRI LogC), so restoring them is a UI change, not a maths one.
+- **A canvas readback is display-mapped, not source-referred.** The browser tone-maps HDR into the SDR canvas *before* `getImageData` sees anything, so absolute nits are not measurable on that path. That is *why* the UI is pinned to Rec.709/IRE — for an SDR stream the display output is the signal, so there is nothing to caveat. **Anything that re-exposes the PQ/HDR scales has to restore the provenance labelling with them** (a `display-mapped` badge and `~`-prefixed nits), or the scope will quietly report tone-mapped values as measurements. The accurate path is WebCodecs: `VideoFrame.copyTo()` with **no** `format` option returns the frame's original planar data, `I420P10` included. Not implemented — whether a `VideoFrame` built from a `<video>` exposes a readable `format` (rather than an opaque GPU frame) varies by browser and is **unmeasured**; measure it before building on it.
+- **The pinned TypeScript DOM lib ships pre-HDR WebCodecs enums.** `VideoTransferCharacteristics` has no `'pq'`/`'hlg'`, `VideoColorPrimaries` no `'bt2020'`, `VideoPixelFormat` no `'I420P10'` — comparing against those literals is a **compile error** even though browsers emit exactly those values. `scope-color.ts` reads them as plain `string` and matches by substring.
+- **There is no `rec2100-pq` or `rec2020` canvas colour space** — `colorSpace` accepts only `srgb` and `display-p3`, so a Rec.2020 working space is a numeric interpretation of a P3 readback. `colorType: 'float16'` (real HDR headroom) is Chrome-flag-only with no Safari, hence deliberately unused.
+- **`.u-hidden` cannot hide anything styled by an id selector** — it's a class (0-1-0) and deliberately carries no `!important` (see the Design system section). The scopes empty state uses a `.no-source` class on the window instead. Silent no-op if you get this wrong.
+- **The vectorscope skin-tone line is derived from a reference skin RGB, never by rotating the quoted "123°".** That angle is defined in the YUV (U,V) plane, whose axes scale differently from Cb/Cr; the transform is anisotropic and does **not** preserve angles. Rotated naively the line lands at 134.5° — ~11° off, since measured skin clusters at 124–126° in the Cb/Cr plot. Same reason the 75% bar targets are computed by pushing bar RGB through the live `chroma()` rather than hardcoding graticule angles.
+- **ARRI's false-colour zones are LogC *exposure* values, not display IRE.** Applied raw to a graded Rec.709 feed, ARRI's 38–42 IRE "18% grey" band lights up ~28% grey. So the `sdr` scale re-anchors the zones to where those tones actually land display-referred (18% grey at 46.1 IRE, skin one stop over at 63.4); the `log` scale carries ARRI's published numbers, for a feed that really is log.
+- **On a HiDPI display one device pixel is half a CSS pixel** — that is why the trace and graticule first shipped looking like hairlines. Canvas backing stores are sized `css × dpr`, so anything one device pixel wide renders at 0.5 CSS px on a 2× screen. The trace deposits a `stampSize(dpr)²` block per sample and every `lineWidth` is `dpr × HAIR_PX`; sizes in `scope-draw.ts` are quoted in CSS pixels and multiplied up, never in raw device pixels. Sparse trace cells also get a `TRACE_MIN_ALPHA` floor, or the parts you are squinting at fade out entirely.
+- Vectorscope point placement **rounds** rather than `| 0`-truncates. Truncation is right for a bin index but asymmetric about the centre, and exact neutral carries a float epsilon that a high zoom gain multiplies across the pixel boundary — enough to jitter the centre point.
+- One `getImageData` per frame, shared by whatever is drawing — never one per scope. `requestVideoFrameCallback` drives the loop where it exists (Firefox has none; rAF fallback), throttled to 15 fps, and idles out entirely when the window is closed or the tab is hidden.
+- The window's height is **derived** from its width (`fitGeometry`) to hold the canvas at 16:9, so the resize grip tracks horizontal drag only, and `#scopes-body` carries no padding — padding would break the ratio the height was computed for.
+- **Vectorscope zoom magnifies the trace only** — ring, crosshair, skin line and the 75% targets are a fixed reference and stay put, so the trace clips at the panel edge once it outgrows the ring.
+- The **1:1 / 1:2 / 1:4 sampling control is the performance dial**, and it does not scale the way pixel count suggests. Accumulation scales with the sample; blitting the trace and stroking the graticule walk the whole canvas regardless, so there is a fixed floor. Measured JS-side at a 920×518 panel, dpr 2: 1:2 gives 1.6–2.3× and 1:4 gives 2.1–3.7×, not 4× and 16×. Optimising further means attacking `blitTrace`, not the sample size.
+
 **iOS Safari**
 - `HTMLMediaElement.volume` is read-only — volume is hardware-only; the slider is hidden on mobile.
 - Viewport meta needs `maximum-scale=1.0, user-scalable=no` to prevent auto-zoom on rotation.
 
+**SRT playback (OME SignedPolicy)** — all of the below measured against the pinned OME on a real ingest (#226), not inferred from docs.
+- **SignedPolicy is all-or-nothing per publisher.** Enabling it for `<Publishers>srt` does not mean "validate a token when one is present": an unsigned streamid is rejected outright, with
+  `W SRTPublisher | There is no signature key(signature) in url(srt://default/live/<key>)` and zero bytes delivered. That is what killed the admin Stream Keys playback URL for a whole release — it silently predated the SignedPolicy work in #165. A signed streamid on the same stream returns media and logs `A new session has started playing … on the SRT publisher`.
+- **The `/playlist` suffix was never the problem.** `{host}/{app}/{stream}[/{playlist}]` is a valid streamid shape (`srt_stream_url_resolver.cpp` accepts 3 or 4 path parts), and this OME auto-creates an SRT playlist literally named `playlist` — `SRTPublisher | A SRT playist [playlist] has been created`. (Upstream docs say `master`; they disagree with the shipped binary, so trust the log.) The old admin URL failed *only* for lack of a signature. Farbstrom addresses the stream directly, matching what `/api/watch` signs.
+- **Percent-encoding the streamid is safe and necessary.** OME calls `ov::Url::Decode` on every streamid before parsing, and SRT clients decode the `streamid=` query value too — verified by OME logging the fully-decoded `…?policy=…&signature=…`. What OME deprecated is the *`srt://…`-as-streamid* form, not encoding. Without encoding, the streamid's own `?`/`&` are parsed as sibling SRT socket options and the URL breaks.
+- The signature covers the whole path, so forms are **not** interchangeable — you cannot append or strip a playlist segment on a signed streamid.
+
 **SRT encryption** (DB-managed runtime toggle, gh #208)
 - Toggled at runtime from the admin **Settings** tab (`POST /api/stream-keys/srt-encryption` `{ingest, playback}`). **No `.env` — the DB is the sole source of truth.** The two legs are **independent**: ingest (encoder → server, 9999) and playback (server → viewers, 9998) each have their own `srt_ingest_enabled` / `srt_playback_enabled` flag + generated passphrase (`srt_{ingest,playback}_passphrase`) in the `settings` table (`src/srt.rs`, hex via `rand`). Playback is the exposed leg (public internet), so the UI recommends it; ingest is usually a trusted network. `pbkeylen` is fixed at 16 (`srt::PBKEYLEN`). Absent flag ⇒ that leg disabled.
 - The UI is **two checkboxes + one Apply button** (`frontend/admin/settings.ts`): the checkboxes stage a desired state and Apply sends the full `{ingest, playback}` state so OME restarts **once** even when both legs change. The Stream Keys tab still reads `srt-config` to append the passphrase to its SRT URLs, but the toggle lives in Settings.
-- **Why it must restart OME, not hot-reload:** OME (v0.20.5) reads its SRT passphrase from `Server.xml` `${env:...}` only at process startup — `SIGHUP` reloads just `logger.xml`, and its REST API returns 403 for bind changes. So the backend can't push a new passphrase into a running OME. The bridge: `Server.xml` is unchanged (still `${env:...}`, one bind per leg); the backend writes both passphrases to `<data>/srt.env`; the `[program:ome]` command is the `ome_start.sh` wrapper that **sources `srt.env` then execs `ome_launcher.sh`**; the handler runs `supervisorctl restart ome` (`srt::restart_ome`) to re-read it. For that restart the unprivileged backend (`user=app`) needs the supervisor socket — `[unix_http_server]` is `chown=app:app chmod=0700` in `supervisord.conf`. The passphrases reach OME **only** via `srt.env` (the wrapper), never the container env.
+- **Why it must restart OME, not hot-reload:** OME (v0.21.0) reads its SRT passphrase from `Server.xml` `${env:...}` only at process startup — `SIGHUP` reloads just `logger.xml`, and its REST API returns 403 for bind changes. So the backend can't push a new passphrase into a running OME. The bridge: `Server.xml` is unchanged (still `${env:...}`, one bind per leg); the backend writes both passphrases to `<data>/srt.env`; the `[program:ome]` command is the `ome_start.sh` wrapper that **sources `srt.env` then execs `ome_launcher.sh`**; the handler runs `supervisorctl restart ome` (`srt::restart_ome`) to re-read it. For that restart the unprivileged backend (`user=app`) needs the supervisor socket — `[unix_http_server]` is `chown=app:app chmod=0700` in `supervisord.conf`. The passphrases reach OME **only** via `srt.env` (the wrapper), never the container env.
 - OME's SRT passphrase is **bind-level (per-port), not per-stream**. Wire confidentiality only, *not* access control (still the admission webhook + SignedPolicy). Restarting OME briefly drops **every** stream (SRT + browser), and enabling a leg is a **hard cutover** (that leg's encoders / Farbplay clients must reconnect with the passphrase) — the admin UI confirms before applying.
 - Reads are live: `srt-config` (admin) and `/api/watch/:slug` (playback → Farbplay) resolve from the DB (`srt::resolve`). A disabled leg writes an empty passphrase to `srt.env`, so its bind stays plaintext.
 - Cold-boot ordering: the backend writes `srt.env` from the DB on startup (`srt::init_startup`, which also migrates the pre-split combined `srt_encryption_enabled` flag into the two per-leg flags); `ome_start.sh` waits up to ~10 s for the backend (priority 20) to write it before OME (priority 30) launches; fail-open to unencrypted is safe because ingest admission is fail-closed while the backend is down. Tests set `STREAM_DISABLE_OME_RESTART=1` to skip the `supervisorctl` shell-out.
@@ -324,4 +399,5 @@ Non-obvious facts that aren't derivable from reading the code.
 - Privilege & secrets: Caddy/OME/LiveKit run as root (privileged ports / TURN); the backend (`user=app`) and Valkey (`user=valkey`) drop privileges. `supervisord.conf` removes the backend-only secrets (`JWT_SECRET`, `ADMIN_PASSWORD`, `LIVEKIT_API_KEY/SECRET`) from the third-party processes via `env -u` — add any new such secret to those four `-u` lists.
 - Persist Caddy's `caddy_data` volume (`/root/.local/share/caddy`): it holds the internal CA + Let's Encrypt certs. Losing it re-issues certs on every recreate (Let's Encrypt rate limits) / regenerates the local CA.
 - Keep the UDP RTC range narrow (50000-50100) — Docker writes one iptables rule per port; wide ranges make `compose up/down` take minutes.
+- **Docker Desktop (macOS) silently drops a UDP port publish.** With ~114 published UDP ports, one of them randomly fails to bind on the host per container start — `docker port` still lists the mapping and the container logs `listening on *:9998/SRT`, but nothing on the host holds the port and every packet is dropped before it reaches the container. Observed alternating between 9998 and 9999, which looks exactly like "SRT is broken" (Farbplay can't connect, ffplay hangs, OME logs nothing at all). Diagnose with `lsof -nP -iUDP:9998` — no `com.docker` line means the publish failed; `docker compose restart` re-rolls it. Only affects local dev on Docker Desktop, not Linux hosts.
 - Valkey is the BSD-3 fork of Redis 7.2; LiveKit talks to it as a plain RESP server, so the swap from upstream Redis is invisible.

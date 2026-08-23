@@ -202,6 +202,52 @@ async fn srt_config(
     Ok(Json(crate::srt::to_json(&eff)))
 }
 
+/// Lifetime of an admin-minted SRT playback token. Longer than the Farbplay
+/// room-link flow's 30 s because a human copies this URL into a player by hand.
+/// OME checks `url_expire` at connect time only, so a session established inside
+/// the window keeps running past it.
+const ADMIN_PLAYBACK_TTL_SECONDS: u64 = 300;
+
+// GET /{id}/srt-playback — signed SRT playback details for one stream key (gh
+// #226). Admin-only, and minted on demand rather than rendered with the key: OME
+// rejects an unsigned streamid on the SRT publisher, and the signature can only
+// be computed with OME_SIGNED_POLICY_SECRET, which never leaves the backend. Same
+// response shape (and same signing helper) as the Farbplay `/api/watch/:slug`
+// flow — only the TTL differs.
+async fn srt_playback(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db.get()?;
+    let key_token: String = tokio::task::spawn_blocking(move || {
+        conn.query_row(
+            "SELECT key_token FROM stream_keys WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound("Key not found".into()),
+            _ => AppError::Internal(e.to_string()),
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    let streamid = crate::signed_policy::sign_streamid(
+        &state.config.ome_signed_policy_secret,
+        &key_token,
+        ADMIN_PLAYBACK_TTL_SECONDS,
+    )?;
+
+    Ok(Json(json!({
+        "host": state.config.srt_public_host,
+        "port": state.config.srt_public_port,
+        "streamid": streamid,
+        "ttlSeconds": ADMIN_PLAYBACK_TTL_SECONDS,
+    })))
+}
+
 #[derive(Deserialize)]
 struct SrtEncryptionBody {
     ingest: bool,
@@ -246,4 +292,5 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/srt-encryption", post(set_srt_encryption))
         .route("/{id}", put(update_key).delete(delete_key))
         .route("/{id}/unblock", post(unblock_key))
+        .route("/{id}/srt-playback", get(srt_playback))
 }

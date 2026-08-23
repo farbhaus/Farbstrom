@@ -7,8 +7,9 @@ use tokio::time;
 
 // ---------------------------------------------------------------------------
 // OME Poller -- every 30s
-// Checks active streams against OME API; resets rooms to 'pending' if their
-// stream key is no longer broadcasting.
+// Reconciles room status against the OME API in BOTH directions: a room whose
+// stream key stopped broadcasting drops to 'pending', and a 'pending' room
+// whose key is already broadcasting is promoted to 'live'.
 // ---------------------------------------------------------------------------
 
 pub fn spawn_ome_poller(state: Arc<AppState>) {
@@ -23,7 +24,16 @@ pub fn spawn_ome_poller(state: Arc<AppState>) {
     });
 }
 
-async fn poll_ome(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
+/// The stream keys OME currently reports as broadcasting.
+///
+/// The OME stream name *is* the ingest key token
+/// (`OutputStreamName=${OriginStreamName}`), so the response is a flat array of
+/// key tokens. A non-2xx yields an empty set rather than an error: callers treat
+/// "OME said nothing" the same as "nothing is live", and the poller re-checks in
+/// 30 s.
+pub async fn fetch_active_stream_keys(
+    state: &Arc<AppState>,
+) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     let token = base64::engine::general_purpose::STANDARD.encode(&state.config.ome_api_token);
     let url = format!(
         "{}/vhosts/default/apps/live/streams",
@@ -38,11 +48,11 @@ async fn poll_ome(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::Error
         .await?;
 
     if !res.status().is_success() {
-        return Ok(());
+        return Ok(Default::default());
     }
 
     let data: serde_json::Value = res.json().await?;
-    let active_keys: std::collections::HashSet<String> = data
+    Ok(data
         .get("response")
         .and_then(|r| r.as_array())
         .map(|arr| {
@@ -50,32 +60,117 @@ async fn poll_ome(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::Error
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default())
+}
+
+/// Reconcile every room against OME and announce what changed.
+///
+/// Shared by the 30 s poller and the room handlers, which call it after
+/// attaching a stream key so the room goes live immediately instead of waiting
+/// for the next tick. Returns the transitions so a caller can also reflect them
+/// in its own response.
+pub async fn reconcile_and_announce(
+    state: &Arc<AppState>,
+) -> Result<RoomTransitions, Box<dyn std::error::Error>> {
+    let active_keys = fetch_active_stream_keys(state).await?;
 
     let db = state.db.get()?;
-    let mut stmt = db.prepare(
-        "SELECT r.id, r.slug, sk.key_token \
-         FROM rooms r \
-         JOIN stream_keys sk ON sk.id = r.stream_key_id \
-         WHERE r.status = 'live'",
-    )?;
-    let live_rooms: Vec<(String, String, String)> = stmt
+    let transitions = reconcile_rooms(&db, &active_keys)?;
+
+    for slug in &transitions.went_live {
+        let _ = state.events.room_live.send(slug.clone());
+    }
+    for slug in &transitions.went_pending {
+        let _ = state.events.room_pending.send(slug.clone());
+    }
+
+    Ok(transitions)
+}
+
+async fn poll_ome(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
+    reconcile_and_announce(state).await?;
+    Ok(())
+}
+
+/// Room slugs whose status the reconciler changed, by direction.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RoomTransitions {
+    pub went_live: Vec<String>,
+    pub went_pending: Vec<String>,
+}
+
+/// Reconcile room status against the set of stream keys OME reports as
+/// broadcasting.
+///
+/// Bidirectional on purpose. The admission webhook is the only other path to
+/// 'live', and it fires exactly once, when a publisher *starts* — so attaching
+/// a stream key to a room while that key is already broadcasting used to leave
+/// the room stuck in 'pending' until the encoder reconnected (gh #225). This
+/// closes that gap.
+///
+/// The promote side is deliberately narrower than the demote side:
+///
+/// - **Only `pending` rooms.** Promoting a `scheduled` room would start it
+///   before its start time, and an `ended` room must stay ended.
+/// - **Only unblocked keys.** `routes/ome.rs` sets `blocked = 1` *before*
+///   asking OME to drop the stream, precisely to win that race; without the
+///   same filter here the poller could re-promote a room an admin just kicked,
+///   in the window before the stream leaves OME's list.
+///
+/// Split out from the HTTP fetch so it is testable without a live OME.
+pub fn reconcile_rooms(
+    conn: &rusqlite::Connection,
+    active_keys: &std::collections::HashSet<String>,
+) -> Result<RoomTransitions, rusqlite::Error> {
+    let mut transitions = RoomTransitions::default();
+
+    // Demote: live rooms whose key stopped broadcasting.
+    let live_rooms: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT r.id, r.slug, sk.key_token \
+             FROM rooms r \
+             JOIN stream_keys sk ON sk.id = r.stream_key_id \
+             WHERE r.status = 'live'",
+        )?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .filter_map(|r| r.ok())
         .collect();
 
     for (id, slug, key_token) in live_rooms {
         if !active_keys.contains(&key_token) {
-            db.execute(
+            conn.execute(
                 "UPDATE rooms SET status = 'pending' WHERE id = ?1",
                 rusqlite::params![id],
             )?;
-            let _ = state.events.room_pending.send(slug.clone());
             tracing::info!("[poller] Room {} -> pending (stream dropped)", id);
+            transitions.went_pending.push(slug);
         }
     }
 
-    Ok(())
+    // Promote: pending rooms whose key is already broadcasting.
+    let pending_rooms: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT r.id, r.slug, sk.key_token \
+             FROM rooms r \
+             JOIN stream_keys sk ON sk.id = r.stream_key_id \
+             WHERE r.status = 'pending' AND sk.blocked = 0",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (id, slug, key_token) in pending_rooms {
+        if active_keys.contains(&key_token) {
+            conn.execute(
+                "UPDATE rooms SET status = 'live' WHERE id = ?1",
+                rusqlite::params![id],
+            )?;
+            tracing::info!("[poller] Room {} -> live (stream already broadcasting)", id);
+            transitions.went_live.push(slug);
+        }
+    }
+
+    Ok(transitions)
 }
 
 // ---------------------------------------------------------------------------
