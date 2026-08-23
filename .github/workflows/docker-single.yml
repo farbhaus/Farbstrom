@@ -63,7 +63,7 @@ jobs:
       # produce an empty tag list (nothing is published — push=false above).
       - name: Compute tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           flavor: |
