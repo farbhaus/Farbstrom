@@ -46,7 +46,7 @@ RUN case "$(uname -m)" in \
 # ------------------------------------------------------------------------------
 # Stage 2 — Valkey builder
 # ------------------------------------------------------------------------------
-FROM ubuntu:22.04 AS valkey-builder
+FROM ubuntu:22.10 AS valkey-builder
 RUN apt-get update && apt-get install -y build-essential curl && rm -rf /var/lib/apt/lists/*
 ARG VALKEY_VERSION
 # Build from source against this base's glibc (an alpine/musl prebuilt won't run
