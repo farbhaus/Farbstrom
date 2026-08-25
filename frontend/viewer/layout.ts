@@ -354,7 +354,7 @@ function setupMoreMenu(): void {
 // return to their original inline positions (preserving the full toolbar order).
 // DOM-move (not clone) keeps their event listeners intact. Screen-share lives in
 // the sheet (rarely usable on mobile) while the strip toggle stays in the pill.
-const TOOLBAR_EXTRA_IDS = ['focus-btn', 'screen-btn', 'player-controls', 'scopes-btn', 'device-btn', 'resync-btn'];
+const TOOLBAR_EXTRA_IDS = ['focus-btn', 'screen-btn', 'player-controls', 'scopes-btn', 'device-btn', 'resync-btn', 'help-btn'];
 type ToolbarAnchor = { parent: Node; next: Node | null };
 const toolbarAnchors = new Map<Element, ToolbarAnchor>();
 
@@ -405,7 +405,7 @@ function setupResponsiveToolbar(): void {
 // side pills, freeing vertical space. Buttons (not groups) so the pills are a
 // clean vertical stack with no leftover separators. DOM-move keeps listeners.
 const LANDSCAPE_LEFT_IDS = ['cam-btn', 'mic-btn', 'screen-btn', 'pointer-btn', 'focus-btn', 'conf-toggle'];
-const LANDSCAPE_RIGHT_IDS = ['chat-toggle', 'play-btn', 'mute-btn', 'scopes-btn', 'device-btn', 'resync-btn', 'fullscreen-btn'];
+const LANDSCAPE_RIGHT_IDS = ['chat-toggle', 'play-btn', 'mute-btn', 'scopes-btn', 'device-btn', 'resync-btn', 'fullscreen-btn', 'help-btn'];
 const landscapeAnchors = new Map<Element, ToolbarAnchor>();
 
 function applyLandscapeSplit(active: boolean): void {

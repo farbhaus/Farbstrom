@@ -943,6 +943,113 @@ body.has-focus.strip-hidden #stage-strip {
     border-bottom: var(--bw-control) solid var(--dim);
 }
 
+/* ---- First-run room tour (#230) ----
+   Spotlight walkthrough of the room chrome, driven by frontend/viewer/tour.ts.
+   Three fixed layers on --z-tour (above the toolbar pill and the side panel,
+   below modals, so a confirm dialog would still outrank it):
+
+     #tour-blocker  swallows every click while the tour runs — the tour only
+                    describes the room, it never lets you half-operate it.
+     #tour-spot     the hole. Its huge box-shadow spread IS the scrim, so the
+                    target underneath needs no z-index of its own (it couldn't
+                    have one anyway — the toolbar pill is its own stacking
+                    context). The ring is listed first so it paints over the
+                    scrim. Nothing here is hit-testable.
+     #tour-card     the copy, glued to the spotlight by tour.ts. */
+#tour-blocker, #tour-spot, #tour-card { position: fixed; z-index: var(--z-tour); }
+#tour-blocker {
+    inset: 0;
+    transition: background var(--dur-med) var(--ease-out);
+}
+/* No spotlight on this step (the welcome card) — the blocker carries the dim. */
+#tour-blocker.is-dim { background: var(--scrim); backdrop-filter: blur(var(--blur-scrim)); -webkit-backdrop-filter: blur(var(--blur-scrim)); }
+#tour-spot {
+    pointer-events: none;
+    border-radius: var(--r-card);
+    box-shadow: 0 0 0 var(--bw-accent) var(--accent), 0 0 0 100vmax var(--scrim);
+    transition: left var(--dur-med) var(--ease-out), top var(--dur-med) var(--ease-out),
+                width var(--dur-med) var(--ease-out), height var(--dur-med) var(--ease-out);
+}
+#tour-spot.is-off { display: none; }
+/* Set for one frame when the spotlight (re)appears, so it doesn't glide in
+   from wherever the previous step left it. */
+#tour-spot.no-anim { transition: none; }
+
+#tour-card {
+    width: 340px; max-width: calc(100vw - 16px);
+    padding: 14px 16px 12px;
+    background: var(--surface);
+    border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-card);
+    box-shadow: 0 8px 24px var(--scrim);
+    transition: left var(--dur-med) var(--ease-out), top var(--dur-med) var(--ease-out);
+}
+#tour-card.is-in { animation: tour-card-in var(--dur-med) var(--ease-out); }
+@keyframes tour-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+#tour-skip { position: absolute; top: 8px; right: 8px; }
+.tour-title { font-size: var(--fs-md); font-weight: var(--fw-bold); padding-right: 28px; margin-bottom: 6px; }
+.tour-body { font-size: var(--fs-base); line-height: var(--lh-body); color: var(--dim); }
+/* Key chip. Shared by the tour cards and the ? shortcuts sheet. */
+.key-cap {
+    display: inline-block; min-width: 17px; text-align: center;
+    padding: 0 var(--sp-1); margin: 0 1px;
+    font-family: var(--ff-mono); font-size: var(--fs-2xs); font-weight: var(--fw-semi);
+    color: var(--text); background: var(--surface2);
+    border: var(--bw-hair) solid var(--border); border-radius: var(--r-inset);
+}
+/* ? sheet (shortcuts.ts). It lives in a confirmModal, whose body is a <p> with
+   `white-space: pre-line` — hence spans in a grid rather than block elements,
+   and `white-space: normal` to undo the inherited line breaking. */
+.shortcut-list {
+    display: grid; grid-template-columns: auto 1fr;
+    align-items: center; gap: 7px 12px;
+    white-space: normal; font-size: var(--fs-base);
+}
+.shortcut-list .key-cap { justify-self: start; margin: 0; }
+.shortcut-note {
+    display: block; margin-top: 14px;
+    white-space: normal; font-size: var(--fs-sm); color: var(--dim);
+}
+.tour-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.tour-count { font-size: var(--fs-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+.tour-foot-actions { display: flex; gap: 6px; }
+/* Rotated square glued to the card edge, pointing at the spotlight. Only the
+   two outward-facing borders are kept so it reads as a continuation of the
+   card's own edge. tour.ts sets `left` (card above/below the spotlight) or
+   `top` (card beside it), and hides the caret when the card has to overlap the
+   spotlight — a cramped viewport, or a spotlight covering most of it. */
+.tour-caret {
+    position: absolute; width: 10px; height: 10px;
+    background: var(--surface);
+    transform: rotate(45deg);
+}
+#tour-card.place-below .tour-caret {
+    top: -6px; margin-left: -5px;
+    border-top: var(--bw-hair) solid var(--border);
+    border-left: var(--bw-hair) solid var(--border);
+}
+#tour-card.place-above .tour-caret {
+    bottom: -6px; margin-left: -5px;
+    border-bottom: var(--bw-hair) solid var(--border);
+    border-right: var(--bw-hair) solid var(--border);
+}
+#tour-card.place-left .tour-caret {
+    right: -6px; margin-top: -5px;
+    border-top: var(--bw-hair) solid var(--border);
+    border-right: var(--bw-hair) solid var(--border);
+}
+#tour-card.place-right .tour-caret {
+    left: -6px; margin-top: -5px;
+    border-bottom: var(--bw-hair) solid var(--border);
+    border-left: var(--bw-hair) solid var(--border);
+}
+/* Local, not folded into the page's other reduced-motion opt-outs: that block
+   sits above these rules, and a same-specificity rule declared later wins. */
+@media (prefers-reduced-motion: reduce) {
+    #tour-card.is-in { animation: none; }
+    #tour-card, #tour-spot, #tour-blocker { transition: none; }
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 700px) {
     /* Omit the brand logo (frees room for Leave) and spread the remaining items
@@ -1439,6 +1546,10 @@ body.has-focus.strip-hidden #stage-strip {
             </button>
             <button class="tb-btn" id="fullscreen-btn" title="Fullscreen (F)">
                 <svg viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+            </button>
+            <!-- Replays the first-run room tour (#230); tour.ts wires the click. -->
+            <button class="tb-btn" id="help-btn" title="Room tour">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12" y2="17.01"/></svg>
             </button>
         </div>
         <!-- ⋯ More toggle + popup target (mobile only). -->
