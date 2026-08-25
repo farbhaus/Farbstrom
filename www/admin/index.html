@@ -504,15 +504,20 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 
 /* ---- Branding color palette ----
    Six identical picker rows. Defaults come from tokens.css via branding.ts,
-   never from the markup, so the palette has exactly one source of truth. */
+   never from the markup, so the palette has exactly one source of truth.
+   Both controls MUST stay scoped under .color-row. They sit inside a .form-row,
+   whose shared `.form-row input` rule (0-1-1) outranks a bare `.color-swatch`
+   (0-1-0) and would stretch the swatch to width:100%, pad both controls and
+   round the swatch to --r-control. The inline styles these classes replaced
+   won by being inline; classes have to earn it with the descendant selector. */
 .color-row { display: flex; gap: var(--sp-1-5); align-items: center; }
-.color-swatch {
+.color-row .color-swatch {
     width: 36px; height: 30px; padding: 0; cursor: pointer;
     border: var(--bw-hair) solid var(--border);
     border-radius: var(--r-inset);
     background: var(--surface2);
 }
-.color-hex {
+.color-row .color-hex {
     flex: 1; min-width: 0;
     padding: var(--sp-1-5) var(--sp-2);
     font-family: var(--ff-mono); font-size: var(--fs-sm);
@@ -522,8 +527,8 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
-.color-swatch:hover, .color-hex:hover { border-color: var(--dim); }
-.color-swatch:focus-visible, .color-hex:focus {
+.color-row .color-swatch:hover, .color-row .color-hex:hover { border-color: var(--dim); }
+.color-row .color-swatch:focus-visible, .color-row .color-hex:focus {
     border-color: var(--accent); box-shadow: var(--ring-accent);
 }
 </style>
