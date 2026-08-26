@@ -27,7 +27,10 @@ export function wireModalClose(modalId: string, buttonIds: string[]): void {
 
 interface ConfirmOpts {
   title: string;
+  // Plain-text body (escaped). Use messageHtml instead for trusted markup.
   message: string;
+  // Trusted HTML body (caller-controlled, never user input) — wins over message.
+  messageHtml?: string;
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
@@ -76,7 +79,9 @@ export function confirmModal(opts: ConfirmOpts): Promise<boolean> {
         <button class="btn ${opts.danger ? 'btn-danger' : 'btn-primary'}" data-act="ok"></button>
       </div>`;
     (modal.querySelector('.modal-title') as HTMLElement).textContent = opts.title;
-    (modal.querySelector('p') as HTMLElement).textContent = opts.message;
+    const cBody = modal.querySelector('p') as HTMLElement;
+    if (opts.messageHtml !== undefined) cBody.innerHTML = opts.messageHtml;
+    else cBody.textContent = opts.message;
     (modal.querySelector('[data-act="cancel"].btn:not(.btn-sm)') as HTMLElement).textContent =
       opts.cancelLabel ?? 'Cancel';
     (modal.querySelector('[data-act="ok"]') as HTMLElement).textContent =

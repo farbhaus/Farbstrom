@@ -809,6 +809,13 @@ async function toggleScreenShare(): Promise<void> {
 
 // ---- Conference permission prompt ----
 
+// Resolves showConfPrompt()'s promise once the prompt is off screen, so the
+// caller can chain something that must not stack on top of it (the first-run
+// tour, #230). Deliberately fires when the overlay hides, not when initLiveKit
+// finishes — the browser's own camera/mic permission prompt is next in line and
+// nothing should wait on the participant answering it.
+let confPromptDone: (() => void) | null = null;
+
 async function applyConfPref(pref: 'both' | 'cam' | 'mic' | 'none', save = true): Promise<void> {
   const overlay = document.getElementById('conf-prompt-overlay') as HTMLElement & {
     _dismissHandler?: ((e: MouseEvent) => void) | null;
@@ -818,6 +825,8 @@ async function applyConfPref(pref: 'both' | 'cam' | 'mic' | 'none', save = true)
     overlay._dismissHandler = null;
   }
   overlay.classList.add('hidden');
+  confPromptDone?.();
+  confPromptDone = null;
   if (save) localStorage.setItem(PREF_KEY, pref);
 
   let cameraOn = false;
@@ -843,11 +852,11 @@ async function applyConfPref(pref: 'both' | 'cam' | 'mic' | 'none', save = true)
   refreshConfButtons();
 }
 
-export function showConfPrompt(): void {
+export function showConfPrompt(): Promise<void> {
   const saved = localStorage.getItem(PREF_KEY);
   if (saved) {
     void applyConfPref(saved as 'both' | 'cam' | 'mic' | 'none', false);
-    return;
+    return Promise.resolve();
   }
   document.getElementById('prompt-mic')?.classList.add('pref-saved');
   const overlay = document.getElementById('conf-prompt-overlay') as HTMLElement & {
@@ -863,6 +872,9 @@ export function showConfPrompt(): void {
   };
   overlay._dismissHandler = dismiss;
   overlay.addEventListener('click', dismiss);
+  return new Promise((resolve) => {
+    confPromptDone = resolve;
+  });
 }
 
 // ---- Device picker ----
