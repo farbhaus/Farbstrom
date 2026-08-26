@@ -28,6 +28,7 @@ import {
 import { configurePointer, initPointer } from './pointer.js';
 import { closeScopes, initScopes } from './scopes.js';
 import { initShortcuts } from './shortcuts.js';
+import { maybeStartTour, stopTour } from './tour.js';
 import {
   configureJoinOutcome,
   configureScreens,
@@ -230,11 +231,17 @@ function showApp(initialStatus?: RoomStatus): void {
   syncPttMode();
   connectWs();
   // Show the one-time PTT explainer (if applicable) before the cam/mic prompt
-  // so the two dialogs don't stack; resolves immediately when PTT is off.
-  void maybeShowPttNotice().finally(() => showConfPrompt());
+  // so the two dialogs don't stack; resolves immediately when PTT is off. The
+  // first-run tour (#230) comes last, once the room is in its resting state:
+  // showConfPrompt resolves as the prompt closes, so the tour spotlights a
+  // toolbar the participant can actually see.
+  void maybeShowPttNotice()
+    .then(() => showConfPrompt())
+    .finally(() => maybeStartTour());
 }
 
 function leaveRoom(): void {
+  stopTour();
   stopAdmissionPoll();
   closeWs();
   void disconnectLiveKit();
@@ -322,11 +329,15 @@ function init(): void {
     onAuthOk: () => {},
     onRoomLive: () => setRoomStatus('live'),
     onRoomPending: () => setRoomStatus('pending'),
-    onRoomEnded: () => showEnded(),
+    onRoomEnded: () => {
+      stopTour();
+      showEnded();
+    },
     onStreamAssigned: handleStreamAssigned,
     onStreamRemoved: handleStreamRemoved,
     onDeliveryModeChanged: handleDeliveryModeChanged,
     onKicked: () => {
+      stopTour();
       document.getElementById('app')?.classList.remove('visible');
       showKicked();
     },

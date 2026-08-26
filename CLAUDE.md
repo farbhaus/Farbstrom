@@ -164,7 +164,7 @@ npm run build                     # production build (CI + prod host)
 ```
 
 - `frontend/admin/` — admin SPA modules (`main`, `auth`, `rooms`, `stream-keys`, `files`, `branding`, `dashboard`, `settings`, `webauthn`, `types`). **A new `data-action` needs registering in `initDelegatedClicks()` in `main.ts`** — one delegated listener routes clicks to each module through an explicit `switch`, so an unlisted action is silently inert (the button just does nothing; no console error)
-- `frontend/viewer/` — viewer SPA modules (`main`, `types`, `state`, `session`, `screens`, `ws`, `player`, `livekit`/`conference`, `chat`, `pointer`, `roster`, `layout`, `scopes`/`scope-draw`/`scope-color`, plus `globals.d.ts` for the CDN-loaded LiveKit/OvenPlayer globals). **A new toolbar button needs registering in `layout.ts`** — `TOOLBAR_EXTRA_IDS` (the mobile ⋯ sheet) and one of `LANDSCAPE_{LEFT,RIGHT}_IDS` (the short-landscape side pills). Miss them and the button simply vanishes on mobile, silently, exactly like an unlisted `data-action` does in admin
+- `frontend/viewer/` — viewer SPA modules (`main`, `types`, `state`, `session`, `screens`, `ws`, `player`, `livekit`/`conference`, `chat`, `pointer`, `roster`, `layout`, `scopes`/`scope-draw`/`scope-color`, `tour`, plus `globals.d.ts` for the CDN-loaded LiveKit/OvenPlayer globals). **A new toolbar button needs registering in `layout.ts`** — `TOOLBAR_EXTRA_IDS` (the mobile ⋯ sheet) and one of `LANDSCAPE_{LEFT,RIGHT}_IDS` (the short-landscape side pills). Miss them and the button simply vanishes on mobile, silently, exactly like an unlisted `data-action` does in admin
 - `frontend/landing/` — landing page
 - `frontend/shared/` — `store.ts` (tiny reactive store), `utils.ts` (typed API wrapper, toast, formatters), `branding.ts` (read-only branding loader), `components.ts` (modal helpers)
 - `www/shared/` — design system CSS (`tokens.css`, `components.css`, `utils.css`); conventions in the [Design system](#design-system) section below
@@ -252,6 +252,34 @@ meant neither could be promoted to `components.css`. Keep them distinct.
 **Error handling:** `AppError::Internal` and `AppError::BadGateway` return a generic message to the client; actual error is logged server-side only.
 
 **LiveKit:** Hand-rolled, no official Rust SDK. Token generation and RoomService calls are in `src/livekit.rs`.
+
+**First-run room tour** (`frontend/viewer/tour.ts`, GitHub #230). Six spotlight
+steps over the room chrome, shown once per device and never again, and only to
+participants — a `role: 'presenter'` host is never offered it (and isn't marked
+as having seen it, so their browser still gets it if it later joins a room as a
+participant). The seen
+record is `localStorage['farbstrom_tour_v1']` **plus** a `farbstrom_tour` cookie,
+either of which counts; neither is slug-scoped, because every room is the same
+origin and one record covers all of them. It is written when the tour is
+*offered*, so a mid-tour reload doesn't re-prompt. A private window or a fresh
+browser profile is a first visit by definition — that is why the tour can look
+like it never sticks while you're testing it. `main.ts` starts it after the PTT
+notice and the cam/mic prompt resolve (`showConfPrompt()` returns a promise for
+exactly that), so dialogs never stack.
+
+Each step names the selectors it points at; the spotlight covers whichever of
+them are visible, and a step with none left is dropped before the tour starts.
+That is what keeps it honest across the three toolbar layouts and every room
+shape — no pointer button outside focus view, no player controls in an app-only
+room — and in compact (mobile) mode the last step points at the ⋯ sheet instead
+of the controls hidden inside it. The tour never operates the room: a blocker
+plus `inert` on `#app` see to that, and the chat panel (which one step opens) is
+put back on the way out. New steps are a `TourStep` in `buildSteps()`.
+
+**The ? toolbar button** (`frontend/viewer/shortcuts.ts`) opens the shortcuts
+sheet, and offers the tour as its second button rather than launching it. The
+sheet is generated from `SHORTCUTS` — the same list the key handler reads — so a
+new single-key shortcut cannot ship undocumented.
 
 **Public participant status.** `GET /api/public/rooms/:slug/status/:participantId?token=…` returns `{admitted, kicked, room_status: 'scheduled|live|ended'}`. Companion SSE stream at `/api/public/rooms/:slug/waiting/events/:participantId` emits `admitted`, `kicked`, `room_ended`, `ping` — waiting-room clients drive the full state machine from SSE alone without holding a WS open.
 

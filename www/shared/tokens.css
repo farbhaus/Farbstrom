@@ -192,6 +192,7 @@ html { touch-action: manipulation; }
     --z-pill:        120;   /* floating nav pills — above panels, below overlays */
     --z-overlay:     150;   /* prompts and pickers that sit under a modal */
     --z-screen:      200;   /* full-page screens: join, waiting */
+    --z-tour:        250;   /* first-run tour: over every screen, under modals */
     --z-modal:       300;
     --z-toast:       999;
 
