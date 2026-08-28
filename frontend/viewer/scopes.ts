@@ -24,6 +24,7 @@ import {
   type DrawOpts,
   type ScopeFrame,
 } from './scope-draw.js';
+import { viewerStore } from './state.js';
 
 type ScopeId = 'luma' | 'parade' | 'vector';
 
@@ -272,7 +273,7 @@ let lastDrawAt = 0;
 let generation = 0;
 
 function running(): boolean {
-  return prefs.open && !document.hidden;
+  return prefs.open && available && !document.hidden;
 }
 
 function stopLoop(): void {
@@ -423,14 +424,41 @@ function stepZoom(dir: 1 | -1): void {
   setZoom(next ?? prefs.zoom);
 }
 
+// ---- Availability ----------------------------------------------------------
+
+// Scopes measure whatever the stage tile is showing, so they are offered
+// exactly when this browser has something to sample: a broadcast it plays
+// itself, or a presenter-displayed file. A call-only room — no stream key —
+// has neither, so the button is hidden until one is attached (#246). App-only
+// (SRT) delivery is the same case for the same reason: that broadcast plays in
+// Farbplay and no frame of it ever reaches this browser. Mirrors the tile's own
+// visibility rule in player.ts (updateStageVisibility).
+export function scopesAvailable(): boolean {
+  const { streamKey, deliveryMode, displayFile } = viewerStore.get();
+  return (!!streamKey && deliveryMode !== 'srt') || !!displayFile;
+}
+
+let available = false;
+
+// Availability is separate from `prefs.open` on purpose: `open` is what the
+// user asked for and persists across rooms, so a call-only room parks the
+// window rather than clearing the preference — attach a stream key and it
+// comes back open.
+function syncAvailability(): void {
+  const next = scopesAvailable();
+  document.body.classList.toggle('no-scopes', !next);
+  if (next === available) return;
+  available = next;
+  applyOpenState();
+}
+
 // ---- Open / close ----------------------------------------------------------
 
-function setOpen(open: boolean): void {
-  prefs.open = open;
-  savePrefs();
-  win?.classList.toggle('hidden', !open);
-  el('scopes-btn')?.classList.toggle('panel-open', open);
-  if (open) {
+function applyOpenState(): void {
+  const showing = prefs.open && available;
+  win?.classList.toggle('hidden', !showing);
+  el('scopes-btn')?.classList.toggle('panel-open', showing);
+  if (showing) {
     // Order matters: the window has to be visible before fitGeometry can read
     // a real header height.
     applyGeometry();
@@ -440,6 +468,12 @@ function setOpen(open: boolean): void {
     stopLoop();
     releaseScopeBuffers();
   }
+}
+
+function setOpen(open: boolean): void {
+  prefs.open = open;
+  savePrefs();
+  applyOpenState();
 }
 
 export function closeScopes(): void {
@@ -513,7 +547,12 @@ export function initScopes(): void {
   body = el('scopes-body');
   headEl = el('scopes-head');
   canvas = el('scopes-canvas') as HTMLCanvasElement | null;
-  if (!win || !body || !canvas) return;
+  if (!win || !body || !canvas) {
+    // No window in the DOM means the button would be inert; hide it rather
+    // than offer a control that does nothing.
+    document.body.classList.add('no-scopes');
+    return;
+  }
 
   el('scopes-btn')?.addEventListener('click', () => setOpen(!prefs.open));
   el('scopes-close')?.addEventListener('click', () => setOpen(false));
@@ -580,5 +619,8 @@ export function initScopes(): void {
 
   syncControls();
   applyGeometry();
-  if (prefs.open) setOpen(true);
+  applyOpenState();
+  // Fires immediately, and on every stream-key / delivery-mode / displayed-file
+  // change after that — the three inputs to scopesAvailable().
+  viewerStore.subscribe(syncAvailability);
 }

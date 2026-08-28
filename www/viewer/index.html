@@ -561,6 +561,13 @@ body.has-focus #stage-empty { display: none; }
 body:not(.has-focus) #conf-toggle,
 body:not(.has-focus) #pointer-btn { display: none !important; }
 
+/* Scopes measure the stage, so the button is hidden while there is nothing on
+   it to sample — a call-only room (no stream key) or an app-only (SRT) room,
+   until a stream key or a displayed file arrives (#246). Set on <body> by
+   scopes.ts, so it survives the toolbar being re-parented into the mobile ⋯
+   sheet or the landscape side pills. */
+body.no-scopes #scopes-btn { display: none !important; }
+
 /* Dynamic focus-btn icon: show the icon of the *target* state. */
 #focus-btn .fb-icon-focus, #focus-btn .fb-icon-grid { display: none; }
 body:not(.has-focus) #focus-btn .fb-icon-focus { display: block; }
