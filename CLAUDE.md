@@ -276,6 +276,16 @@ of the controls hidden inside it. The tour never operates the room: a blocker
 plus `inert` on `#app` see to that, and the chat panel (which one step opens) is
 put back on the way out. New steps are a `TourStep` in `buildSteps()`.
 
+**The privacy page is the cookie disclosure** (`www/privacy/index.html`, gh
+#247). It is linked from the landing page, the join screen and the device
+picker, and it enumerates every key this app writes to the browser —
+`farbstrom_tour` (the tour's cookie, the **only** cookie set anywhere), the
+`sessionStorage` session, and the `localStorage` room/tool preferences including
+`viewer_scopes`. Anything new that writes to a cookie, `localStorage` or
+`sessionStorage` belongs on that page in the same commit; it shipped claiming
+"not in cookies" for a whole release after the tour landed, and claiming the
+room password was saved behind a checkbox that has never existed.
+
 **The ? toolbar button** (`frontend/viewer/shortcuts.ts`) opens the shortcuts
 sheet, and offers the tour as its second button rather than launching it. The
 sheet is generated from `SHORTCUTS` — the same list the key handler reads — so a
