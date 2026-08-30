@@ -45,10 +45,13 @@ const SAMPLE_MS = 1000;
 interface Snapshot {
   width: number;
   height: number;
+  /** Null when no instrument on this browser can measure it — never 0 as a
+   *  stand-in, which is what reported a healthy stream as stopped. */
   fps: number | null;
-  droppedTotal: number;
-  framesTotal: number;
+  /** Null when the browser exposes no usable frame counter. */
+  frames: { dropped: number; total: number } | null;
   bufferAhead: number | null;
+  playing: boolean;
   stalled: boolean;
 }
 
@@ -63,14 +66,67 @@ let carriedFrames = 0;
 let carriedDropped = 0;
 let lastFrames = 0;
 let lastDropped = 0;
-// Consecutive samples where playback was live but no new frame arrived. One
-// tick is ordinary jitter; two is a stall worth recording.
+// Consecutive samples where playback was live but nothing advanced. One tick is
+// ordinary jitter; two is a stall worth recording.
 let stalledTicks = 0;
 let stallLogged = false;
+let lastClock = 0;
+
+// ---- Frame progress ---------------------------------------------------------
+//
+// Three instruments, best first, because no single one works everywhere:
+//
+//   1. requestVideoFrameCallback — counts frames actually presented. The only
+//      one that works for a MediaStream-backed element in every engine.
+//   2. getVideoPlaybackQuality() — reliable for MSE (LL-HLS), and the only
+//      source of a dropped-frame count. But Firefox leaves totalVideoFrames at
+//      a constant 0 for a MediaStream, which is exactly what WebRTC attaches:
+//      measured against a live 30 fps ingest, Chrome and Safari advanced the
+//      counter while Firefox sat at zero. Trusting it alone reported a
+//      perfectly healthy WebRTC stream in Firefox as "0 fps · stalled".
+//   3. currentTime — no frame rate, but it advances whenever playback does, so
+//      it still tells a stall from a working stream.
+
+let vfcVideo: HTMLVideoElement | null = null;
+let vfcHandle: number | null = null;
+let vfcPresented = 0;
+let lastPresented = 0;
+
+function detachFrameCallback(): void {
+  if (vfcVideo && vfcHandle !== null && typeof vfcVideo.cancelVideoFrameCallback === 'function') {
+    try {
+      vfcVideo.cancelVideoFrameCallback(vfcHandle);
+    } catch {
+      // Element already torn down — the callback dies with it.
+    }
+  }
+  vfcVideo = null;
+  vfcHandle = null;
+  vfcPresented = 0;
+  lastPresented = 0;
+}
+
+// Re-arms itself for as long as this element is the one we're watching. A
+// remount swaps the element, which detaches and starts a fresh count.
+function ensureFrameCallback(video: HTMLVideoElement): void {
+  if (vfcVideo === video) return;
+  detachFrameCallback();
+  if (typeof video.requestVideoFrameCallback !== 'function') return;
+  vfcVideo = video;
+  const step = (): void => {
+    if (vfcVideo !== video) return;
+    vfcPresented += 1;
+    vfcHandle = video.requestVideoFrameCallback(step);
+  };
+  vfcHandle = video.requestVideoFrameCallback(step);
+}
 
 function playbackQuality(video: HTMLVideoElement): { total: number; dropped: number } | null {
   if (typeof video.getVideoPlaybackQuality !== 'function') return null;
   const q = video.getVideoPlaybackQuality();
+  // A counter that has never left zero is not a counter this browser populates
+  // for this source — treat it as absent rather than as "no frames".
+  if (q.totalVideoFrames === 0) return null;
   return { total: q.totalVideoFrames, dropped: q.droppedVideoFrames };
 }
 
@@ -80,40 +136,66 @@ function sample(): void {
     snapshot = null;
     stalledTicks = 0;
     stallLogged = false;
+    detachFrameCallback();
     return;
   }
 
+  ensureFrameCallback(video);
   const q = playbackQuality(video);
-  let fps: number | null = null;
-  let stalled = false;
 
+  // Frames, when the browser will give them for this source. Carried across
+  // remounts so a fresh element's zeroed counter doesn't walk the total back.
+  // `counterDelta` is how far it moved this tick — captured before lastFrames
+  // is overwritten, since that is what the comparison needs.
+  let frames: Snapshot['frames'] = null;
+  let counterDelta: number | null = null;
   if (q) {
-    // A remount hands us a fresh element whose counters start at zero.
-    if (q.total < lastFrames) {
+    const remounted = q.total < lastFrames;
+    if (remounted) {
       carriedFrames += lastFrames;
       carriedDropped += lastDropped;
+      lastFrames = 0;
+      lastDropped = 0;
     }
-    const delta = q.total - (q.total < lastFrames ? 0 : lastFrames);
-    fps = Math.max(0, delta);
+    counterDelta = q.total - lastFrames;
     lastFrames = q.total;
     lastDropped = q.dropped;
+    frames = { total: carriedFrames + lastFrames, dropped: carriedDropped + lastDropped };
+  }
 
-    // Playing, unmuted by the pipeline, but no new frame this second.
-    const playing = !video.paused && !video.ended && video.readyState >= 2;
-    if (playing && delta === 0) {
-      stalledTicks += 1;
-      if (stalledTicks >= 2) {
-        stalled = true;
-        if (!stallLogged) {
-          logDiag('player', 'warn', 'Video stalled — no new frames');
-          stallLogged = true;
-        }
+  // Progress this tick, from whichever instrument is actually reporting.
+  let fps: number | null = null;
+  let progressed: boolean;
+  if (vfcVideo === video && vfcHandle !== null) {
+    const delta = vfcPresented - lastPresented;
+    lastPresented = vfcPresented;
+    fps = Math.max(0, delta);
+    progressed = delta > 0;
+  } else if (counterDelta !== null) {
+    fps = Math.max(0, counterDelta);
+    progressed = counterDelta > 0;
+  } else {
+    // No frame instrument at all — the clock proves liveness without claiming
+    // a frame rate we did not measure.
+    progressed = video.currentTime > lastClock;
+  }
+  lastClock = video.currentTime;
+
+  const playing = !video.paused && !video.ended && video.readyState >= 2;
+  let stalled = false;
+  if (playing && !progressed) {
+    stalledTicks += 1;
+    if (stalledTicks >= 2) {
+      stalled = true;
+      if (!stallLogged) {
+        logDiag('player', 'warn', 'Video stalled — no new frames');
+        stallLogged = true;
       }
-    } else {
-      if (stallLogged && delta > 0) logDiag('player', 'info', 'Video recovered');
-      stalledTicks = 0;
-      stallLogged = false;
     }
+  } else {
+    if (stallLogged && progressed) logDiag('player', 'info', 'Video recovered');
+    stalledTicks = 0;
+    stallLogged = false;
   }
 
   let bufferAhead: number | null = null;
@@ -128,9 +210,9 @@ function sample(): void {
     width: video.videoWidth,
     height: video.videoHeight,
     fps,
-    droppedTotal: carriedDropped + lastDropped,
-    framesTotal: carriedFrames + lastFrames,
+    frames,
     bufferAhead,
+    playing,
     stalled,
   };
 }
@@ -174,22 +256,33 @@ function videoSection(): string {
     return section('Video', rows.join(''));
   }
 
-  const { width, height, fps, droppedTotal, framesTotal, bufferAhead, stalled } = snapshot;
+  const { width, height, fps, frames, bufferAhead, playing, stalled } = snapshot;
   if (width && height) rows.push(row('Resolution', `${width} × ${height}`));
-  if (fps !== null) rows.push(row('Frame rate', `${fps} fps`, stalled ? 'is-bad' : ''));
-  if (framesTotal > 0) {
-    const pct = (droppedTotal / framesTotal) * 100;
+
+  // Only ever state a frame rate that was actually measured. Firefox reports
+  // none for a WebRTC source, and printing 0 there read as a dead stream.
+  if (fps !== null && playing) rows.push(row('Frame rate', `${fps} fps`, stalled ? 'is-bad' : ''));
+
+  if (frames && frames.total > 0) {
+    const pct = (frames.dropped / frames.total) * 100;
     // 1% dropped is where a colourist starts seeing it rather than measuring it.
     rows.push(
       row(
         'Dropped frames',
-        `${droppedTotal.toLocaleString()} of ${framesTotal.toLocaleString()} (${pct.toFixed(1)}%)`,
+        `${frames.dropped.toLocaleString()} of ${frames.total.toLocaleString()} (${pct.toFixed(1)}%)`,
         pct >= 1 ? 'is-bad' : '',
       ),
     );
   }
   if (bufferAhead !== null) rows.push(row('Buffer ahead', `${bufferAhead.toFixed(1)} s`));
-  if (stalled) rows.push(row('Status', 'Stalled — no new frames', 'is-bad'));
+
+  rows.push(
+    !playing
+      ? row('Status', 'Not playing')
+      : stalled
+        ? row('Status', 'Stalled — no new frames', 'is-bad')
+        : row('Status', 'Playing'),
+  );
 
   return section('Video', rows.join(''));
 }
@@ -211,7 +304,9 @@ function headline(): { q: Quality; word: string; basis: string } {
   }
 
   const droppedPct =
-    snapshot && snapshot.framesTotal > 0 ? (snapshot.droppedTotal / snapshot.framesTotal) * 100 : 0;
+    snapshot?.frames && snapshot.frames.total > 0
+      ? (snapshot.frames.dropped / snapshot.frames.total) * 100
+      : 0;
   const bad = rtt > 300 || droppedPct >= 1 || !!snapshot?.stalled;
   const fair = rtt > 150 || droppedPct >= 0.2;
   const q: Quality = bad ? 'poor' : fair ? 'good' : 'excellent';
