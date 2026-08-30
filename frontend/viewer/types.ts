@@ -134,6 +134,9 @@ export type WsMessage =
     }
   | { type: 'file:removed'; id: string }
   | { type: 'conference:unmute' }
+  // Reply to the client's own `ping`, echoing its clock reading back untouched
+  // so RTT needs no clock agreement between the two ends (gh #40).
+  | { type: 'pong'; t: number }
   | { type: 'pointer:move'; participantId: string; name: string; x: number; y: number }
   | { type: 'pointer:hide'; participantId: string }
   | { type: 'focus:set'; tileId: TileId | null }
@@ -152,6 +155,7 @@ export type WsMessage =
 
 export type WsClientMessage =
   | { type: 'auth'; participantId: string; token: string }
+  | { type: 'ping'; t: number }
   | { type: 'chat:message'; text: string }
   | { type: 'pointer:move'; x: number; y: number }
   | { type: 'pointer:hide' }

@@ -28,6 +28,7 @@ import {
 import { configurePointer, initPointer } from './pointer.js';
 import { closeScopes, initScopes } from './scopes.js';
 import { initShortcuts } from './shortcuts.js';
+import { initStats } from './stats.js';
 import { maybeStartTour, stopTour } from './tour.js';
 import {
   configureJoinOutcome,
@@ -354,6 +355,7 @@ function init(): void {
   initScopes();
   initChat();
   initRoster();
+  initStats();
   initConference();
   initLandingForm();
   initJoinForm();

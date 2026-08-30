@@ -3,6 +3,7 @@
 
 import { addFileToSection, appendChatHistory, appendChatMessage, appendFileMessage, loadSessionFiles, removeFileEverywhere, setChatEnabled } from './chat.js';
 import { disconnectLiveKit, requestAutoFocus, requestSelfUnmute, setFocus, syncConferenceTiles } from './conference.js';
+import { countWsDrop, logDiag, setRtt } from './diagnostics.js';
 import { applyDisplayState, destroyPlayer, remountLivePlayer } from './player.js';
 import { applyModerationUpdate } from './roster.js';
 import { clearAllPointers, hidePointer, pruneCursorsToRoster, renderPointer } from './pointer.js';
@@ -24,6 +25,56 @@ import type { DeliveryMode, RosterEntry, WsClientMessage, WsMessage } from './ty
 let ws: WebSocket | null = null;
 let wsReconnect = true;
 let kickedPollTimer: ReturnType<typeof setInterval> | null = null;
+
+// App-level round-trip probe (gh #40). The protocol ping/pong is invisible to
+// browser JS, so the stats panel gets its RTT from a message pair of our own.
+// 5 s is frequent enough that a reading is never stale when someone opens the
+// panel, and cheap enough to leave running for the whole session.
+const PING_INTERVAL_MS = 5000;
+// A TCP connection that dies without a FIN — a dropped wifi link, a NAT
+// timeout, a laptop lid — leaves readyState at OPEN forever and fires no
+// close event, so the room looks connected while nothing arrives. That is the
+// shape most "the session went unstable" reports take. Three unanswered pings
+// is 15 s of silence, which no working link produces.
+const MISSED_PINGS_BEFORE_DEAD = 3;
+let pingTimer: ReturnType<typeof setInterval> | null = null;
+let pendingPings = 0;
+// True once the socket has been up at least once, so the first connect isn't
+// logged as a reconnect.
+let wsWasConnected = false;
+
+function startPinger(): void {
+  stopPinger();
+  pendingPings = 0;
+  const tick = (): void => {
+    if (pendingPings >= MISSED_PINGS_BEFORE_DEAD) {
+      logDiag('ws', 'error', 'Room connection stopped responding — reconnecting');
+      setWsStatus('error', 'Not responding');
+      // Closing routes into onclose, which counts the drop and schedules the
+      // reconnect — one recovery path rather than two.
+      stopPinger();
+      try {
+        ws?.close();
+      } catch {
+        /* already gone; onclose still runs */
+      }
+      return;
+    }
+    pendingPings += 1;
+    wsSend({ type: 'ping', t: Date.now() });
+  };
+  pingTimer = setInterval(tick, PING_INTERVAL_MS);
+  tick();
+}
+
+function stopPinger(): void {
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
+  pendingPings = 0;
+  setRtt(null);
+}
 
 let onAuthOk: () => void = () => {};
 let onRoomLive: () => void = () => {};
@@ -82,8 +133,15 @@ function handleMessage(msg: WsMessage): void {
     case 'auth:ok':
       setWsStatus('connected', 'Connected');
       setChatEnabled(true);
+      logDiag('ws', 'info', wsWasConnected ? 'Room connection restored' : 'Room connected');
+      wsWasConnected = true;
+      startPinger();
       void loadSessionFiles();
       onAuthOk();
+      return;
+    case 'pong':
+      pendingPings = 0;
+      setRtt(Math.max(0, Date.now() - msg.t));
       return;
     case 'kicked':
       clearAllPointers();
@@ -264,7 +322,15 @@ export function connectWs(): void {
     }
     setWsStatus('error', 'Reconnecting');
     setChatEnabled(false);
-    if (wsReconnect) setTimeout(connectWs, 3000);
+    stopPinger();
+    // Only an unexpected close counts as a drop. 1001/1008 return above, and
+    // closeWs() clears wsReconnect before closing, so a deliberate leave never
+    // lands here.
+    if (wsReconnect) {
+      countWsDrop();
+      logDiag('ws', 'warn', `Room connection dropped (code ${e.code}) — reconnecting`);
+      setTimeout(connectWs, 3000);
+    }
   };
   ws.onerror = () => {
     setWsStatus('error', 'Error');
@@ -273,6 +339,7 @@ export function connectWs(): void {
 
 export function closeWs(): void {
   wsReconnect = false;
+  stopPinger();
   if (ws) {
     try {
       ws.close();

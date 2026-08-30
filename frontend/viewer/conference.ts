@@ -5,6 +5,14 @@
 
 import { confirmModal, noticeModal } from '../shared/components.js';
 import { toast } from '../shared/utils.js';
+import {
+  clearQuality,
+  countConfReconnect,
+  logDiag,
+  setConfState,
+  setQuality,
+  type Quality,
+} from './diagnostics.js';
 import { sizeStage } from './layout.js';
 import { disablePointerMode } from './pointer.js';
 import { getParticipantId, getToken, PREF_KEY, slug } from './session.js';
@@ -13,6 +21,11 @@ import type { LivekitTokenResponse, RosterEntry, TileId, WsClientMessage } from 
 
 let livekitRoom: LkRoom | null = null;
 let activeScreenShareId: string | null = null; // participant.identity or 'local'
+
+// Name for a diagnostic line. Mirrors the tile-label convention used throughout
+// this module: LiveKit's display name, falling back to the identity.
+const participantLabel = (p: LkRemoteParticipant | LkLocalParticipant): string =>
+  ('name' in p ? p.name : '') || p.identity;
 
 // ---- Audio capture preferences (per-room override over admin default) ----
 // Keys are slug-scoped so a participant's toggle sticks for this room only.
@@ -330,7 +343,47 @@ export async function initLiveKit(): Promise<void> {
     }
   });
 
+  // ---- Connection diagnostics (gh #40) ----
+  // LiveKit publishes every participant's quality to every participant, so this
+  // one subscription is what lets a host see the whole room's health without a
+  // single extra request. State lands in diagnostics.ts, which notifies the
+  // roster — going through it rather than calling renderRoster directly keeps
+  // conference.ts and roster.ts from importing each other.
+  room.on(LivekitClient.RoomEvent.ConnectionQualityChanged, (q, participant) => {
+    const who = participant as LkRemoteParticipant | LkLocalParticipant | undefined;
+    if (!who) return;
+    const next = (q as Quality) || 'unknown';
+    const previous = setQuality(who.identity, next);
+    // Only log the transitions worth reading back later. A healthy link flaps
+    // between excellent and good constantly; poor and lost do not.
+    if (previous !== next && (next === 'poor' || next === 'lost')) {
+      const mine = who.identity === getParticipantId();
+      const label = mine ? 'Your connection' : `${participantLabel(who)}'s connection`;
+      logDiag('conference', next === 'lost' ? 'error' : 'warn', `${label} is ${next}`);
+    }
+  });
+  room.on(LivekitClient.RoomEvent.Reconnecting, () => {
+    setConfState('reconnecting');
+    countConfReconnect();
+    logDiag('conference', 'warn', 'Conference connection lost — reconnecting');
+  });
+  room.on(LivekitClient.RoomEvent.Reconnected, () => {
+    setConfState('connected');
+    logDiag('conference', 'info', 'Conference reconnected');
+  });
+  room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
+    setConfState('disconnected');
+    clearQuality();
+    logDiag(
+      'conference',
+      'error',
+      `Conference disconnected${reason ? ` (${String(reason)})` : ''}`,
+    );
+  });
+
   await room.connect(lkUrl, lkToken);
+  setConfState('connected');
+  logDiag('conference', 'info', 'Conference connected');
 
   // Attach any tracks already subscribed (participants present before we
   // joined). The post-connect snapshot avoids missing peers that joined
@@ -360,6 +413,11 @@ export async function disconnectLiveKit(): Promise<void> {
     } catch {}
     livekitRoom = null;
   }
+  // Deliberate teardown, not a fault — go back to 'idle' rather than the
+  // 'disconnected' the Disconnected handler sets, so the stats panel doesn't
+  // report a healthy leave as a failure.
+  setConfState('idle');
+  clearQuality();
   // No longer in the conference — hide the self tile. (The both-off path in
   // updateSelfTile now keeps it visible while connected, so hiding has to
   // happen explicitly here.)

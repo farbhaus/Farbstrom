@@ -176,7 +176,17 @@ html, body { overflow: hidden; }
 .brand-logo:hover { opacity: 1; }
 .brand-wordmark-sm { font-size: var(--fs-base); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text); opacity: 0.5; margin: 20px; }
 #top-center { display: flex; align-items: center; gap: 10px; font-size: var(--fs-sm); color: var(--dim); }
-#ws-status { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--dim); }
+/* A silent button: no pill, no chrome — it looks exactly like the status text
+   it has always been, and only the cursor and a hover tint say it's live. */
+#ws-status {
+    display: flex; align-items: center; gap: 5px;
+    font: inherit; font-size: var(--fs-xs); color: var(--dim);
+    background: none; border: none; padding: 0;
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease-out);
+}
+#ws-status:hover, #ws-status.active { color: var(--text); }
+#ws-status:focus-visible { outline: none; box-shadow: var(--ring-accent); border-radius: var(--r-control); }
 #ws-dot { width: var(--sp-2); height: var(--sp-2); border-radius: var(--r-circle); background: var(--dim); transition: background var(--dur-slow) var(--ease-out); flex-shrink: 0; }
 #ws-dot.connected { background: var(--green); }
 #ws-dot.error     { background: var(--danger); }
@@ -382,6 +392,7 @@ html, body { overflow: hidden; }
 #participant-count .notif-dot.visible { display: block; }
 
 #roster-overlay.hidden { display: none; }
+#stats-overlay.hidden { display: none; }
 .roster-box {
     /* Sections own their padding, so the shell's is reset to zero. */
     padding: 0;
@@ -417,6 +428,55 @@ body:not(.has-host) #roster-body .host-only { display: none; }
 .roster-row .roster-name { flex: 1; font-size: var(--fs-sm); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roster-row .roster-role { font-size: var(--fs-2xs); color: var(--dim); text-transform: uppercase; letter-spacing: var(--ls-label); }
 .roster-empty { font-size: var(--fs-xs); color: var(--dim); padding: var(--sp-1) var(--sp-2); }
+
+/* Connection-quality dot (gh #40). 'unknown' is hollow rather than coloured —
+   a watch-only or Farbplay viewer publishes nothing for LiveKit to measure, so
+   an absent reading is normal and must not read as a fault. */
+.q-dot {
+    flex: none; width: var(--sp-2); height: var(--sp-2);
+    border-radius: var(--r-circle);
+    background: var(--dim);
+    border: var(--bw-hair) solid transparent;
+}
+.q-dot.q-excellent { background: var(--green); }
+.q-dot.q-good      { background: color-mix(in srgb, var(--green) 55%, var(--dim)); }
+.q-dot.q-poor      { background: var(--accent); }
+.q-dot.q-lost      { background: var(--danger); }
+.q-dot.q-unknown   { background: transparent; border-color: var(--dim); }
+
+/* ---- Connection stats panel (gh #40) ---- */
+.stat-section { padding: var(--sp-2) var(--sp-3); border-bottom: var(--bw-hair) solid var(--border); }
+.stat-section:last-child { border-bottom: none; }
+.stat-head {
+    color: var(--dim); margin-bottom: var(--sp-2);
+    font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+    text-transform: uppercase; letter-spacing: var(--ls-label);
+}
+.stat-headline { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.stat-headline-word { font-size: var(--fs-md); font-weight: var(--fw-bold); color: var(--text); }
+.stat-basis { font-size: var(--fs-2xs); color: var(--dim); margin-bottom: var(--sp-2); }
+.stat-row {
+    display: flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-1) 0;
+    font-size: var(--fs-sm);
+}
+.stat-key { flex: 1; display: flex; align-items: center; gap: var(--sp-2); color: var(--dim); min-width: 0; }
+.stat-key, .stat-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-val { color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-row.is-warn .stat-val { color: var(--accent); }
+.stat-row.is-bad  .stat-val { color: var(--danger); }
+.stat-empty { font-size: var(--fs-xs); color: var(--dim); }
+.stat-event {
+    display: flex; gap: var(--sp-2);
+    padding: var(--sp-1) 0;
+    font-size: var(--fs-xs); color: var(--dim);
+    border-top: var(--bw-hair) solid var(--border);
+}
+.stat-event:first-child { border-top: none; }
+.stat-event-time { flex: none; font-variant-numeric: tabular-nums; }
+.stat-event-text { flex: 1; min-width: 0; }
+.stat-event.sev-warn  .stat-event-text { color: var(--accent); }
+.stat-event.sev-error .stat-event-text { color: var(--danger); }
 .btn-mini {
     background: transparent; border: var(--bw-control) solid var(--border); color: var(--text);
     font: inherit; font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase;
@@ -1373,6 +1433,20 @@ body.has-focus.strip-hidden #stage-strip {
     </div>
 </div>
 
+<!-- Connection stats (gh #40). Own overlay, opened from the top-bar pill left
+     of the roster. Body content is rendered by stats.ts, not authored here. -->
+<div id="stats-overlay" class="modal-overlay modal-overlay-low hidden">
+    <div class="panel-box panel-box-md roster-box">
+        <div class="roster-box-header">
+            <div class="roster-box-title">Connection</div>
+            <button class="panel-close" id="stats-close" title="Close">
+                <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div id="stats-body" class="roster-box-body"></div>
+    </div>
+</div>
+
 <!-- Main app -->
 <div id="app">
 
@@ -1385,7 +1459,11 @@ body.has-focus.strip-hidden #stage-strip {
         <div id="top-center">
             <span id="room-name-label"></span>
             <span class="top-sep">&middot;</span>
-            <div id="ws-status"><div id="ws-dot"></div><span id="ws-label">Connecting</span></div>
+            <!-- Doubles as the connection-stats trigger (gh #40): the status
+                 badge is already the thing you look at when the room feels
+                 unstable, so it opens the detail rather than sitting next to a
+                 second control that says the same thing. -->
+            <button id="ws-status" title="Connection stats" aria-label="Connection stats"><span id="ws-dot"></span><span id="ws-label">Connecting</span></button>
         </div>
         <div id="top-right">
             <span id="live-badge" class="top-pill"><svg viewBox="0 0 8 8" width="8" height="8" style="fill:var(--green);stroke:none"><circle cx="4" cy="4" r="4"/></svg> Live</span>
