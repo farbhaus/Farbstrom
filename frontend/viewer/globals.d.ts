@@ -84,6 +84,10 @@ interface LivekitClientNS {
     Reconnecting: string;
     Reconnected: string;
     Disconnected: string;
+    // Whoever LiveKit's server-side audio analysis currently hears (#248).
+    // Reported to every participant, local included, so one subscription lights
+    // the whole room's tiles.
+    ActiveSpeakersChanged: string;
   };
   Track: {
     Source: {
@@ -136,15 +140,23 @@ interface LkRemoteParticipant {
   trackPublications: Map<string, LkPublication>;
 }
 
+// Anything LiveKit hands back that is identifiable by identity alone —
+// ActiveSpeakersChanged's payload is a mixed array of local and remote
+// participants, and identity is all the speaker highlight needs.
+interface LkSpeaker {
+  identity: string;
+}
+
 interface LkRoom {
   localParticipant: LkLocalParticipant;
   remoteParticipants: Map<string, LkRemoteParticipant>;
   // `arg1` also carries a bare string for the diagnostic events —
-  // ConnectionQualityChanged passes the quality, Disconnected a reason.
+  // ConnectionQualityChanged passes the quality, Disconnected a reason — and an
+  // array of participants for ActiveSpeakersChanged.
   on(
     event: string,
     handler: (
-      arg1?: LkPublication | LkTrack | string,
+      arg1?: LkPublication | LkTrack | string | LkSpeaker[],
       arg2?: LkRemoteParticipant | LkLocalParticipant,
       arg3?: LkRemoteParticipant,
     ) => void,

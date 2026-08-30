@@ -157,25 +157,82 @@ html, body { overflow: hidden; }
     border-color: var(--border);
 }
 
-/* ---- App layout ---- */
-/* Opaque base so the <html> branding image (applyBranding sets it on
+/* ---- App layout (#248) ----
+   The stage is the background layer: it fills #app edge to edge and every piece
+   of chrome — top chips, toolbar, call panel, chat panel — floats over it.
+   Opaque base so the <html> branding image (applyBranding sets it on
    documentElement, for the join/waiting screens) doesn't bleed through the
-   transparent band around the floating toolbar, which lives in #app *outside*
-   #main-row. The stage/main-row paint --bg too; this just covers the gaps. */
+   transparent bands around the floating chrome. */
 #app { display: none; flex-direction: column; height: 100vh; height: 100dvh; position: relative; background: var(--bg); }
 #app.visible { display: flex; }
 
-/* ---- Top bar ---- */
+/* ---- Chrome auto-hide (#248) ----
+   The floating chips and toolbar fade out after a couple of idle seconds so the
+   picture is unobstructed, and come back on the first pointer/key/touch event
+   (chromeIdle in layout.ts). `visibility` rides along with the fade so a faded
+   control is not a hover or tab target — pointer-events alone would still leave
+   it reachable by keyboard. */
+#top-bar, #bottom-toolbar, .side-pill,
+body.has-focus #stage > .tile[data-focused] .tile-actions,
+body.has-focus #stage > .tile[data-focused] .tile-name {
+    transition: opacity var(--dur-med) var(--ease-out),
+                visibility var(--dur-med) var(--ease-out);
+}
+body.chrome-hidden #top-bar,
+body.chrome-hidden #bottom-toolbar,
+body.chrome-hidden .side-pill,
+/* The pinned tile's own label and pin button ride along. The tile covers the
+   window now, so its :hover reveal is permanently on — leave them and they are
+   the two things still sitting on an otherwise clean picture. */
+body.chrome-hidden.has-focus #stage > .tile[data-focused] .tile-actions,
+body.chrome-hidden.has-focus #stage > .tile[data-focused] .tile-name {
+    opacity: 0; visibility: hidden; pointer-events: none;
+}
+
+/* ---- Top chips ---- */
+/* Was a solid in-flow bar; now a transparent row floating over the stage, with
+   each item carrying its own glass. Kept as #top-bar so the roster/stats/leave
+   wiring and the tour's selectors are untouched. */
 #top-bar {
-    height: var(--topbar-h); flex-shrink: 0;
-    background: var(--surface); border-bottom: var(--bw-hair) solid var(--border);
-    display: flex; align-items: center; padding: 0 16px;
+    position: absolute; top: 0; left: 0; right: 0;
+    height: var(--chrome-top); z-index: var(--z-pill);
+    display: flex; align-items: center;
+    padding: 0 var(--sp-2);
+    /* The row and its (mostly empty) groups are only scaffolding — clicks
+       belong to the stage, and to the pointer overlay, everywhere the chips
+       themselves aren't. */
+    pointer-events: none;
+}
+#top-bar .top-pill, #top-center, #top-bar .brand-logo, #top-bar .brand-wordmark-sm {
+    pointer-events: auto;
 }
 #top-left { flex: 1; display: flex; align-items: center; }
-.brand-logo:not(.u-hidden) { height: 30px; opacity: 1; transition: opacity var(--dur-fast) var(--ease-out); margin: 20px; display: flex }
+.brand-logo:not(.u-hidden) { height: 22px; opacity: 1; transition: opacity var(--dur-fast) var(--ease-out); margin: 0 var(--sp-2); display: flex }
 .brand-logo:hover { opacity: 1; }
-.brand-wordmark-sm { font-size: var(--fs-base); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text); opacity: 0.5; margin: 20px; }
-#top-center { display: flex; align-items: center; gap: 10px; font-size: var(--fs-sm); color: var(--dim); }
+.brand-wordmark-sm { font-size: var(--fs-base); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text); opacity: 0.5; margin: 0 var(--sp-2); }
+/* Room name + connection status float bare — no chip. They are labels, not
+   controls, and a pill around them made the row read as three buttons. The
+   drop shadow is the whole legibility budget: it keeps light text off a bright
+   frame without putting a box back. */
+#top-center {
+    display: inline-flex; align-items: center; gap: var(--sp-2);
+    height: var(--pill-h);
+    font-size: var(--fs-sm); color: var(--dim); white-space: nowrap;
+    /* text-shadow, not filter: var(--shadow-float). A `filter` makes the element
+       a stacking context and a backdrop root, and nothing that floats on the
+       picture should be doing either — see the end of this stylesheet. */
+    text-shadow: 0 1px 2px var(--scrim);
+}
+/* Ground under every floating chip: over video, .top-pill's transparent
+   background leaves the text unreadable. Shape and height still come from
+   .top-pill — only the ground is added here. (The blur that used to be here
+   moved to the "no backdrop-filter over the picture" block at the very end of
+   this stylesheet, which removes it.) */
+#top-bar .top-pill:not(#live-badge) {
+    background: var(--pill-bg);
+    border-color: var(--pill-border);
+}
+#top-bar .top-pill.interactive:hover { border-color: var(--glass-border-strong); }
 /* A silent button: no pill, no chrome — it looks exactly like the status text
    it has always been, and only the cursor and a hover tint say it's live. */
 #ws-status {
@@ -190,7 +247,9 @@ html, body { overflow: hidden; }
 #ws-dot { width: var(--sp-2); height: var(--sp-2); border-radius: var(--r-circle); background: var(--dim); transition: background var(--dur-slow) var(--ease-out); flex-shrink: 0; }
 #ws-dot.connected { background: var(--green); }
 #ws-dot.error     { background: var(--danger); }
-.top-sep { color: var(--border); user-select: none; }
+/* --faint, not --border: the chip is glass over video now, and a separator at
+   the container-edge value simply doesn't register on that ground. */
+.top-sep { color: var(--faint); user-select: none; }
 #room-name-label { font-size: var(--fs-sm); color: var(--text); font-weight: var(--fw-semi); }
 #top-right { flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 /* Shell (height, padding, border, radius, hover) comes from .top-pill. */
@@ -208,43 +267,54 @@ html, body { overflow: hidden; }
 /* Alignment and gap come from .top-pill; this only reverses the hidden state. */
 #live-badge.visible { display: inline-flex; }
 
-/* ---- Main row (panels + video) ---- */
+/* ---- Main row: the full app area, and the containing block for every
+   floating panel (#248). The stage fills it; nothing else takes flow space. */
 #main-row {
     flex: 1; min-height: 0;
-    display: flex; flex-direction: row;
     position: relative;
     background: var(--bg);
 }
 
-/* ---- Side panel (chat) ---- */
+/* ---- Side panel (chat) ----
+   Floats over the stage instead of shrinking it (#248), so the background layer
+   runs edge to edge underneath. Slides in from the right edge rather than
+   animating a width, which no longer reflows anything. It is deliberately NOT
+   part of the auto-hiding chrome: the participant opened it. */
 .side-panel {
-    flex-shrink: 0;
-    width: 0; overflow: hidden;
-    margin: 0;
+    position: absolute; z-index: var(--z-panel);
+    top: var(--chrome-top); bottom: var(--chrome-bottom); right: var(--sp-2);
+    width: var(--panel-w); max-width: calc(100% - var(--sp-4));
     background: var(--surface);
-    /* When closed (width:0) the surface bg would still paint the 2px border-box,
-       leaving a thin vertical strip beside the stage — clip it to the padding box. */
-    background-clip: padding-box;
     display: flex; flex-direction: column;
-    transition: width var(--dur-med) var(--ease-out), margin var(--dur-med) var(--ease-out);
-    border: var(--bw-hair) solid transparent;
+    border: var(--bw-hair) solid var(--border);
     border-radius: var(--r-card);
-    z-index: var(--z-panel);
+    opacity: 0; visibility: hidden;
+    transform: translateX(calc(100% + var(--sp-2)));
+    transition: opacity var(--dur-med) var(--ease-out),
+                transform var(--dur-med) var(--ease-out),
+                visibility var(--dur-med) var(--ease-out);
 }
-.side-panel.open { border-color: var(--border); }
-#right-panel.open { width: var(--panel-w); margin: 8px 8px 8px 0; }
+.side-panel.open { opacity: 1; visibility: visible; transform: none; }
 
 /* ---- Stage: unified tile grid ---- */
 #stage {
-    flex: 1; min-width: 0; min-height: 0;
-    position: relative;
+    position: absolute; inset: 0;
     display: grid;
     gap: 8px;
-    padding: 8px;
+    /* Inset past the floating chrome so no grid tile hides under a chip or the
+       toolbar. Focus view drops this — there the pinned tile IS the background
+       and is meant to run under everything. */
+    padding: var(--chrome-top) var(--sp-2) var(--chrome-bottom);
     align-content: center;
     justify-content: center;
     background: var(--bg);
     overflow: hidden;
+    transition: padding var(--dur-med) var(--ease-out);
+}
+/* Grid view keeps the tiles clear of the chat panel as well — it floats, but
+   covering half the grid with it would be worse than reflowing around it. */
+body:not(.has-focus).chat-open #stage {
+    padding-right: calc(var(--panel-w) + var(--sp-4));
 }
 
 .tile {
@@ -258,6 +328,14 @@ html, body { overflow: hidden; }
 }
 .tile.hidden { display: none !important; }
 @keyframes tile-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+/* Active speaker (#248). An *inset* ring, not an outline or an outer shadow:
+   the call panel and the mobile strip both scroll with `overflow: hidden`, and
+   anything drawn outside the tile's box would be clipped along their edges. */
+.tile.is-speaking {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 var(--bw-accent) var(--accent);
+}
 
 .tile-inner { position: absolute; inset: 0; }
 .tile-inner > video {
@@ -306,6 +384,12 @@ html, body { overflow: hidden; }
     max-width: calc(100% - 12px);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* The stream tile's label is only useful when there is no stream to look at.
+   #offline-screen precedes .tile-name in #tile-stream, so its `.visible` state
+   drives the label directly — no JS. A presenter-displayed file also clears the
+   overlay, and "Stream" would be the wrong word for it anyway. */
+#tile-stream > #offline-screen:not(.visible) ~ .tile-name { display: none; }
 
 /* Empty-state placeholder shown when no tiles are visible. */
 #stage-empty {
@@ -546,71 +630,70 @@ body:not(.has-host) #roster-body .host-only { display: none; }
 .tile.cam-off { background: var(--surface2); display: flex !important; flex-direction: column; align-items: center; justify-content: center; }
 .tile.cam-off .tile-name { position: static; background: none; font-size: var(--fs-base); padding: 0; }
 
-/* ---- Focus sub-layout ---- */
-/* Focus mode: stage becomes a 2-column grid — focused tile fills the main
-   area, strip holds everything else vertically. The strip lives inside #stage,
-   so #stage's grid arranges the focused tile (col 1) and strip (col 2). */
+/* ---- Focus sub-layout (#248) ----
+   The pinned tile is the background layer: it fills #stage edge to edge, with
+   no border, radius or padding of its own, and every panel floats above it.
+   The video inside stays `object-fit: contain` (base .tile rule) — a review
+   room must never crop the picture to fill the frame, so the letterbox is
+   --media-bg rather than a crop. */
 body.has-focus #stage {
-    display: grid;
-    /* The strip column sizes to the strip's own width (animated below), so the
-       open/close animates a plain width like the chat panel — not the grid
-       track itself, which interpolates less smoothly. */
-    grid-template-columns: auto 1fr;
-    grid-template-rows: 1fr;
-    gap: 8px;
-    align-content: stretch;
-    justify-content: stretch;
-    transition: gap var(--dur-med) var(--ease-out);
+    display: block;
+    padding: 0;
+    gap: 0;
+    background: var(--media-bg);
 }
+body.has-focus #stage > .tile[data-focused] {
+    position: absolute; inset: 0;
+    width: auto; height: auto;
+    aspect-ratio: auto;
+    border: none; border-radius: 0;
+    background: var(--media-bg);
+    animation: none;
+    cursor: default;
+}
+/* The call panel (#248): a floating card holding the unpinned tiles, pinned to
+   the upper-left of the safe band. Its height follows the participant count —
+   `max-content` — capped at eight tiles. Overflow scrolls with no visible bar.
+   `bottom: auto` is what makes it hang from the top rather than fill the band;
+   the cap still has to name the band explicitly (see below). */
 body.has-focus #stage-strip {
-    grid-column: 1; grid-row: 1;
-    display: flex;
+    position: absolute; z-index: var(--z-panel);
+    left: var(--sp-2);
+    top: var(--chrome-top); bottom: auto;
     width: var(--strip-w);
-    padding: 8px;
+    height: max-content;
+    /* Eight tiles, or the safe band if that is shorter. The band has to be
+       spelled out rather than written as 100%: a percentage max-height on an
+       absolutely positioned box resolves against the whole containing block,
+       not the inset it is placed in, so `100%` let a long roster run past the
+       bottom of the window instead of scrolling. */
+    max-height: min(
+        calc(100% - var(--chrome-top) - var(--chrome-bottom)),
+        calc(var(--call-tile-h) * 8 + var(--sp-2) * 7 + var(--sp-4))
+    );
+    display: flex;
+    padding: var(--sp-2);
     background: var(--surface);
     border: var(--bw-hair) solid var(--border);
     border-radius: var(--r-card);
-    z-index: var(--z-panel);
-    /* Same width/ease as the chat panel so the two panels animate identically. */
-    transition: width var(--dur-med) var(--ease-out), padding var(--dur-med) var(--ease-out),
-                opacity var(--dur-med) var(--ease-out), border-color var(--dur-med) var(--ease-out);
+    transition: opacity var(--dur-med) var(--ease-out),
+                transform var(--dur-med) var(--ease-out),
+                visibility var(--dur-med) var(--ease-out);
     opacity: 1;
+    /* Scrollable past eight tiles, but no scrollbar — the panel is chrome over
+       the picture and a bar would read as a seam. */
+    scrollbar-width: none;
 }
-body.has-focus #stage > .tile[data-focused] {
-    grid-column: 2; grid-row: 1;
-    aspect-ratio: auto;
-    width: 100%; height: 100%;
-    cursor: default;
-}
-/* The only pinnable tiles are the stream + screenshare. Constrain them to
-   the content aspect ratio (real stream ratio via --focus-aspect, else
-   16:9) and centre them so the room grey shows around them instead of
-   black object-fit bars — the tile "floats" like the strip card. */
-body.has-focus #stage > #tile-stream[data-focused],
-body.has-focus #stage > #tile-share[data-focused] {
-    aspect-ratio: var(--focus-aspect, 16 / 9);
-    /* Default: height-limited (no horizontal collapse). sizeStage() flips
-       to .focus-fit-w when the cell is narrower than the content. */
-    height: 100%; width: auto;
-    min-width: 0; min-height: 0;
-    max-width: 100%; max-height: 100%;
-    place-self: center;
-    background: var(--bg);
-}
-body.has-focus #stage > #tile-stream[data-focused].focus-fit-w,
-body.has-focus #stage > #tile-share[data-focused].focus-fit-w {
-    width: 100%; height: auto;
-}
-body.has-focus #stage > #tile-stream[data-focused].focus-fit-h,
-body.has-focus #stage > #tile-share[data-focused].focus-fit-h {
-    height: 100%; width: auto;
-}
-body.has-focus #stage > #tile-stream[data-focused] .tile-inner > video,
-body.has-focus #stage > #tile-share[data-focused] .tile-inner > video,
-body.has-focus #stage > #tile-stream[data-focused] #player video,
-body.has-focus #stage > #tile-stream[data-focused] #display-img {
-    background: transparent;
-}
+body.has-focus #stage-strip::-webkit-scrollbar { display: none; }
+/* An empty call panel is just a grey stub floating on the picture — which is
+   exactly what a solo participant would see. Nothing in it, nothing drawn. */
+body.has-focus #stage-strip:not(:has(.tile)) { display: none; }
+/* The pinned tile's own chrome is now against the window edges, where the
+   floating chips and the toolbar already live — and it sits in the tile's
+   stacking context, well below them, so it would simply disappear underneath.
+   Push both into the same safe band everything else respects. */
+body.has-focus #stage > .tile[data-focused] .tile-actions { top: var(--chrome-top); right: var(--sp-2); }
+body.has-focus #stage > .tile[data-focused] .tile-name { bottom: var(--chrome-bottom); left: var(--sp-2); }
 body.has-focus #stage-strip .tile {
     width: 100%; flex: 0 0 auto;
 }
@@ -632,19 +715,11 @@ body.no-scopes #scopes-btn { display: none !important; }
 #focus-btn .fb-icon-focus, #focus-btn .fb-icon-grid { display: none; }
 body:not(.has-focus) #focus-btn .fb-icon-focus { display: block; }
 body.has-focus #focus-btn .fb-icon-grid { display: block; }
-/* Optional: user can hide the strip entirely while in focus mode. */
-/* Hide strip by collapsing its grid column to 0 — keeps display:flex so the
-   transition plays. The strip itself fades + un-pads to disguise the
-   width-clip. */
-body.has-focus.strip-hidden #stage {
-    gap: 0;
-}
+/* Optional: user can hide the call panel entirely while in focus mode. It
+   floats now, so nothing reflows — it just slides off the left edge. */
 body.has-focus.strip-hidden #stage-strip {
-    width: 0;
-    padding: 0;
-    opacity: 0;
-    border-color: transparent;
-    overflow: hidden;
+    opacity: 0; visibility: hidden;
+    transform: translateX(calc(-100% - var(--sp-2)));
 }
 
 /* Call-room badge on landing screen */
@@ -804,16 +879,14 @@ body.has-focus.strip-hidden #stage-strip {
 .shared-file-dl:hover { border-color: var(--dim); background: var(--surface2); }
 #files-empty { padding: var(--sp-3); font-size: var(--fs-sm); color: var(--dim); text-align: center; }
 
-/* ---- Bottom toolbar — in-flow, always-visible centered pill (#186) ----
-   Sits in the #app flex column (not over the stage): align-self centers it
-   horizontally while it reserves its own height, so the stage/tiles size to the
-   space left over. The .nav-pill class carries the shared glassy aesthetic. */
+/* ---- Bottom toolbar — floating, auto-hiding centered pill (#186, #248) ----
+   Overlays the stage rather than reserving a row in the #app column: the
+   background layer runs underneath it, and #stage's --chrome-bottom padding is
+   what keeps grid tiles clear of it. The .nav-pill class carries the shared
+   glassy aesthetic; the fade is on the #top-bar/#bottom-toolbar rule above. */
 #bottom-toolbar {
-    align-self: center; flex-shrink: 0;
-    /* Match the 8px layout gutter: the stage's 8px bottom padding supplies the
-       gap above the pill (so top margin is 0, like the chat panel's), 8px to the
-       window edges. */
-    margin: 0 auto calc(8px + env(safe-area-inset-bottom, 0px));
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
     max-width: calc(100% - 16px); z-index: var(--z-pill);
     display: flex; align-items: center; justify-content: center;
     /* Match the tiles/columns corner radius (override .nav-pill's pill radius)
@@ -1121,11 +1194,18 @@ body.has-focus.strip-hidden #stage-strip {
 @media (max-width: 700px) {
     /* Omit the brand logo (frees room for Leave) and spread the remaining items
        evenly across the full width instead of clustering them at the two edges:
-       flatten the left/right groups so every item is a direct flex child, then
-       distribute with space-between. */
-    #top-bar { padding: 0 14px; justify-content: space-between; }
+       flatten the right group so every chip is a direct flex child, then
+       distribute with space-between.
+       #top-center is deliberately NOT flattened any more (#248): there is no
+       solid bar behind it now, so the room name and status need to keep their
+       own glass chip to stay readable over the picture. It shrinks and the name
+       ellipses instead of pushing Leave off the screen. */
+    #top-bar { padding: 0 var(--sp-2); gap: var(--sp-1-5); justify-content: space-between; }
     #top-left { display: none; }
-    #top-center, #top-right { display: contents; }
+    #top-right { display: contents; }
+    #top-center { flex: 0 1 auto; min-width: 0; }
+    #room-name-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #ws-status { flex: none; }
     .top-sep { display: none; }
 
     /* Mobile: the pill is a slim full-width bottom row of essentials (cam/mic/
@@ -1149,15 +1229,15 @@ body.has-focus.strip-hidden #stage-strip {
     #volume-slider { display: none; }
     #seek-slider { width: 120px; }
 
-    /* Chat panel overlays the stage on mobile, anchored right so it
-       expands/collapses toward the right edge. Keeps desktop's rounded
-       corners and margin so it floats over what's behind. */
-    #right-panel { position: absolute; top: 0; right: 0; bottom: 0; }
-    #right-panel.open {
-        width: calc(100% - 16px) !important;
-        margin: 8px 8px 8px 0 !important;
+    /* Chat takes the full width on mobile (it already floats — see the
+       .side-panel rule) and rises above the call panel it now covers. */
+    #right-panel {
+        left: var(--sp-2);
+        width: auto;
         z-index: var(--z-panel-mobile);
     }
+    /* The grid can't reflow around a full-width panel, so it doesn't try. */
+    body:not(.has-focus).chat-open #stage { padding-right: var(--sp-2); }
 
     /* Tile action buttons stay visible on touch (no hover to reveal them) */
     .tile .tile-actions { display: flex; }
@@ -1166,35 +1246,13 @@ body.has-focus.strip-hidden #stage-strip {
        button. Strip tiles keep their pin button so another can be chosen. */
     body.has-focus #stage > .tile[data-focused] .tile-pin-btn { display: none; }
 
-    /* Focus mode on mobile: strip on top as a horizontal carousel, focused
-       tile underneath. */
-    body.has-focus #stage {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto 1fr;
-    }
-    body.has-focus #stage > .tile[data-focused] {
-        grid-column: 1; grid-row: 2;
-    }
-    body.has-focus #stage-strip {
-        grid-column: 1; grid-row: 1;
-        flex-direction: row;
-        /* Full-width carousel on mobile — undo the desktop fixed strip width. */
-        width: auto;
-        height: 104px;
-        overflow-x: auto; overflow-y: hidden;
-    }
-    /* Override desktop strip-hidden (which collapses a column) — on mobile
-       the strip occupies a row, so collapse the row instead. */
-    body.has-focus.strip-hidden #stage {
-        grid-template-columns: 1fr;
-        grid-template-rows: 0 1fr;
-    }
-    /* 16:9 comes from the base .tile rule; height is definite (fixed-height
-       strip row) so width:auto resolves correctly. */
-    body.has-focus #stage-strip .tile {
-        flex: 0 0 auto;
-        width: auto; height: 100%;
-    }
+    /* The call panel is the same floating top-left card here as everywhere else
+       (#248) — it used to be a full-width horizontal carousel, which was the one
+       piece of the old layout still stretched edge to edge. Only the width
+       changes: 220px would take well over half a phone screen, and the panel is
+       chrome sitting on the picture. --call-tile-h is derived from --strip-w, so
+       the eight-tile cap follows this on its own. */
+    :root { --strip-w: 108px; }
 
     /* Join / waiting / landing boxes fit small screens via .panel-box's own
        mobile rule in components.css — nothing page-specific needed here. */
@@ -1212,14 +1270,24 @@ body.has-focus.strip-hidden #stage-strip {
     #top-bar { display: none; }
     #volume-slider { display: none; }
     #bottom-toolbar { display: none; }
-    /* Shrink the focus-mode call strip so the (more important) pinned tile stays
-       wider than it (#192). sizeFocusPanels() in layout.ts reads these tokens off
-       :root live, so overriding them here shrinks both the CSS and the JS sizing. */
-    :root {
-        --strip-w: 116px;
-        --strip-w-min: 96px;
-        --strip-w-max: 150px;
+    /* Shrink the floating call panel so it covers less of the picture it is
+       sitting on (#192). --call-tile-h is derived from --strip-w, so the
+       eight-tile cap follows this override on its own. */
+    :root { --strip-w: 116px; }
+    /* No top chips and no bottom pill in landscape, so the floating panels get
+       the full height back. */
+    .side-panel { top: var(--sp-2); bottom: var(--sp-2); }
+    /* Still top-pinned, but the eight-tile cap now measures against the full
+       height since there is no chrome band to subtract. */
+    body.has-focus #stage-strip {
+        top: var(--sp-2);
+        max-height: min(
+            calc(100% - var(--sp-2) * 2),
+            calc(var(--call-tile-h) * 8 + var(--sp-2) * 7 + var(--sp-4))
+        );
     }
+    body.has-focus #stage > .tile[data-focused] .tile-actions { top: var(--sp-2); }
+    body.has-focus #stage > .tile[data-focused] .tile-name    { bottom: var(--sp-2); }
     /* Two vertical pills of stacked buttons, centered over the full height now
        that the top bar is gone. Edges sit close in to keep lateral spacing tight. */
     .side-pill {
@@ -1232,20 +1300,96 @@ body.has-focus.strip-hidden #stage-strip {
         gap: 4px; padding: 12px 6px;
         position: absolute; top: 50%; transform: translateY(-50%);
         max-height: calc(100% - 16px); overflow-y: auto; z-index: var(--z-pill);
-        /* Match the tiles/columns radius, not the pill radius. */
-        border-radius: var(--r-card);
+        /* Overflow scrolls, but never behind a visible bar — same treatment as
+           the call panel. A scrollbar inside a floating glass pill reads as a
+           rendering fault, not as an affordance. */
+        scrollbar-width: none;
     }
+    .side-pill::-webkit-scrollbar { display: none; }
+    /* Trim the button box so a full pill never needs to scroll. Seven buttons at
+       the usual 42px come to 342px, which fits a 390px-tall phone but not a
+       320px one (iPhone SE landscape); at 38px they come to 314px and fit both.
+       Only in this breakpoint — the bottom pill keeps full-size targets. */
+    .side-pill .tb-btn { width: 38px; height: 38px; }
     #left-toolbar  { left:  calc(8px + env(safe-area-inset-left, 0px)); }
     #right-toolbar { right: calc(8px + env(safe-area-inset-right, 0px)); }
-    /* Inset the stage to just past the pill's outer edge (8px offset + ~54px pill
-       + ~2px clearance) so the stage's own 8px padding is the only gap to the
-       tiles — matching the 8px gutter used everywhere else. Tighter than before
-       (was 70px at a 14px offset). Keeps sizeStage's math correct since it sizes
-       to #stage's now-narrower width. */
-    #main-row {
-        padding-left:  calc(64px + env(safe-area-inset-left, 0px));
-        padding-right: calc(64px + env(safe-area-inset-right, 0px));
+    /* Keep everything clear of the two side pills — 8px offset + ~54px pill +
+       ~2px clearance. This used to be padding on #main-row; since #248 the
+       stage and the panels are absolutely positioned, and an abspos box's
+       containing block is the *padding box*, so a padding on #main-row no
+       longer constrains any of them. Inset each one directly instead.
+       sizeStage() reads the real padding, so the grid math follows. */
+    #stage {
+        padding: var(--sp-2)
+                 calc(64px + env(safe-area-inset-right, 0px))
+                 var(--sp-2)
+                 calc(64px + env(safe-area-inset-left,  0px));
     }
+    /* Both edges, not just the left. A phone that is *also* under the 700px
+       mobile breakpoint (any small phone held sideways: an SE is 568x320) takes
+       the mobile carousel rules too, and there the panel is `width: auto`
+       stretched between left and right — so leaving `right` at the mobile 8px
+       ran it clean under the right-hand pill. On a wider landscape phone the
+       panel still has an explicit width, which over-constrains the box and
+       drops `right` harmlessly. */
+    body.has-focus #stage-strip {
+        left:  calc(64px + env(safe-area-inset-left,  0px));
+        right: calc(64px + env(safe-area-inset-right, 0px));
+    }
+    .side-panel { right: calc(64px + env(safe-area-inset-right, 0px)); }
+    /* The pinned background layer deliberately keeps running under the pills —
+       it is the picture, and `body.has-focus #stage { padding: 0 }` still wins. */
+}
+
+/* The shortest landscape phones — an iPhone SE is 320px tall, leaving 304px of
+   pill — need one more squeeze before a full seven buttons fit without
+   scrolling. Kept as its own step so the ordinary 390px-tall phone above keeps
+   the roomier spacing. */
+@media (max-height: 360px) and (orientation: landscape) {
+    .side-pill { gap: 2px; padding: var(--sp-2) var(--sp-1-5); }
+    .side-pill .tb-btn { width: 36px; height: 36px; }
+}
+
+/* ---- No backdrop-filter over the picture (#248) ------------------------
+   NOTHING that floats on the stream may carry `backdrop-filter`. An element
+   with one turns everything beneath it into an intermediate composited
+   surface, which pulls the video off its direct path and through an sRGB
+   buffer. In Firefox that visibly lifts blacks and flattens contrast across
+   the WHOLE frame, not just the strip under the pill — and since this chrome
+   auto-hides, the picture changed every time the toolbar faded in or out.
+   Confirmed Firefox-only: Chrome and Safari showed a byte-identical picture
+   either side of the toggle. In a colour-grading review room the one thing the
+   UI must never do is alter the image it sits on, so the blur goes rather than
+   the float.
+
+   New with #248 only because the chrome moved *over* the stage: the toolbar
+   used to sit below it in flow and the top bar was a solid strip, so no
+   backdrop-filter had ever been over the video before.
+
+   Written as a blanket rule over everything in #app rather than a list of
+   selectors, because a list is something you have to remember to add to — and
+   the scopes window, of all things, was missed by exactly that (it floats on
+   --z-overlay directly over the picture, and it is the tool you read the
+   picture WITH). Anything added inside #app from now on is covered without
+   anyone having to think about it.
+
+   Deliberately LAST in this stylesheet, and at two-id specificity, so it beats
+   every id rule above it — several selectors (#scopes-window, #more-sheet,
+   .tile-name) set backdrop-filter earlier at equal-or-lower specificity.
+
+   #chat-drop-overlay is the one exception inside #app: it is a momentary scrim
+   that exists to obscure the picture while a file is being dragged. The other
+   deliberate scrims — .modal-overlay, the roster/stats panels, #tour-blocker —
+   all live OUTSIDE #app and keep their blur for the same reason. .nav-pill
+   keeps its blur for the admin navbar, which floats over no video. */
+#app, #app *:not(#chat-drop-overlay) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+/* The blur carried some of the legibility; the ground has to carry all of it now. */
+#top-bar .top-pill:not(#live-badge),
+#bottom-toolbar, .side-pill, #more-sheet {
+    background: var(--pill-bg-opaque);
 }
 </style>
 </head>
@@ -1454,7 +1598,10 @@ body.has-focus.strip-hidden #stage-strip {
 <!-- Main app -->
 <div id="app">
 
-    <!-- Top bar -->
+    <!-- Top chips (#248). No longer a bar: a transparent row floating over the
+         stage, each item carrying its own glass. Kept as #top-bar so the
+         roster/stats/leave wiring and the tour's selectors are untouched. Fades
+         out with the toolbar after a couple of idle seconds. -->
     <div id="top-bar">
         <div id="top-left">
             <img src="" alt="" class="brand-logo u-hidden">
@@ -1485,8 +1632,10 @@ body.has-focus.strip-hidden #stage-strip {
 
         <!-- Unified stage: every video source (OvenPlayer broadcast,
              screenshare, participant cameras) is a tile in the same grid.
-             #stage-strip holds non-focused tiles when focus sub-layout is
-             active; in grid view it is empty and hidden. -->
+             #stage-strip is the floating call panel that holds the non-focused
+             tiles when focus sub-layout is active; in grid view it is empty and
+             hidden. In focus view the pinned tile fills the stage edge to edge
+             and is the background layer everything else floats over (#248). -->
         <div id="stage">
             <div class="tile hidden" id="tile-stream">
                 <div class="tile-inner">
@@ -1498,11 +1647,15 @@ body.has-focus.strip-hidden #stage-strip {
                     <div class="offline-dot"></div>
                     <div class="offline-label" id="offline-msg">Waiting for livestream source...</div>
                 </div>
-                <div class="tile-actions">
-                    <button class="tile-btn tile-pin-btn" data-action="toggle-focus" title="Pin to stage" aria-label="Pin to stage">
-                        <svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V6h6v4.76a2 2 0 0 0 .54 1.37l1.96 2.1H6.5l1.96-2.1A2 2 0 0 0 9 10.76z"/></svg>
-                    </button>
-                </div>
+                <!-- No pin button here. The stream is the room's default
+                     subject: the toolbar's focus button (X) already pins it,
+                     and on the background layer a pin floating over the picture
+                     was pure noise. #tile-share keeps its own — that one is a
+                     genuine choice between two sources. -->
+                <!-- Shown only while the stream is off; the offline overlay's
+                     `.visible` state drives it (see the CSS). Labelling the
+                     picture "Stream" while you are watching the stream says
+                     nothing. -->
                 <div class="tile-name" id="tile-stream-name">Stream</div>
             </div>
             <div class="tile hidden" id="tile-share">
@@ -1568,7 +1721,8 @@ body.has-focus.strip-hidden #stage-strip {
 
     </div><!-- /main-row -->
 
-    <!-- Bottom toolbar — floating, auto-hiding pill overlaying the stage (#186).
+    <!-- Bottom toolbar — floating, auto-hiding pill overlaying the stage
+         (#186, #248: it now really does overlay, and really does auto-hide).
          Desktop shows every control inline in the original order. On mobile the
          secondary controls (focus, strip, player controls, devices, resync) are
          moved into #more-sheet by layout.ts and revealed via the ⋯ button, so
@@ -1633,6 +1787,9 @@ body.has-focus.strip-hidden #stage-strip {
             <button class="tb-btn" id="resync-btn" title="Resync">
                 <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             </button>
+            <!-- Fullscreens the whole page, not the player (#248): the room is
+                 already edge-to-edge, so what this buys is hiding the browser's
+                 own chrome — an app, not a maximised video. -->
             <button class="tb-btn" id="fullscreen-btn" title="Fullscreen (F)">
                 <svg viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
             </button>

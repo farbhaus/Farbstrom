@@ -1,5 +1,5 @@
 // Cross-module shared state. Subscribers re-render when state changes
-// instead of every site calling syncConferenceTiles + sizePlayer + etc.
+// instead of every site calling syncConferenceTiles + sizeStage + etc.
 // manually after a mutation. Modules that own their own internal state
 // (chat list, pointer cursors, upload XHR) keep it private.
 
