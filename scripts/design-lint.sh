@@ -82,12 +82,13 @@ for path in (glob.glob('www/**/*.css', recursive=True)
     for m in re.finditer(r'var\((--[a-z0-9-]+)', open(path).read()):
         used.setdefault(m.group(1), set()).add(path)
 
-# Set per element from JS (conference.ts) with a CSS fallback, so it is
-# intentionally not declared in :root.
-UNDEFINED_OK = {'--focus-aspect'}
-# Read from JS via getComputedStyle in frontend/viewer/layout.ts rather than
-# referenced by a var() anywhere, so the usage scan above cannot see them.
-UNUSED_OK = {'--panel-w-max', '--strip-w-min', '--strip-w-max'}
+# Tokens legitimately referenced without a :root declaration — set per element
+# from JS with a CSS fallback. Empty since #248 retired --focus-aspect.
+UNDEFINED_OK: set[str] = set()
+# Nothing is currently read from JS via getComputedStyle instead of a var(), so
+# every token has to be referenced somewhere. Add a name here only if a token is
+# genuinely consumed in a way this scan cannot see.
+UNUSED_OK: set[str] = set()
 
 bad = False
 

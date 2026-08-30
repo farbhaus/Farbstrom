@@ -13,7 +13,7 @@ import {
   setQuality,
   type Quality,
 } from './diagnostics.js';
-import { sizeStage } from './layout.js';
+import { reflowStage, sizeStage } from './layout.js';
 import { disablePointerMode } from './pointer.js';
 import { getParticipantId, getToken, PREF_KEY, slug } from './session.js';
 import { viewerStore } from './state.js';
@@ -100,6 +100,28 @@ function findTileEl(tileId: TileId): HTMLElement | null {
   return document.getElementById(`conf-tile-${tileId}`);
 }
 
+// ---- Active speaker highlight (#248) ----
+
+// Light the tiles of everyone LiveKit currently hears, and clear the rest.
+// Kept as a full re-application from the event's complete set: a tile that was
+// removed mid-speech (participant left) simply isn't found, and no stale
+// highlight can survive a re-render.
+const speakingTiles = new Set<HTMLElement>();
+
+function markSpeaking(identities: string[]): void {
+  const next = new Set<HTMLElement>();
+  for (const id of identities) {
+    const tile = findTileEl(id);
+    if (tile) next.add(tile);
+  }
+  for (const tile of speakingTiles) {
+    if (!next.has(tile)) tile.classList.remove('is-speaking');
+  }
+  for (const tile of next) tile.classList.add('is-speaking');
+  speakingTiles.clear();
+  for (const tile of next) speakingTiles.add(tile);
+}
+
 // Inverse of findTileEl — used by the tile click handler to know which tile
 // the user pressed.
 function getTileIdFromEl(tile: HTMLElement): TileId | null {
@@ -162,60 +184,19 @@ export function setFocus(tileId: TileId | null, opts: { override?: boolean } = {
     }
   }
 
-  updateFocusAspect();
-  requestAnimationFrame(sizeStage);
+  // Switching between focus and grid animates #stage's padding between 0 and
+  // the chrome safe band, and sizeStage measures that padding. One frame is not
+  // enough — reflow across the whole transition or the grid gets sized for a
+  // box it never ends up with (tiles stacked and overlapping until the next
+  // resize).
+  reflowStage();
 }
 
-// Feed the real stream/screenshare aspect ratio to the focus-mode CSS so
-// the pinned tile is sized to the content (no black object-fit bars). Falls
-// back to the CSS `16 / 9` default when the dimensions aren't known yet.
-let focusAspectVid: { el: HTMLVideoElement; fn: () => void } | null = null;
-
-export function updateFocusAspect(): void {
-  const { focusedTile } = viewerStore.get();
-  let tile: HTMLElement | null = null;
-  let video: HTMLVideoElement | null = null;
-  if (focusedTile === 'stream') {
-    tile = document.getElementById('tile-stream');
-    video = document.querySelector<HTMLVideoElement>('#player video');
-  } else if (focusedTile === 'share') {
-    tile = document.getElementById('tile-share');
-    video = document.getElementById('screenshare-video') as HTMLVideoElement | null;
-  }
-  // When the stream tile is showing a still image, OvenPlayer is
-  // unmounted — read the image's natural aspect for --focus-aspect.
-  if (focusedTile === 'stream') {
-    const img = document.getElementById('display-img') as HTMLImageElement | null;
-    if (img && img.style.display !== 'none' && img.naturalWidth > 0) {
-      if (tile) {
-        tile.style.setProperty('--focus-aspect', `${img.naturalWidth} / ${img.naturalHeight}`);
-      }
-      requestAnimationFrame(sizeStage);
-      return;
-    }
-  }
-  // Keep one `resize` listener on the current video so a mid-stream
-  // resolution change re-fits the tile.
-  if (focusAspectVid && focusAspectVid.el !== video) {
-    focusAspectVid.el.removeEventListener('resize', focusAspectVid.fn);
-    focusAspectVid = null;
-  }
-  if (video && !focusAspectVid) {
-    const fn = (): void => updateFocusAspect();
-    video.addEventListener('resize', fn);
-    focusAspectVid = { el: video, fn };
-  }
-  if (!tile) return;
-  const w = video?.videoWidth ?? 0;
-  const h = video?.videoHeight ?? 0;
-  if (w > 0 && h > 0) {
-    tile.style.setProperty('--focus-aspect', `${w} / ${h}`);
-  } else {
-    tile.style.removeProperty('--focus-aspect');
-  }
-  // Re-pick the limiting axis for the new ratio (sizeStage handles focus).
-  requestAnimationFrame(sizeStage);
-}
+// Since #248 the pinned tile is the background layer — it fills the stage and
+// the video inside it is `object-fit: contain`, so the browser does the
+// letterboxing and nothing needs to know the content's aspect ratio. The old
+// --focus-aspect plumbing (and layout.ts's limiting-axis pick that consumed it)
+// went with that change.
 
 // Apply auto-pin rules unless the viewer has set a manual override.
 // preferred is an explicit hint (e.g. the share just started) — useful when
@@ -254,7 +235,6 @@ function showScreenShare(track: LkTrack, label: string): void {
   document.getElementById('tile-share')?.classList.remove('hidden');
   document.body.classList.add('sharing-screen');
   requestAutoFocus('share');
-  updateFocusAspect();
   // requestAutoFocus no-ops when the focus target is unchanged (e.g. the user
   // is already in grid mode), so re-flow the grid explicitly to account for
   // the share tile's visibility flip.
@@ -341,6 +321,12 @@ export async function initLiveKit(): Promise<void> {
       viewerStore.set({ screenOn: false });
       document.getElementById('screen-btn')?.classList.remove('active');
     }
+  });
+  // Active speakers (#248). One event carries the whole current set — local
+  // participant included — so the handler just replaces the highlight wholesale
+  // rather than tracking start/stop per person.
+  room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged, (speakers) => {
+    markSpeaking(((speakers as LkSpeaker[] | undefined) ?? []).map((s) => s.identity));
   });
 
   // ---- Connection diagnostics (gh #40) ----

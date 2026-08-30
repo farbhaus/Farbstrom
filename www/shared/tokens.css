@@ -154,6 +154,10 @@ html { touch-action: manipulation; }
     --pill-bg:     color-mix(in srgb, var(--surface) 72%, transparent);
     --pill-border: color-mix(in srgb, var(--text) 12%, transparent);
     --pill-blur:   12px;
+    /* Opaque partner for --pill-bg, for chrome that floats over the *picture*.
+       Blur is not allowed there (see the viewer's "no backdrop-filter over the
+       picture" block), so the ground has to carry the legibility on its own. */
+    --pill-bg-opaque: color-mix(in srgb, var(--surface) 92%, transparent);
     /* Hover partner for --pill-border, on glass chrome over video. */
     --glass-border-strong: color-mix(in srgb, var(--text) 25%, transparent);
     /* Blur behind modal/overlay scrims (weaker than the pill's). */
@@ -196,16 +200,21 @@ html { touch-action: manipulation; }
     --z-modal:       300;
     --z-toast:       999;
 
-    /* ---- Layout ----
-       --panel-w and --strip-w* are read from JS via getComputedStyle in
-       frontend/viewer/layout.ts — do not rename them. */
+    /* ---- Layout ---- */
     --nav-h:     62px;
-    --topbar-h:  48px;
     --panel-w:     320px;
-    --panel-w-max: 560px;
-    --strip-w:      220px;
-    --strip-w-min:  180px;
-    --strip-w-max:  360px;
+    --strip-w:     220px;
+
+    /* Viewer chrome safe area (#248). The room's top chips and bottom toolbar
+       float over the stage rather than sitting in flow, so anything that must
+       not hide underneath them — the chat panel, the call panel, the grid's
+       tiles — insets by these instead of guessing. */
+    --chrome-top:    48px;
+    --chrome-bottom: 70px;
+    /* Height of one call-panel tile: the strip's inner width at 16:9. Derived
+       so the mobile-landscape --strip-w override carries through to the
+       8-tile cap without restating any of the arithmetic. */
+    --call-tile-h: calc((var(--strip-w) - var(--sp-4)) * 9 / 16);
 }
 
 html, body {

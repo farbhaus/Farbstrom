@@ -13,7 +13,7 @@
 // pills — see layout.ts) and across room shapes: no pointer button outside
 // focus view, no player controls in an app-only (SRT) room.
 
-import { setChatOpen, switchPanelTab } from './layout.js';
+import { lockChrome, setChatOpen, switchPanelTab } from './layout.js';
 import { scopesAvailable } from './scopes.js';
 import { getState } from './state.js';
 
@@ -232,6 +232,8 @@ let root: HTMLElement | null = null;
 let rafId = 0;
 // Last laid-out geometry, so the rAF loop only writes when something moved.
 let lastGeom = '';
+// Releases the auto-hide hold taken in startTour (#248).
+let releaseChrome: (() => void) | null = null;
 
 export function isTourActive(): boolean {
   return root !== null;
@@ -463,6 +465,10 @@ export function startTour(): void {
   // a control behind the scrim (and hides the room from assistive tech while a
   // modal dialog is up). Harmless where unsupported — it's just an attribute.
   document.getElementById('app')?.toggleAttribute('inert', true);
+  // Most of what the tour points at is the auto-hiding chrome (#248), and the
+  // blocker eats the pointer events that would otherwise keep it awake — so
+  // hold it up for the duration rather than spotlighting a faded toolbar.
+  releaseChrome = lockChrome();
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', layout);
   render();
@@ -479,6 +485,8 @@ export function stopTour(): void {
 function endTour(): void {
   if (!root) return;
   document.getElementById('app')?.toggleAttribute('inert', false);
+  releaseChrome?.();
+  releaseChrome = null;
   document.removeEventListener('keydown', onKey, true);
   window.removeEventListener('resize', layout);
   cancelAnimationFrame(rafId);
