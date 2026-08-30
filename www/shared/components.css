@@ -100,7 +100,12 @@
     display: inline-flex; align-items: center; gap: var(--sp-1);
     height: var(--pill-h); padding: 0 var(--sp-2-5);
     border: var(--bw-hair) solid var(--border);
-    border-radius: var(--r-pill);
+    /* --r-control, not --r-pill: these are chips, and the scale puts chips with
+       the other small controls. A capsule here left the top bar disagreeing with
+       the admin navbar and the viewer toolbar, both of which already override
+       .nav-pill's capsule to --r-card for the same reason. --r-pill stays for
+       the count badges and progress tracks that really are capsules. */
+    border-radius: var(--r-control);
     background: none;
     font: inherit; font-size: var(--fs-sm);
     color: var(--dim);
