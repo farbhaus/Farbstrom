@@ -11,6 +11,7 @@
 
 import { getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
+import { countPlayerError, logDiag } from './diagnostics.js';
 import type { DisplayFileState, WsClientMessage } from './types.js';
 
 type Mode = 'live' | 'file' | 'image' | null;
@@ -42,6 +43,12 @@ let fileSyncPending = false;
 // every (re)mount.
 let blockedCodec: string | null = null;
 
+// Codecs the startup probe read out of the LL-HLS playlist. Kept for the stats
+// panel (gh #40) — the probe already has to parse them, and "what is this
+// stream actually sending" is the first thing you want when a client reports a
+// bad picture. Empty until a live stream has been probed.
+let liveCodecs: string[] = [];
+
 let onPlayingChange: () => void = () => {};
 let onPlaybackBlocked: (message: string | null) => void = () => {};
 let wsSend: (msg: WsClientMessage) => void = () => {};
@@ -58,6 +65,27 @@ export function configurePlayer(opts: {
 
 export function getPlayer(): OvenPlayerInstance | null {
   return player;
+}
+
+export interface StreamDiagnostics {
+  mode: Mode;
+  /** Codec strings from the LL-HLS playlist (LL-HLS describes the stream for
+   *  WebRTC rooms too, so this is populated either way). */
+  codecs: readonly string[];
+  /** The codec this browser refused, when playback is blocked. */
+  blockedCodec: string | null;
+  /** The element the stats panel samples. OvenPlayer owns it, so it's looked
+   *  up rather than held — a remount replaces it. */
+  video: HTMLVideoElement | null;
+}
+
+export function getStreamDiagnostics(): StreamDiagnostics {
+  return {
+    mode,
+    codecs: liveCodecs,
+    blockedCodec,
+    video: document.querySelector<HTMLVideoElement>('#player video'),
+  };
 }
 
 // What's loaded right now. Used by callers like the offline overlay and
@@ -256,7 +284,9 @@ function unplayableViaWebrtc(codecs: string[]): string | null {
   return null;
 }
 
-function codecLabel(codec: string): string {
+// Also used by the stats panel, so the readout and the blocked-playback
+// message never disagree about a codec's name.
+export function codecLabel(codec: string): string {
   if (codec.startsWith('av01')) return 'AV1';
   if (codec.startsWith('hvc1') || codec.startsWith('hev1')) return 'H.265 (HEVC)';
   if (codec.startsWith('avc1')) return 'H.264';
@@ -336,6 +366,7 @@ function waitForStreamThenMount(streamKey: string, isLlhls: boolean): void {
       return;
     }
 
+    liveCodecs = codecs;
     const codec = isLlhls ? unplayableViaMse(codecs) : unplayableViaWebrtc(codecs);
     if (codec) {
       blockedCodec = codec;
@@ -383,6 +414,14 @@ function mountLivePlayer(streamKey: string, isLlhls: boolean): void {
       // Retry silently. Offline overlay is driven by setRoomStatus /
       // room:pending — don't race it from here. A codec this browser can't
       // decode is the one error retrying can never fix, so don't loop on it.
+      countPlayerError();
+      logDiag(
+        'player',
+        'error',
+        blockedCodec
+          ? `Stream playback blocked — ${codecLabel(blockedCodec)} not decodable here`
+          : 'Stream playback error — retrying',
+      );
       if (viewerStore.get().status !== 'ended' && !blockedCodec) {
         retryTimer = setTimeout(reloadPlayer, 8000);
       }

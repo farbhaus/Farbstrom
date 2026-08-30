@@ -13,9 +13,8 @@ import {
   syncConferenceTiles,
   syncPttMode,
   disconnectLiveKit,
-  updateFocusAspect,
 } from './conference.js';
-import { initLayout, sizeStage } from './layout.js';
+import { initLayout, sizeStage, wakeChrome } from './layout.js';
 import {
   destroyPlayer,
   getPlayer,
@@ -28,6 +27,7 @@ import {
 import { configurePointer, initPointer } from './pointer.js';
 import { closeScopes, initScopes } from './scopes.js';
 import { initShortcuts } from './shortcuts.js';
+import { initStats } from './stats.js';
 import { maybeStartTour, stopTour } from './tour.js';
 import {
   configureJoinOutcome,
@@ -204,6 +204,9 @@ function showApp(initialStatus?: RoomStatus): void {
   document.getElementById('waiting-screen')?.classList.add('hidden');
   document.getElementById('scheduled-screen')?.classList.add('hidden');
   document.getElementById('app')?.classList.add('visible');
+  // The idle clock has been running since initLayout, behind the join screen —
+  // restart it so the room never opens on already-faded chrome (#248).
+  wakeChrome();
 
   const roomInfo = getState().roomInfo;
   const label = document.getElementById('room-name-label');
@@ -317,7 +320,6 @@ function init(): void {
       // file reaching 'playing' must NOT flip room status, or the offline
       // overlay won't return when the file is later cleared.
       if (getPlayerMode() === 'live') setRoomStatus('live', true);
-      updateFocusAspect();
     },
     onPlaybackBlocked: (message) => {
       blockedMsg = message;
@@ -354,6 +356,7 @@ function init(): void {
   initScopes();
   initChat();
   initRoster();
+  initStats();
   initConference();
   initLandingForm();
   initJoinForm();

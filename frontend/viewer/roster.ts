@@ -6,8 +6,10 @@
 // lists even though the markup is in the same panel).
 
 import { toast } from '../shared/utils.js';
+import { getQuality, subscribeDiag, type Quality } from './diagnostics.js';
 import { getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
+import { closeStats } from './stats.js';
 
 interface ModParticipant {
   id: string;
@@ -32,10 +34,29 @@ function isPresenter(): boolean {
   return viewerStore.get().role === 'presenter';
 }
 
+const QUALITY_LABEL: Record<Quality, string> = {
+  excellent: 'Excellent connection',
+  good: 'Good connection',
+  poor: 'Poor connection',
+  lost: 'Connection lost',
+  unknown: 'Connection quality unknown',
+};
+
+// Connection-quality dot (gh #40). LiveKit reports every participant's quality
+// to everyone, so this renders for the whole room, not just for yourself. A
+// participant with no conference connection at all — watch-only, or Farbplay —
+// never gets a report and stays 'unknown', which is why that state is drawn as
+// a hollow dot rather than a warning.
+function qualityDot(id: string): string {
+  const q = getQuality(id);
+  return `<span class="q-dot q-${q}" title="${esc(QUALITY_LABEL[q])}" aria-label="${esc(QUALITY_LABEL[q])}"></span>`;
+}
+
 // One in-room roster row. `roleLabel` is shown verbatim (e.g. 'viewer', 'SRT').
 function rosterRow(id: string, name: string, roleLabel: string): string {
   return `
         <div class="roster-row" data-id="${esc(id)}">
+          ${qualityDot(id)}
           <span class="roster-name">${esc(name)}</span>
           <span class="roster-role">${esc(roleLabel)}</span>
           ${isPresenter() ? `<button class="btn-mini danger" data-action="roster-kick" data-id="${esc(id)}">Kick</button>` : ''}
@@ -168,6 +189,8 @@ function isRosterOpen(): boolean {
 }
 
 function openRoster(): void {
+  // The two overlays share a layer — never stack them.
+  closeStats();
   document.getElementById('roster-overlay')?.classList.remove('hidden');
   document.getElementById('roster-dot')?.classList.remove('visible');
 }
@@ -231,6 +254,10 @@ export function initRoster(): void {
     applyHostMode();
     renderRoster();
   });
+
+  // …and when a connection-quality report lands, which is its own signal —
+  // nothing in viewerStore changes when a participant's link degrades.
+  subscribeDiag(renderRoster);
 
   applyHostMode();
   renderRoster();

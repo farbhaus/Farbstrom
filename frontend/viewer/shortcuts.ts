@@ -4,6 +4,7 @@
 // mode, presenter-only logic, WS broadcasts) are inherited for free.
 import { confirmModal } from '../shared/components.js';
 import { pttPress, pttRelease } from './conference.js';
+import { scopesAvailable } from './scopes.js';
 import { viewerStore } from './state.js';
 import { isTourActive, startTour } from './tour.js';
 
@@ -11,15 +12,18 @@ const MIC_KEY = 's'; // microphone — hold-to-talk in push-to-talk mode (#188)
 
 // The one source of truth for the keys: both the handler below and the ? sheet
 // read this, so a shortcut can't be added without also being documented.
-// Order is the order the sheet lists them in.
-const SHORTCUTS: { key: string; btn: string; label: string }[] = [
+// Order is the order the sheet lists them in. `available` is for a key whose
+// button isn't offered in every room — the sheet drops the row rather than
+// documenting a control this room doesn't have. (The key handler needs no such
+// test: btnActionable already fails on a hidden button.)
+const SHORTCUTS: { key: string; btn: string; label: string; available?: () => boolean }[] = [
   { key: 'a', btn: 'cam-btn', label: 'Camera' },
   { key: MIC_KEY, btn: 'mic-btn', label: 'Microphone (hold, in push-to-talk)' },
   { key: 'd', btn: 'pointer-btn', label: 'Pointer (focus view only)' },
   { key: 'x', btn: 'focus-btn', label: 'Focus view' },
   { key: 'v', btn: 'conf-toggle', label: 'Participant strip (focus view only)' },
   { key: 'c', btn: 'chat-toggle', label: 'Chat' },
-  { key: 'w', btn: 'scopes-btn', label: 'Scopes' },
+  { key: 'w', btn: 'scopes-btn', label: 'Scopes', available: scopesAvailable },
   { key: 'm', btn: 'mute-btn', label: 'Mute the stream' },
   { key: 'f', btn: 'fullscreen-btn', label: 'Fullscreen' },
 ];
@@ -43,7 +47,7 @@ let helpOpen = false;
 async function openHelp(): Promise<void> {
   if (helpOpen || isTourActive()) return;
   helpOpen = true;
-  const rows = SHORTCUTS.map(
+  const rows = SHORTCUTS.filter((s) => s.available?.() ?? true).map(
     (s) =>
       `<span class="key-cap">${s.key.toUpperCase()}</span><span>${s.label}</span>`,
   ).join('');

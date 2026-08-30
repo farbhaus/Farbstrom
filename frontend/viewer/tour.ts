@@ -13,7 +13,8 @@
 // pills — see layout.ts) and across room shapes: no pointer button outside
 // focus view, no player controls in an app-only (SRT) room.
 
-import { setChatOpen, switchPanelTab } from './layout.js';
+import { lockChrome, setChatOpen, switchPanelTab } from './layout.js';
+import { scopesAvailable } from './scopes.js';
 import { getState } from './state.js';
 
 // Once per device, for every room. Deliberately NOT slug-scoped like the rest of
@@ -91,6 +92,9 @@ function restoreChatPanel(): void {
 function buildSteps(): TourStep[] {
   const ptt = getState().pttEnabled;
   const appOnly = getState().deliveryMode === 'srt';
+  // A call-only room has no scopes button to point at (#246). The spotlight
+  // would drop the target on its own, but the copy has to stop naming it.
+  const scopes = scopesAvailable();
   // Compact toolbar (mobile portrait): layout.ts has moved the secondary
   // controls into the ⋯ sheet, so the last step points at the sheet instead of
   // at buttons that aren't on screen.
@@ -105,8 +109,9 @@ function buildSteps(): TourStep[] {
   const lastStep: TourStep = compact
     ? {
         title: 'More controls',
-        body: `Screen share, playback, focus view, scopes, devices, resync and
-               the ? shortcuts sheet are behind the ⋯ button.`,
+        body: `Screen share, playback, focus view,${scopes ? ' scopes,' : ''}
+               devices, resync and the ? shortcuts sheet are behind the ⋯
+               button.`,
         targets: ['#more-btn'],
       }
     : {
@@ -144,12 +149,22 @@ function buildSteps(): TourStep[] {
       targets: ['#cam-btn', '#mic-btn', '#screen-btn'],
     },
     {
-      title: 'Pointer, scopes, layout',
-      body: `The pointer (${key('D')}) puts your cursor on the picture for
-             everyone to see. Scopes (${key('W')}) opens waveform, RGB parade
-             and vectorscope. The rest switch between grid and focus view, show
-             the participant strip, and open chat.`,
-      targets: ['#pointer-btn', '#scopes-btn', '#focus-btn', '#conf-toggle', '#chat-toggle'],
+      title: scopes ? 'Pointer, scopes, layout' : 'Pointer and layout',
+      body:
+        `The pointer (${key('D')}) puts your cursor on the picture for everyone
+         to see. ` +
+        (scopes
+          ? `Scopes (${key('W')}) opens waveform, RGB parade and vectorscope. `
+          : '') +
+        `The rest switch between grid and focus view, show the participant
+         strip, and open chat.`,
+      targets: [
+        '#pointer-btn',
+        ...(scopes ? ['#scopes-btn'] : []),
+        '#focus-btn',
+        '#conf-toggle',
+        '#chat-toggle',
+      ],
     },
     {
       title: 'Chat and files',
@@ -217,6 +232,8 @@ let root: HTMLElement | null = null;
 let rafId = 0;
 // Last laid-out geometry, so the rAF loop only writes when something moved.
 let lastGeom = '';
+// Releases the auto-hide hold taken in startTour (#248).
+let releaseChrome: (() => void) | null = null;
 
 export function isTourActive(): boolean {
   return root !== null;
@@ -448,6 +465,10 @@ export function startTour(): void {
   // a control behind the scrim (and hides the room from assistive tech while a
   // modal dialog is up). Harmless where unsupported — it's just an attribute.
   document.getElementById('app')?.toggleAttribute('inert', true);
+  // Most of what the tour points at is the auto-hiding chrome (#248), and the
+  // blocker eats the pointer events that would otherwise keep it awake — so
+  // hold it up for the duration rather than spotlighting a faded toolbar.
+  releaseChrome = lockChrome();
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', layout);
   render();
@@ -464,6 +485,8 @@ export function stopTour(): void {
 function endTour(): void {
   if (!root) return;
   document.getElementById('app')?.toggleAttribute('inert', false);
+  releaseChrome?.();
+  releaseChrome = null;
   document.removeEventListener('keydown', onKey, true);
   window.removeEventListener('resize', layout);
   cancelAnimationFrame(rafId);

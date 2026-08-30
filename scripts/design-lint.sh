@@ -65,6 +65,18 @@ report "no hex/rgba colors outside tokens.css" \
     "$(grep -rnoE '#[0-9a-fA-F]{6}\b|rgba?\([0-9 ,.]+\)' "${ALL[@]}" \
         | grep -v 'svg+xml' | grep -v '%23' || true)"
 
+# --- 1b. Nothing may blur the picture in the viewer -------------------------
+#
+# A backdrop-filter over the stream composites the video through an intermediate
+# surface, and Firefox shifts its transfer function doing it — measured off a
+# SMPTE ingest, 40% grey read 102 -> 114 with the chrome visible (#248). In a
+# colour-grading room that is a defect, not a cosmetic issue. The viewer kills
+# it for everything inside #app; this only guards the kill block against being
+# deleted, since specificity already covers anything newly added.
+report "viewer still cancels backdrop-filter over the picture" \
+    "$(grep -q '^#app, #app \*:not(#chat-drop-overlay) {' www/viewer/index.html \
+        || echo 'www/viewer/index.html: the #248 backdrop-filter kill block is gone')"
+
 # --- 2 & 3. Token cross-reference ------------------------------------------
 
 python3 - <<'PY'
@@ -82,12 +94,13 @@ for path in (glob.glob('www/**/*.css', recursive=True)
     for m in re.finditer(r'var\((--[a-z0-9-]+)', open(path).read()):
         used.setdefault(m.group(1), set()).add(path)
 
-# Set per element from JS (conference.ts) with a CSS fallback, so it is
-# intentionally not declared in :root.
-UNDEFINED_OK = {'--focus-aspect'}
-# Read from JS via getComputedStyle in frontend/viewer/layout.ts rather than
-# referenced by a var() anywhere, so the usage scan above cannot see them.
-UNUSED_OK = {'--panel-w-max', '--strip-w-min', '--strip-w-max'}
+# Tokens legitimately referenced without a :root declaration — set per element
+# from JS with a CSS fallback. Empty since #248 retired --focus-aspect.
+UNDEFINED_OK: set[str] = set()
+# Nothing is currently read from JS via getComputedStyle instead of a var(), so
+# every token has to be referenced somewhere. Add a name here only if a token is
+# genuinely consumed in a way this scan cannot see.
+UNUSED_OK: set[str] = set()
 
 bad = False
 

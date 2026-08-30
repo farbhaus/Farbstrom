@@ -353,6 +353,7 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
                     &pid_clone,
                     &name_clone,
                     &role_clone,
+                    &tx,
                     &text,
                 )
                 .await;
@@ -397,6 +398,7 @@ async fn handle_text_message(
     participant_id: &str,
     name: &str,
     role: &str,
+    tx: &mpsc::UnboundedSender<Message>,
     text: &str,
 ) {
     let msg: Value = match serde_json::from_str(text) {
@@ -410,6 +412,17 @@ async fn handle_text_message(
     };
 
     match msg_type {
+        // Application-level round-trip probe for the viewer's connection stats
+        // (gh #40). The protocol-level ping/pong is invisible to browser JS, so
+        // the client needs its own. `t` is the client's own clock reading and is
+        // echoed back untouched — the client subtracts it from `Date.now()`, so
+        // the measurement never depends on the two clocks agreeing.
+        "ping" => {
+            let t = msg.get("t").and_then(|v| v.as_u64()).unwrap_or_default();
+            let _ = tx.send(Message::Text(
+                json!({ "type": "pong", "t": t }).to_string().into(),
+            ));
+        }
         "chat:message" => {
             let chat_text = match msg.get("text").and_then(|t| t.as_str()) {
                 Some(t) => t,

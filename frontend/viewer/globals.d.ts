@@ -77,6 +77,17 @@ interface LivekitClientNS {
     TrackSubscribed: string;
     TrackUnsubscribed: string;
     LocalTrackUnpublished: string;
+    // Connection diagnostics (gh #40). LiveKit reports quality for *every*
+    // participant to everyone, so subscribing here gives the host a whole-room
+    // view without any backend involvement.
+    ConnectionQualityChanged: string;
+    Reconnecting: string;
+    Reconnected: string;
+    Disconnected: string;
+    // Whoever LiveKit's server-side audio analysis currently hears (#248).
+    // Reported to every participant, local included, so one subscription lights
+    // the whole room's tiles.
+    ActiveSpeakersChanged: string;
   };
   Track: {
     Source: {
@@ -106,7 +117,14 @@ interface LkPublication {
   track: LkTrack | null;
 }
 
+// LiveKit's ConnectionQuality enum serialises as these literals. Declared as a
+// bare union rather than imported, in keeping with this file being a hand-kept
+// subset — 'unknown' is what you get before the first report lands.
+type LkConnectionQuality = 'excellent' | 'good' | 'poor' | 'lost' | 'unknown';
+
 interface LkLocalParticipant {
+  identity: string;
+  connectionQuality?: LkConnectionQuality;
   setCameraEnabled(on: boolean): Promise<void>;
   setMicrophoneEnabled(on: boolean, options?: AudioCaptureOptions): Promise<void>;
   setScreenShareEnabled(on: boolean, options?: ScreenShareCaptureOptions): Promise<void>;
@@ -117,17 +135,28 @@ interface LkRemoteParticipant {
   identity: string;
   name?: string;
   metadata?: string;
+  connectionQuality?: LkConnectionQuality;
   getTrackPublication(source: string): LkPublication | undefined;
   trackPublications: Map<string, LkPublication>;
+}
+
+// Anything LiveKit hands back that is identifiable by identity alone —
+// ActiveSpeakersChanged's payload is a mixed array of local and remote
+// participants, and identity is all the speaker highlight needs.
+interface LkSpeaker {
+  identity: string;
 }
 
 interface LkRoom {
   localParticipant: LkLocalParticipant;
   remoteParticipants: Map<string, LkRemoteParticipant>;
+  // `arg1` also carries a bare string for the diagnostic events —
+  // ConnectionQualityChanged passes the quality, Disconnected a reason — and an
+  // array of participants for ActiveSpeakersChanged.
   on(
     event: string,
     handler: (
-      arg1?: LkPublication | LkTrack,
+      arg1?: LkPublication | LkTrack | string | LkSpeaker[],
       arg2?: LkRemoteParticipant | LkLocalParticipant,
       arg3?: LkRemoteParticipant,
     ) => void,
