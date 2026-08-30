@@ -1366,15 +1366,23 @@ body.has-focus.strip-hidden #stage-strip {
    used to sit below it in flow and the top bar was a solid strip, so no
    backdrop-filter had ever been over the video before.
 
-   Deliberately LAST in this stylesheet. Several of these selectors (#more-sheet,
-   .tile-name) also set backdrop-filter earlier at equal specificity, so source
-   order is what makes the override stick. .nav-pill keeps its blur for the
-   admin navbar, which floats over no video. The two full-screen scrims that do
-   still blur — #chat-drop-overlay and #tour-blocker — are momentary, modal, and
-   deliberately obscure the picture rather than sit quietly on top of it. */
-#top-bar, #top-bar .top-pill, #top-center,
-#bottom-toolbar, .side-pill, #more-sheet,
-#stage .tile-name, #stage-strip, #right-panel {
+   Written as a blanket rule over everything in #app rather than a list of
+   selectors, because a list is something you have to remember to add to — and
+   the scopes window, of all things, was missed by exactly that (it floats on
+   --z-overlay directly over the picture, and it is the tool you read the
+   picture WITH). Anything added inside #app from now on is covered without
+   anyone having to think about it.
+
+   Deliberately LAST in this stylesheet, and at two-id specificity, so it beats
+   every id rule above it — several selectors (#scopes-window, #more-sheet,
+   .tile-name) set backdrop-filter earlier at equal-or-lower specificity.
+
+   #chat-drop-overlay is the one exception inside #app: it is a momentary scrim
+   that exists to obscure the picture while a file is being dragged. The other
+   deliberate scrims — .modal-overlay, the roster/stats panels, #tour-blocker —
+   all live OUTSIDE #app and keep their blur for the same reason. .nav-pill
+   keeps its blur for the admin navbar, which floats over no video. */
+#app, #app *:not(#chat-drop-overlay) {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }

@@ -65,6 +65,18 @@ report "no hex/rgba colors outside tokens.css" \
     "$(grep -rnoE '#[0-9a-fA-F]{6}\b|rgba?\([0-9 ,.]+\)' "${ALL[@]}" \
         | grep -v 'svg+xml' | grep -v '%23' || true)"
 
+# --- 1b. Nothing may blur the picture in the viewer -------------------------
+#
+# A backdrop-filter over the stream composites the video through an intermediate
+# surface, and Firefox shifts its transfer function doing it — measured off a
+# SMPTE ingest, 40% grey read 102 -> 114 with the chrome visible (#248). In a
+# colour-grading room that is a defect, not a cosmetic issue. The viewer kills
+# it for everything inside #app; this only guards the kill block against being
+# deleted, since specificity already covers anything newly added.
+report "viewer still cancels backdrop-filter over the picture" \
+    "$(grep -q '^#app, #app \*:not(#chat-drop-overlay) {' www/viewer/index.html \
+        || echo 'www/viewer/index.html: the #248 backdrop-filter kill block is gone')"
+
 # --- 2 & 3. Token cross-reference ------------------------------------------
 
 python3 - <<'PY'
