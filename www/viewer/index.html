@@ -317,6 +317,14 @@ body:not(.has-focus).chat-open #stage {
     padding-right: calc(var(--panel-w) + var(--sp-4));
 }
 
+/* No entrance animation on anything holding a picture (#248): tile-in faded
+   opacity 0 -> 1 and scaled 0.95 -> 1, so it blended and resampled the picture
+   for 150ms every time a tile appeared.
+   The rounded clip stays, deliberately. It is a mask over the video — it costs
+   the corner pixels, and it denies the video a hardware overlay plane — but a
+   grid tile is a downscaled thumbnail that is never colour-accurate anyway, and
+   the card look is worth it there. The *pinned* tile overrides it back to zero
+   (see the focus block), so the view you actually grade in is never masked. */
 .tile {
     position: relative;
     aspect-ratio: 16 / 9;
@@ -324,17 +332,18 @@ body:not(.has-focus).chat-open #stage {
     border: var(--bw-hair) solid var(--border);
     overflow: hidden;
     border-radius: var(--r-card);
-    animation: tile-in var(--dur-fast) var(--ease-out);
 }
 .tile.hidden { display: none !important; }
-@keyframes tile-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 
-/* Active speaker (#248). An *inset* ring, not an outline or an outer shadow:
-   the call panel and the mobile strip both scroll with `overflow: hidden`, and
-   anything drawn outside the tile's box would be clipped along their edges. */
+/* Active speaker (#248). Drawn OUTSIDE the tile box — an inset ring painted
+   over the top and left edges of the picture itself. The call panel and the
+   mobile carousel both clip, but they clip at their padding box and the tiles
+   sit inside 8px of padding, so a 2px outer ring has room. The border is
+   outside the padding box too (.tile-inner insets to it), so recolouring it
+   never touches the video either. */
 .tile.is-speaking {
     border-color: var(--accent);
-    box-shadow: inset 0 0 0 var(--bw-accent) var(--accent);
+    box-shadow: 0 0 0 var(--bw-accent) var(--accent);
 }
 
 .tile-inner { position: absolute; inset: 0; }
@@ -648,7 +657,6 @@ body.has-focus #stage > .tile[data-focused] {
     aspect-ratio: auto;
     border: none; border-radius: 0;
     background: var(--media-bg);
-    animation: none;
     cursor: default;
 }
 /* The call panel (#248): a floating card holding the unpinned tiles, pinned to
@@ -953,7 +961,6 @@ body.has-focus.strip-hidden #stage-strip {
     .dot-anim::after,
     .remote-pointer { animation: none; }
     .remote-pointer { transition: none; }
-    .tile { animation: none; }
 }
 .tb-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -1386,9 +1393,12 @@ body.has-focus.strip-hidden #stage-strip {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }
-/* The blur carried some of the legibility; the ground has to carry all of it now. */
+/* The blur carried some of the legibility; the ground has to carry all of it
+   now. #scopes-window is on this list too: it floats on --z-overlay directly
+   over the picture, and a translucent panel blends the image into the very
+   surface you are reading measurements off. */
 #top-bar .top-pill:not(#live-badge),
-#bottom-toolbar, .side-pill, #more-sheet {
+#bottom-toolbar, .side-pill, #more-sheet, #scopes-window {
     background: var(--pill-bg-opaque);
 }
 </style>
