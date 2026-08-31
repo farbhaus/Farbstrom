@@ -1,6 +1,6 @@
 // Chat sidebar + file sharing (upload XHR with cancel + progress).
 
-import { esc, fmtBytes, toast } from '../shared/utils.js';
+import { esc, fmtBytes, linkify, toast } from '../shared/utils.js';
 import { setChatOpen, switchPanelTab } from './layout.js';
 import { getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
@@ -100,7 +100,7 @@ export function appendChatMessage(msg: ChatMsg): void {
   d.className = 'chat-msg';
   d.innerHTML =
     `<div class="chat-meta"><span class="chat-who ${esc(msg.role)}">${esc(msg.name)}</span><span class="chat-time">${fmtTime(msg.ts)}</span></div>` +
-    `<div class="chat-text">${esc(msg.text)}</div>`;
+    `<div class="chat-text">${linkify(msg.text)}</div>`;
   list.appendChild(d);
   list.scrollTop = list.scrollHeight;
   notifyChat();
@@ -200,7 +200,7 @@ export function appendChatHistory(
       d.className = 'chat-msg';
       d.innerHTML =
         `<div class="chat-meta"><span class="chat-who ${esc(m.role)}">${esc(m.name)}</span><span class="chat-time">${fmtTime(m.ts)}</span></div>` +
-        `<div class="chat-text">${esc((m as ChatMsg).text)}</div>`;
+        `<div class="chat-text">${linkify((m as ChatMsg).text)}</div>`;
       list.appendChild(d);
     }
   }

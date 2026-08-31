@@ -783,6 +783,11 @@ body.has-focus.strip-hidden #stage-strip {
 .chat-who.viewer    { color: var(--dim); }
 .chat-time { font-size: var(--fs-2xs); color: var(--dim); opacity: 0.6; }
 .chat-text { font-size: var(--fs-base); color: var(--text); line-height: var(--lh-body); word-break: break-word; white-space: pre-wrap; }
+/* Pasted URLs are autolinked by linkify() in shared/utils.ts. They open in a new
+   tab — a review session must survive someone opening a reference. */
+.chat-text a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.chat-text a:hover { color: var(--text); }
+.chat-text a:focus-visible { outline: none; box-shadow: var(--ring-accent); border-radius: var(--r-inset); }
 
 #chat-input-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-top: var(--bw-hair) solid var(--border); flex-shrink: 0; align-items: flex-end; }
 #chat-input {

@@ -6,6 +6,64 @@ export function esc(str: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
+// Autolink URLs in user-typed text. This is an escaping problem before it is a
+// formatting one: the caller is about to write the result into innerHTML, so
+// every part of it — the surrounding text, the link body and the href — goes
+// through esc(). The pattern matches only http/https/www, so no `javascript:`
+// or `data:` URL can ever reach an href.
+const LINK_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+// After trimming, a match must still be a scheme (or www.) plus at least one
+// more character to count as a link — "https://" and "www." alone are not.
+const LINK_OK = /^(?:https?:\/\/|www\.)[^\s]/i;
+
+// Trailing punctuation is nearly always the sentence's, not the URL's:
+// "have a look at https://example.com." A closing bracket belongs to the link
+// only when the link opened it — Wikipedia URLs really do end in ")".
+const CLOSERS: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
+
+function trimUrlTail(url: string): string {
+  let end = url.length;
+  while (end > 0) {
+    const ch = url[end - 1]!;
+    // Includes the smart quotes and ellipsis macOS substitutes while typing.
+    if ('.,;:!?"\'…‘’“”«»'.includes(ch)) {
+      end--;
+      continue;
+    }
+    const open = CLOSERS[ch];
+    if (open) {
+      const body = url.slice(0, end);
+      const opened = body.split(open).length - 1;
+      const closed = body.split(ch).length - 1;
+      if (closed > opened) {
+        end--;
+        continue;
+      }
+    }
+    break;
+  }
+  return url.slice(0, end);
+}
+
+export function linkify(text: unknown): string {
+  const src = String(text);
+  let out = '';
+  let cursor = 0;
+  LINK_RE.lastIndex = 0;
+  for (let m = LINK_RE.exec(src); m; m = LINK_RE.exec(src)) {
+    const raw = trimUrlTail(m[0]);
+    // Resume scanning right after what we consumed, so punctuation we handed
+    // back to the text can't be re-matched as the start of another link.
+    LINK_RE.lastIndex = m.index + Math.max(raw.length, 1);
+    if (!LINK_OK.test(raw)) continue;
+    const href = raw.toLowerCase().startsWith('www.') ? 'https://' + raw : raw;
+    out += esc(src.slice(cursor, m.index));
+    out += `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(raw)}</a>`;
+    cursor = m.index + raw.length;
+  }
+  return out + esc(src.slice(cursor));
+}
+
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function toast(msg: string, dur = 2500): void {
