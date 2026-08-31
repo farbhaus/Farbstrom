@@ -338,6 +338,16 @@ body:not(.has-focus).chat-open #stage {
 }
 .tile.hidden { display: none !important; }
 @keyframes tile-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+/* tile-in is an ENTRANCE: it plays once, when a tile first appears, and never
+   again. Marking each tile as it finishes is what makes that true, and it has
+   to be a marker rather than a suppress-and-restore — flipping animation-name
+   from `none` back to `tile-in` *starts a new animation*, so muting it for the
+   length of the pinned/grid morph and then unmuting made all four tiles scale
+   and fade the instant the morph landed. That was the pop at the end of the
+   switch. layout.ts adds .has-entered on animationend/animationcancel, so a
+   re-parented tile (the morph moves them between the stage and the call panel,
+   which cancels a running animation) is marked too and stays quiet. */
+.tile.has-entered { animation: none; }
 
 /* Pinned <-> grid, driven by morphStage() in layout.ts. For the length of the
    change the stage's padding snaps instead of animating and tile-in is muted,
@@ -346,7 +356,6 @@ body:not(.has-focus).chat-open #stage {
    top of it. The radius rides along, so the pinned tile's square corners round
    off as it shrinks into the grid rather than flipping at the end. */
 body.stage-morphing #stage { transition: none; }
-body.stage-morphing .tile { animation: none; }
 body.stage-morphing .tile.is-morphing {
     transition: transform var(--dur-med) var(--ease-out),
                 border-radius var(--dur-med) var(--ease-out);

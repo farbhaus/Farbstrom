@@ -134,7 +134,11 @@ export function reflowStage(): void {
 // Now a single FLIP owns the whole change: measure every tile, apply the
 // mutation, measure again, invert the difference as a transform and release it.
 // The padding change is made instant for the duration (body.stage-morphing) so
-// there is exactly one motion, and `tile-in` is suppressed so it can't fight it.
+// there is exactly one motion. tile-in cannot fight it because it is a
+// once-per-tile entrance (.has-entered) rather than something muted and
+// restored — muting it here and unmuting at the end flipped animation-name from
+// `none` back to `tile-in`, which *starts a new animation*, and every tile
+// scaled and faded the instant the morph landed.
 export function morphStage(mutate: () => void): void {
   const stage = document.getElementById('stage');
   const strip = document.getElementById('stage-strip');
@@ -153,7 +157,15 @@ export function morphStage(mutate: () => void): void {
   }
 
   const before = new Map<HTMLElement, DOMRect>();
-  for (const t of tiles()) before.set(t, t.getBoundingClientRect());
+  for (const t of tiles()) {
+    before.set(t, t.getBoundingClientRect());
+    // A tile we can measure is on screen, so it has entered — whatever the
+    // animation events did or didn't say. #tile-stream in particular can have
+    // its entrance cancelled in the same tick it starts (shown, then pinned),
+    // which fires neither animationend nor animationcancel, and it would then
+    // replay tile-in the moment the pinned rule stopped forcing animation:none.
+    t.classList.add('has-entered');
+  }
 
   document.body.classList.add('stage-morphing');
   mutate();
@@ -571,6 +583,17 @@ export function initLayout(): void {
       if (tab === 'chat' || tab === 'files') switchPanelTab(tab);
     });
   });
+
+  // tile-in plays once per tile; see the .has-entered note in the viewer CSS.
+  // animationcancel matters as much as animationend: the pinned/grid morph
+  // re-parents tiles, which cancels a running entrance.
+  const markEntered = (e: AnimationEvent): void => {
+    if (e.animationName !== 'tile-in') return;
+    (e.target as HTMLElement | null)?.classList.add('has-entered');
+  };
+  const stageEl = document.getElementById('stage');
+  stageEl?.addEventListener('animationend', markEntered, true);
+  stageEl?.addEventListener('animationcancel', markEntered, true);
 
   setupFullscreen();
   setupChromeIdle(); // fades the chips + toolbar when nothing is happening
