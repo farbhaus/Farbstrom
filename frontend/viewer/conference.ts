@@ -13,7 +13,7 @@ import {
   setQuality,
   type Quality,
 } from './diagnostics.js';
-import { reflowStage, sizeStage } from './layout.js';
+import { morphStage, sizeStage } from './layout.js';
 import { disablePointerMode } from './pointer.js';
 import { getParticipantId, getToken, PREF_KEY, slug } from './session.js';
 import { viewerStore } from './state.js';
@@ -150,46 +150,45 @@ export function setFocus(tileId: TileId | null, opts: { override?: boolean } = {
   const strip = document.getElementById('stage-strip');
   if (!stage || !strip) return;
 
-  if (tileId === null) {
-    // Grid mode: all tiles back to the main stage as direct children.
-    document.body.classList.remove('has-focus');
-    for (const tile of Array.from(strip.querySelectorAll<HTMLElement>(':scope > .tile'))) {
-      stage.insertBefore(tile, strip);
-    }
-    stage
-      .querySelectorAll<HTMLElement>('[data-focused]')
-      .forEach((el) => el.removeAttribute('data-focused'));
-  } else {
-    document.body.classList.add('has-focus');
-    // Sync the strip-toggle button's lit state to the current confOpen flag
-    // — without this it looks "off" on first entry into focus mode even
-    // though the strip is visible.
-    document
-      .getElementById('conf-toggle')
-      ?.classList.toggle('panel-open', viewerStore.get().confOpen);
-    const focusedEl = findTileEl(tileId);
-    // Everything not the focused tile goes into the strip.
-    const all = [
-      ...Array.from(stage.querySelectorAll<HTMLElement>(':scope > .tile')),
-      ...Array.from(strip.querySelectorAll<HTMLElement>(':scope > .tile')),
-    ];
-    for (const tile of all) {
-      if (tile === focusedEl) {
-        tile.setAttribute('data-focused', '');
-        if (tile.parentElement !== stage) stage.insertBefore(tile, strip);
-      } else {
-        tile.removeAttribute('data-focused');
-        if (tile.parentElement !== strip) strip.appendChild(tile);
+  // Everything below moves tiles between the stage and the call panel and flips
+  // the layout mode. morphStage measures around it and animates each tile from
+  // where it was to where it lands (#248) — without it the switch is a snap,
+  // and re-parented tiles replay their entrance animation mid-jump.
+  morphStage(() => {
+    if (tileId === null) {
+      // Grid mode: all tiles back to the main stage as direct children.
+      document.body.classList.remove('has-focus');
+      for (const tile of Array.from(strip.querySelectorAll<HTMLElement>(':scope > .tile'))) {
+        stage.insertBefore(tile, strip);
+      }
+      stage
+        .querySelectorAll<HTMLElement>('[data-focused]')
+        .forEach((el) => el.removeAttribute('data-focused'));
+    } else {
+      document.body.classList.add('has-focus');
+      // Sync the strip-toggle button's lit state to the current confOpen flag
+      // — without this it looks "off" on first entry into focus mode even
+      // though the strip is visible.
+      document
+        .getElementById('conf-toggle')
+        ?.classList.toggle('panel-open', viewerStore.get().confOpen);
+      const focusedEl = findTileEl(tileId);
+      // Everything not the focused tile goes into the strip.
+      const all = [
+        ...Array.from(stage.querySelectorAll<HTMLElement>(':scope > .tile')),
+        ...Array.from(strip.querySelectorAll<HTMLElement>(':scope > .tile')),
+      ];
+      for (const tile of all) {
+        if (tile === focusedEl) {
+          tile.setAttribute('data-focused', '');
+          if (tile.parentElement !== stage) stage.insertBefore(tile, strip);
+        } else {
+          tile.removeAttribute('data-focused');
+          if (tile.parentElement !== strip) strip.appendChild(tile);
+        }
       }
     }
-  }
-
-  // Switching between focus and grid animates #stage's padding between 0 and
-  // the chrome safe band, and sizeStage measures that padding. One frame is not
-  // enough — reflow across the whole transition or the grid gets sized for a
-  // box it never ends up with (tiles stacked and overlapping until the next
-  // resize).
-  reflowStage();
+  });
 }
 
 // Since #248 the pinned tile is the background layer — it fills the stage and

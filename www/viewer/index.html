@@ -317,23 +317,40 @@ body:not(.has-focus).chat-open #stage {
     padding-right: calc(var(--panel-w) + var(--sp-4));
 }
 
-/* No entrance animation on anything holding a picture (#248): tile-in faded
-   opacity 0 -> 1 and scaled 0.95 -> 1, so it blended and resampled the picture
-   for 150ms every time a tile appeared.
-   The rounded clip stays, deliberately. It is a mask over the video — it costs
-   the corner pixels, and it denies the video a hardware overlay plane — but a
-   grid tile is a downscaled thumbnail that is never colour-accurate anyway, and
-   the card look is worth it there. The *pinned* tile overrides it back to zero
-   (see the focus block), so the view you actually grade in is never masked. */
+/* The edge is a box-shadow, not a border, and that is load-bearing (#248).
+   `aspect-ratio` applies to the border box, so a 1px border makes the box the
+   video actually gets — .tile-inner insets to the *padding* box — 2px short on
+   each axis: a 1234px-wide tile is 694.125 tall, and hands the video 1232x692.125,
+   which is 1.780:1 rather than 1.778:1. `object-fit: contain` then pillarboxed a
+   16:9 source by 0.78px a side, and that sliver is the tile's own --media-bg
+   showing through as a 1px black line down the edge of the picture.
+   A box-shadow draws the same hairline outside the box without consuming any
+   layout, so the padding box stays exactly the track size — and unlike an
+   outline it follows border-radius everywhere. */
 .tile {
     position: relative;
     aspect-ratio: 16 / 9;
     background: var(--media-bg);
-    border: var(--bw-hair) solid var(--border);
+    box-shadow: 0 0 0 var(--bw-hair) var(--border);
     overflow: hidden;
     border-radius: var(--r-card);
+    animation: tile-in var(--dur-fast) var(--ease-out);
 }
 .tile.hidden { display: none !important; }
+@keyframes tile-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+/* Pinned <-> grid, driven by morphStage() in layout.ts. For the length of the
+   change the stage's padding snaps instead of animating and tile-in is muted,
+   so the FLIP below is the only thing moving — otherwise the grid resizes under
+   the tiles while they travel, and re-parented tiles replay their entrance on
+   top of it. The radius rides along, so the pinned tile's square corners round
+   off as it shrinks into the grid rather than flipping at the end. */
+body.stage-morphing #stage { transition: none; }
+body.stage-morphing .tile { animation: none; }
+body.stage-morphing .tile.is-morphing {
+    transition: transform var(--dur-med) var(--ease-out),
+                border-radius var(--dur-med) var(--ease-out);
+}
 
 /* Active speaker (#248). Drawn OUTSIDE the tile box — an inset ring painted
    over the top and left edges of the picture itself. The call panel and the
@@ -342,7 +359,6 @@ body:not(.has-focus).chat-open #stage {
    outside the padding box too (.tile-inner insets to it), so recolouring it
    never touches the video either. */
 .tile.is-speaking {
-    border-color: var(--accent);
     box-shadow: 0 0 0 var(--bw-accent) var(--accent);
 }
 
@@ -655,8 +671,11 @@ body.has-focus #stage > .tile[data-focused] {
     position: absolute; inset: 0;
     width: auto; height: auto;
     aspect-ratio: auto;
-    border: none; border-radius: 0;
+    box-shadow: none; border-radius: 0;
     background: var(--media-bg);
+    /* The grid's tile-in is fine on a thumbnail, but this tile IS the window —
+       scaling and fading the whole picture on entry is a different thing. */
+    animation: none;
     cursor: default;
 }
 /* The call panel (#248): a floating card holding the unpinned tiles, pinned to
@@ -961,6 +980,7 @@ body.has-focus.strip-hidden #stage-strip {
     .dot-anim::after,
     .remote-pointer { animation: none; }
     .remote-pointer { transition: none; }
+    .tile { animation: none; }
 }
 .tb-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 

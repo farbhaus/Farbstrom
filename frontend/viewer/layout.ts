@@ -56,7 +56,6 @@ export function sizeStage(): void {
   let bestCols = 1;
   let bestArea = 0;
   let bestTileW = cw;
-  let bestTileH = cw / RATIO;
   for (let cols = 1; cols <= n; cols++) {
     const rows = Math.ceil(n / cols);
     const tw = (cw - gap * (cols - 1)) / cols;
@@ -68,22 +67,36 @@ export function sizeStage(): void {
       bestArea = area;
       bestCols = cols;
       bestTileW = tileW;
-      bestTileH = tileH;
     }
   }
+  // Size the track so the box the VIDEO gets is exactly 16:9 in whole pixels.
+  //
+  // Two things conspired to put a 1px black line down the edge of the picture.
+  // `1fr` columns resolve to fractional widths (469.328px) against a whole-pixel
+  // row height, so the cell was never quite 16:9 — and even once the track was
+  // snapped to whole pixels, the tile's 1px border still ate 2px off each axis:
+  // .tile-inner insets to the *padding* box, so a 608x342 track hands the video
+  // a 606x340 box, which is 1.782:1, not 1.778:1. `object-fit: contain` then
+  // pillarboxed a 16:9 source by ~0.8px a side, and that sliver is the tile's
+  // own --media-bg showing beside the image.
+  //
+  // So pick the INNER size as a multiple of 16 and add the border back on top.
+  // The video's box lands on an exact 16:9 integer and a 16:9 source fills it
+  // edge to edge with nothing left over. Content wider than 16:9 also fills the
+  // width (contain is width-limited there); anything narrower pillarboxes for
+  // real, which is correct — the alternative is cropping the picture.
   const colW = (cw - gap * (bestCols - 1)) / bestCols;
-  if (bestTileW < colW - 1) {
-    stage.style.gridTemplateColumns = `repeat(${bestCols}, ${Math.floor(bestTileW)}px)`;
-  } else {
-    stage.style.gridTemplateColumns = `repeat(${bestCols}, 1fr)`;
-  }
+  const bw = parseFloat(getComputedStyle(tiles[0]!).borderLeftWidth) || 0;
+  const innerW = Math.max(16, Math.floor((Math.min(bestTileW, colW) - 2 * bw) / 16) * 16);
+  const tileW = innerW + 2 * bw;
+  const tileH = (innerW / 16) * 9 + 2 * bw;
+  stage.style.gridTemplateColumns = `repeat(${bestCols}, ${tileW}px)`;
   // Pin the row height too. Without it the rows are `auto`, and an auto row
   // sized against a stretched item that gets its height from `aspect-ratio` is
   // circular: the row resolves from the tile's min-content height (which
   // ignores the ratio), comes out shorter than the tile, and the tiles spill
   // over each other. That is the overlap you get on the way out of focus view.
-  // We already know the exact height, so make the track definite.
-  stage.style.gridAutoRows = `${Math.floor(bestTileH)}px`;
+  stage.style.gridAutoRows = `${tileH}px`;
 }
 
 // #stage animates its padding — opening chat grows the right inset, and
@@ -109,6 +122,84 @@ export function reflowStage(): void {
     if (performance.now() < panelReflowUntil) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+}
+
+// Switching between pinned and grid used to be three separate snaps happening
+// at once: the pinned tile jumped from filling the window to a grid cell, tiles
+// re-parented between the call panel and the stage jumped with it, and `tile-in`
+// replayed on every one of them (re-parenting restarts a CSS animation) — all
+// while #stage's padding animated on its own, so the grid was resizing under
+// the snap rather than with it.
+//
+// Now a single FLIP owns the whole change: measure every tile, apply the
+// mutation, measure again, invert the difference as a transform and release it.
+// The padding change is made instant for the duration (body.stage-morphing) so
+// there is exactly one motion, and `tile-in` is suppressed so it can't fight it.
+export function morphStage(mutate: () => void): void {
+  const stage = document.getElementById('stage');
+  const strip = document.getElementById('stage-strip');
+  const tiles = (): HTMLElement[] => {
+    const from = (el: HTMLElement | null): HTMLElement[] =>
+      el ? Array.from(el.querySelectorAll<HTMLElement>(':scope > .tile')) : [];
+    return [...from(stage), ...from(strip)].filter(
+      (t) => !t.classList.contains('hidden') && t.offsetParent !== null,
+    );
+  };
+  // Someone who has asked for less motion gets the instant swap, not a slower one.
+  if (!stage || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    mutate();
+    reflowStage();
+    return;
+  }
+
+  const before = new Map<HTMLElement, DOMRect>();
+  for (const t of tiles()) before.set(t, t.getBoundingClientRect());
+
+  document.body.classList.add('stage-morphing');
+  mutate();
+  // Final geometry is available immediately, because the padding transition is
+  // off — so the rects we measure now are the ones the tiles will settle at.
+  sizeStage();
+
+  const moving: HTMLElement[] = [];
+  for (const tile of tiles()) {
+    const b = before.get(tile);
+    if (!b?.width || !b.height) continue;
+    const a = tile.getBoundingClientRect();
+    if (!a.width || !a.height) continue;
+    const dx = b.left - a.left;
+    const dy = b.top - a.top;
+    const sx = b.width / a.width;
+    const sy = b.height / a.height;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) {
+      continue;
+    }
+    // Placed before .is-morphing exists, so this jump to the old position is
+    // itself un-animated — it is the "First" half of the FLIP.
+    tile.style.transformOrigin = 'top left';
+    tile.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+    moving.push(tile);
+  }
+
+  const done = (): void => {
+    for (const t of moving) {
+      t.classList.remove('is-morphing');
+      t.style.transform = '';
+      t.style.transformOrigin = '';
+    }
+    document.body.classList.remove('stage-morphing');
+  };
+  if (!moving.length) {
+    done();
+    return;
+  }
+  requestAnimationFrame(() => {
+    for (const t of moving) {
+      t.classList.add('is-morphing'); // adds the transition…
+      t.style.transform = ''; // …and this is what it animates back from
+    }
+    window.setTimeout(done, STAGE_TRANSITION_MS);
+  });
 }
 
 export function setChatOpen(open: boolean): void {
