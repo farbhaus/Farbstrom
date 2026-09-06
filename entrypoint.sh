@@ -49,4 +49,18 @@ export LIVEKIT_URL="wss://${PUBLIC_HOST}/livekit"
 # resolved to "localhost" everywhere.
 export OME_HOST_IP="${PUBLIC_HOST}"
 
+# ICE candidate address the WebRTC *ingest* (WHIP) provider advertises. "*"
+# enumerates the container's interfaces plus the STUN-discovered public IP,
+# which is what a real host wants. On Docker Desktop those come out as 172.x
+# (unroutable from the host) and the public IP (needs router hairpin), so a
+# localhost stack pins the loopback that the published 10000-10009/udp are
+# actually reachable on. Override in .env to publish from another machine
+# (e.g. OME_ICE_ADDRESS=192.168.1.73). Playback is unaffected — it goes through
+# OME's TURN relay, whose address the browser gets from OME's own signalling.
+# Must come after PUBLIC_HOST is resolved above, same as OME_HOST_IP.
+case "${PUBLIC_HOST}" in
+	localhost | 127.0.0.1) export OME_ICE_ADDRESS="${OME_ICE_ADDRESS:-127.0.0.1}" ;;
+	*) export OME_ICE_ADDRESS="${OME_ICE_ADDRESS:-*}" ;;
+esac
+
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
