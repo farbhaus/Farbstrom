@@ -147,7 +147,15 @@ async fn main() {
         // deploy (manifesting as "the new tab/feature doesn't work").
         // `no-cache` forces revalidation; ETag/Last-Modified still yield
         // cheap 304s, so this isn't a bandwidth regression.
-        .layer(SetResponseHeaderLayer::overriding(
+        //
+        // `if_not_present`, NOT `overriding`: this is an app-wide layer, and
+        // `overriding` replaced the header on routes that deliberately set
+        // their own — which silently defeated the 1-hour cache on
+        // `/api/branding/{asset}`, so every page load re-fetched the logo and
+        // background. Nothing else sets Cache-Control (ServeDir does not), so
+        // the SPA still gets `no-cache`; a route that wants a different policy
+        // now just says so and wins.
+        .layer(SetResponseHeaderLayer::if_not_present(
             axum::http::header::CACHE_CONTROL,
             axum::http::HeaderValue::from_static("no-cache"),
         ))
