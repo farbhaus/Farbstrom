@@ -118,15 +118,21 @@ export function fmtBytes(bytes: number): string {
   return bytes + ' B';
 }
 
-export function fmtBitrate(bps: number | undefined | null): string {
+// These two take DIFFERENT units and were previously named `fmtBitrate` and
+// `fmtBitRate` — one capital letter apart, imported side by side in
+// dashboard.ts, and a typo between them is a silent 8x error with no type
+// signal. The names now say which unit they want.
+
+/// Format a value already in bits per second (e.g. a codec bitrate).
+export function fmtBitsPerSec(bps: number | undefined | null): string {
   if (!bps) return '—';
   if (bps >= 1_000_000) return (bps / 1_000_000).toFixed(1) + ' Mbps';
   return Math.round(bps / 1000) + ' kbps';
 }
 
-// Bits-per-second from a bytes/sec input. Used for network display, since
-// link capacity (e.g. 1 Gbps) is conventionally measured in bits.
-export function fmtBitRate(bytesPerSec: number): string {
+// Format a bytes-per-second value as bits per second. Used for network
+// throughput, since link capacity (e.g. 1 Gbps) is conventionally in bits.
+export function fmtBytesPerSecAsBits(bytesPerSec: number): string {
   const bps = (bytesPerSec || 0) * 8;
   if (bps >= 1e9) return (bps / 1e9).toFixed(2) + ' Gbps';
   if (bps >= 1e6) return (bps / 1e6).toFixed(1) + ' Mbps';

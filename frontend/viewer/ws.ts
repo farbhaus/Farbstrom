@@ -17,7 +17,6 @@ import {
   PREF_KEY,
   SESSION_KEY,
   slug,
-  updateSavedStreamKey,
 } from './session.js';
 import { viewerStore } from './state.js';
 import type { DeliveryMode, RosterEntry, WsClientMessage, WsMessage } from './types.js';

@@ -17,11 +17,11 @@ use tracing::info;
 use crate::auth::AdminAuth;
 use crate::error::AppError;
 use crate::events::{FileSharedEvent, FileUnsharedEvent};
-use crate::routes::files::{extract_extension, sanitize_mime, SAFE_MIMES};
+use crate::routes::files::{extract_extension, sanitize_mime, MAX_FILE_SIZE, SAFE_MIMES};
+use crate::routes::sql::FILE_ROOM_SLUGS;
 use crate::state::AppState;
 use crate::uploads::stream_field_to_temp;
 
-const MAX_FILE_SIZE: usize = 2560 * 1024 * 1024; // 2.5 GB
 const SORT_WHITELIST: &[&str] = &["created_at", "original_name", "size_bytes", "mime_type"];
 
 #[derive(Deserialize)]
@@ -517,8 +517,8 @@ async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usi
     let conn = state.db.get()?;
     let ids_owned: Vec<String> = ids.to_vec();
     type UnshareResult = Result<(Vec<(String, String)>, Vec<String>, usize), AppError>;
-    let (to_notify, stored_paths, deleted) = tokio::task::spawn_blocking(
-        move || -> UnshareResult {
+    let (to_notify, stored_paths, deleted) =
+        tokio::task::spawn_blocking(move || -> UnshareResult {
             let mut notify: Vec<(String, String)> = Vec::new();
             let mut paths: Vec<String> = Vec::new();
             let mut deleted = 0usize;
@@ -537,11 +537,7 @@ async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usi
 
                 // Collect all slugs this file is associated with (direct room_id
                 // or via room_files).
-                let mut stmt = conn.prepare(
-                    "SELECT DISTINCT r.slug FROM rooms r \
-                     WHERE r.id IN (SELECT room_id FROM session_files WHERE id = ?1 AND room_id IS NOT NULL) \
-                        OR r.id IN (SELECT room_id FROM room_files WHERE file_id = ?1)",
-                )?;
+                let mut stmt = conn.prepare(FILE_ROOM_SLUGS)?;
                 let slugs = stmt
                     .query_map(params![id], |row| row.get::<_, String>(0))?
                     .filter_map(|r| r.ok())
@@ -553,10 +549,9 @@ async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usi
                 deleted += conn.execute("DELETE FROM session_files WHERE id = ?1", params![id])?;
             }
             Ok((notify, paths, deleted))
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))??;
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??;
 
     let files_dir = format!("{}/files", state.config.data_path);
     for stored in stored_paths {
@@ -807,25 +802,20 @@ async fn broadcast_shared_to_assigned(
         Err(_) => return,
     };
     let file_id_owned = file_id.to_string();
-    let slugs: Vec<String> = match tokio::task::spawn_blocking(
-        move || -> Result<Vec<String>, AppError> {
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT r.slug FROM rooms r \
-                 WHERE r.id IN (SELECT room_id FROM session_files WHERE id = ?1 AND room_id IS NOT NULL) \
-                    OR r.id IN (SELECT room_id FROM room_files WHERE file_id = ?1)",
-            )?;
+    let slugs: Vec<String> =
+        match tokio::task::spawn_blocking(move || -> Result<Vec<String>, AppError> {
+            let mut stmt = conn.prepare(FILE_ROOM_SLUGS)?;
             let out = stmt
                 .query_map(params![file_id_owned], |row| row.get::<_, String>(0))?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(out)
-        },
-    )
-    .await
-    {
-        Ok(Ok(v)) => v,
-        _ => return,
-    };
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            _ => return,
+        };
 
     let ts = crate::time::now_ms();
     for slug in slugs {

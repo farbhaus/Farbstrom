@@ -3,7 +3,6 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use base64::Engine;
 use rand::RngExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -11,27 +10,8 @@ use std::sync::Arc;
 
 use crate::auth::AdminAuth;
 use crate::error::AppError;
+use crate::routes::sql::row_to_json;
 use crate::state::AppState;
-
-fn row_to_json(row: &rusqlite::Row, columns: &[&str]) -> rusqlite::Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for (i, col) in columns.iter().enumerate() {
-        let val: rusqlite::types::Value = row.get(i)?;
-        map.insert(
-            col.to_string(),
-            match val {
-                rusqlite::types::Value::Null => Value::Null,
-                rusqlite::types::Value::Integer(n) => json!(n),
-                rusqlite::types::Value::Real(f) => json!(f),
-                rusqlite::types::Value::Text(s) => json!(s),
-                rusqlite::types::Value::Blob(b) => {
-                    json!(base64::engine::general_purpose::STANDARD.encode(b))
-                }
-            },
-        );
-    }
-    Ok(Value::Object(map))
-}
 
 async fn list_keys(
     _auth: AdminAuth,

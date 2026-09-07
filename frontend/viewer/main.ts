@@ -32,7 +32,6 @@ import { maybeStartTour, stopTour } from './tour.js';
 import {
   configureJoinOutcome,
   configureScreens,
-  doJoin,
   initJoinForm,
   initLandingForm,
   loadRoomInfo,

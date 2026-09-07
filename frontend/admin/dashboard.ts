@@ -2,8 +2,8 @@ import { apiFetch } from './auth.js';
 import { closeModal, confirmModal, openModal } from '../shared/components.js';
 import {
   esc,
-  fmtBitRate,
-  fmtBitrate,
+  fmtBytesPerSecAsBits,
+  fmtBitsPerSec,
   fmtBytes,
   fmtDuration,
   fmtSourceIp,
@@ -111,8 +111,8 @@ function renderDashboard(): void {
 
   // Network
   setText('stat-net-iface', network.interface || '');
-  setText('stat-net-rx', fmtBitRate(network.rx_bps));
-  setText('stat-net-tx', fmtBitRate(network.tx_bps));
+  setText('stat-net-rx', fmtBytesPerSecAsBits(network.rx_bps));
+  setText('stat-net-tx', fmtBytesPerSecAsBits(network.tx_bps));
 
   // Load avg + uptime
   if (loadavg && loadavg.length === 3) {
@@ -175,7 +175,7 @@ function renderOme(): void {
       const a = aTrack?.audio;
 
       const videoStr = v
-        ? `${v.codec} · ${v.width}×${v.height} · ${Math.round(v.framerate)}fps · ${fmtBitrate(v.bitrateLatest)}`
+        ? `${v.codec} · ${v.width}×${v.height} · ${Math.round(v.framerate)}fps · ${fmtBitsPerSec(v.bitrateLatest)}`
         : '—';
       // Farbstrom passes video through untouched, so the ingest codec is what
       // every viewer's browser has to decode. Two of them can't be relied on:
@@ -185,7 +185,7 @@ function renderOme(): void {
       // condition on its own for LL-HLS and says so instead of showing black.)
       const codecWarning = v ? browserCodecWarning(v.codec) : '';
       const audioStr = a
-        ? `${a.codec} · ${Math.round(a.samplerate / 1000)}kHz · ${a.channel}ch · ${fmtBitrate(a.bitrateLatest)}`
+        ? `${a.codec} · ${Math.round(a.samplerate / 1000)}kHz · ${a.channel}ch · ${fmtBitsPerSec(a.bitrateLatest)}`
         : '—';
 
       const sourceType = input.sourceType || '?';

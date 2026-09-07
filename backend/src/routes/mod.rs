@@ -9,6 +9,7 @@ pub mod pages;
 pub mod rate_limit;
 pub mod rooms;
 pub mod rooms_public;
+pub mod sql;
 pub mod stream_keys;
 pub mod watch;
 pub mod webhook;

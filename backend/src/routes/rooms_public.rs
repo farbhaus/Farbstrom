@@ -4,7 +4,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::Engine;
 use rand::RngExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,29 +16,10 @@ use crate::events::{ConferenceUnmuteEvent, KickedEvent, ModerationChangedEvent};
 use crate::livekit::LiveKitClient;
 use crate::presence;
 use crate::routes::rate_limit;
+use crate::routes::sql::row_to_json;
 use crate::state::AppState;
 
 use tracing::info;
-
-fn row_to_json(row: &rusqlite::Row, columns: &[&str]) -> rusqlite::Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for (i, col) in columns.iter().enumerate() {
-        let val: rusqlite::types::Value = row.get(i)?;
-        map.insert(
-            col.to_string(),
-            match val {
-                rusqlite::types::Value::Null => Value::Null,
-                rusqlite::types::Value::Integer(n) => json!(n),
-                rusqlite::types::Value::Real(f) => json!(f),
-                rusqlite::types::Value::Text(s) => json!(s),
-                rusqlite::types::Value::Blob(b) => {
-                    json!(base64::engine::general_purpose::STANDARD.encode(b))
-                }
-            },
-        );
-    }
-    Ok(Value::Object(map))
-}
 
 // GET /:slug/info - safe room info (no auth)
 async fn room_info(
@@ -108,7 +88,8 @@ async fn join_room(
     let room_data = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
             "SELECT r.id, r.name, r.slug, r.password_hash, r.presenter_key, \
-             r.delivery_mode, r.waiting_room, r.status, r.expires_at, \
+             r.delivery_mode, r.waiting_room, r.status, \
+             (r.expires_at IS NOT NULL AND r.expires_at <= CURRENT_TIMESTAMP) AS is_expired, \
              sk.key_token, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
              r.starts_at \
              FROM rooms r \
@@ -126,7 +107,7 @@ async fn join_room(
                     row.get::<_, String>(5)?,          // delivery_mode
                     row.get::<_, i32>(6)?,             // waiting_room
                     row.get::<_, String>(7)?,          // status
-                    row.get::<_, Option<String>>(8)?,  // expires_at
+                    row.get::<_, i32>(8)?,             // is_expired
                     row.get::<_, Option<String>>(9)?,  // stream key_token
                     row.get::<_, i32>(10)?,            // noise_reduction
                     row.get::<_, i32>(11)?,            // echo_cancellation
@@ -152,7 +133,7 @@ async fn join_room(
         delivery_mode,
         waiting_room,
         status,
-        expires_at,
+        is_expired,
         stream_key,
         noise_reduction,
         echo_cancellation,
@@ -165,13 +146,12 @@ async fn join_room(
         return Err(AppError::Gone("Room has ended".into()));
     }
 
-    // 410 if expired
-    if let Some(ref exp) = expires_at {
-        // Simple string comparison works for ISO datetime format
-        let now = chrono_now();
-        if exp < &now {
-            return Err(AppError::Gone("Room has expired".into()));
-        }
+    // 410 if expired. The comparison is done by SQLite against its own
+    // CURRENT_TIMESTAMP (see the `is_expired` column above) rather than by a
+    // hand-rolled UTC clock in Rust — one source of truth for "now", and the
+    // same form `watch.rs` and the pollers already use.
+    if is_expired == 1 {
+        return Err(AppError::Gone("Room has expired".into()));
     }
 
     // A valid host link (correct presenter_key) bypasses the password gate
@@ -574,7 +554,8 @@ async fn livekit_token(
         // `expires_at` is a UTC "YYYY-MM-DD HH:MM:SS" string (see
         // `rooms::normalize_datetime`), so it compares against CURRENT_TIMESTAMP.
         let mut stmt = conn.prepare(
-            "SELECT p.name, p.role, p.is_admitted, p.is_kicked, r.slug, r.expires_at \
+            "SELECT p.name, p.role, p.is_admitted, p.is_kicked, r.slug, \
+             CAST(strftime('%s', r.expires_at) AS INTEGER) \
              FROM participants p \
              JOIN rooms r ON r.id = p.room_id \
              WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3 \
@@ -589,7 +570,7 @@ async fn livekit_token(
                     row.get::<_, i32>(2)?,
                     row.get::<_, i32>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(5)?,
                 ))
             })
             .map_err(|e| match e {
@@ -603,7 +584,7 @@ async fn livekit_token(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let (name, role, is_admitted, is_kicked, room_slug, expires_at) = participant_data;
+    let (name, role, is_admitted, is_kicked, room_slug, expires_at_unix) = participant_data;
 
     if is_kicked == 1 {
         return Err(AppError::Forbidden("You have been kicked".into()));
@@ -612,7 +593,9 @@ async fn livekit_token(
         return Err(AppError::Forbidden("Not yet admitted".into()));
     }
 
-    let expires_at_unix = expires_at.as_deref().and_then(iso_to_unix);
+    // SQLite parsed `expires_at` for us; negatives can't be a valid room
+    // expiry, so they collapse to "no expiry" and the token's own 1h cap wins.
+    let expires_at_unix = expires_at_unix.and_then(|v| u64::try_from(v).ok());
 
     let livekit = LiveKitClient::new(&state.config, state.http_client.clone());
     let lk_token = livekit
@@ -997,96 +980,6 @@ async fn conf_unkick(
         .send(ModerationChangedEvent { slug: slug.clone() });
 
     Ok(Json(json!({ "ok": true })))
-}
-
-/// Get current time as an ISO-ish string for comparison with SQLite DATETIME values.
-fn chrono_now() -> String {
-    // SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS"
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    // Convert to broken-down time manually (UTC)
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    // Days since epoch to Y-M-D (simplified algorithm)
-    let mut y = 1970i64;
-    let mut remaining_days = days as i64;
-
-    loop {
-        let days_in_year = if is_leap(y) { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        y += 1;
-    }
-
-    let month_days = if is_leap(y) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut m = 0usize;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining_days < md {
-            m = i;
-            break;
-        }
-        remaining_days -= md;
-    }
-
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        y,
-        m + 1,
-        remaining_days + 1,
-        hours,
-        minutes,
-        seconds
-    )
-}
-
-fn is_leap(y: i64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-}
-
-/// Parse "YYYY-MM-DD HH:MM:SS" (SQLite CURRENT_TIMESTAMP, UTC) to unix seconds.
-fn iso_to_unix(s: &str) -> Option<u64> {
-    let bytes = s.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let y: i64 = s.get(0..4)?.parse().ok()?;
-    let mo: u32 = s.get(5..7)?.parse().ok()?;
-    let d: u32 = s.get(8..10)?.parse().ok()?;
-    let h: u64 = s.get(11..13)?.parse().ok()?;
-    let mi: u64 = s.get(14..16)?.parse().ok()?;
-    let se: u64 = s.get(17..19)?.parse().ok()?;
-    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
-        return None;
-    }
-
-    let mut days: i64 = 0;
-    for yr in 1970..y {
-        days += if is_leap(yr) { 366 } else { 365 };
-    }
-    let month_days = if is_leap(y) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    for &md in month_days.iter().take(mo as usize - 1) {
-        days += md;
-    }
-    days += d as i64 - 1;
-
-    Some((days as u64) * 86400 + h * 3600 + mi * 60 + se)
 }
 
 pub fn router() -> Router<Arc<AppState>> {

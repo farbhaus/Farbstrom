@@ -47,8 +47,11 @@ async fn main() {
     let config = config::AppConfig::from_env();
     let port = config.port;
 
-    // Hash admin password at startup (same as Node.js: hash once, then forget plaintext)
-    let admin_password = std::env::var("ADMIN_PASSWORD").expect("ADMIN_PASSWORD must be set");
+    // Hash the admin password once at startup, then forget the plaintext.
+    // The value comes from the already-validated config rather than a second
+    // `env::var` — the old duplicate read meant the minimum-length check and
+    // the value actually used were two separate lookups.
+    let admin_password = config.admin_password.clone();
     let admin_password_hash = tokio::task::spawn_blocking(move || {
         bcrypt::hash(admin_password, 12).expect("Failed to hash admin password")
     })

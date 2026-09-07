@@ -3,7 +3,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::Engine;
 use rand::RngExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -13,27 +12,10 @@ use crate::auth::AdminAuth;
 use crate::error::AppError;
 use crate::events::{HostRevokedEvent, ModerationChangedEvent};
 use crate::livekit::LiveKitClient;
+use crate::routes::sql::{
+    row_to_json, ROOM_COLS, ROOM_LIST_COLS, ROOM_LIST_SELECT, ROOM_SELECT_BY_ID,
+};
 use crate::state::AppState;
-
-fn row_to_json(row: &rusqlite::Row, columns: &[&str]) -> rusqlite::Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for (i, col) in columns.iter().enumerate() {
-        let val: rusqlite::types::Value = row.get(i)?;
-        map.insert(
-            col.to_string(),
-            match val {
-                rusqlite::types::Value::Null => Value::Null,
-                rusqlite::types::Value::Integer(n) => json!(n),
-                rusqlite::types::Value::Real(f) => json!(f),
-                rusqlite::types::Value::Text(s) => json!(s),
-                rusqlite::types::Value::Blob(b) => {
-                    json!(base64::engine::general_purpose::STANDARD.encode(b))
-                }
-            },
-        );
-    }
-    Ok(Value::Object(map))
-}
 
 /// Room slug: a lowercased ASCII-alphanumeric skeleton of the name plus a
 /// random suffix.
@@ -81,39 +63,8 @@ async fn list_rooms(
 ) -> Result<Json<Vec<Value>>, AppError> {
     let conn = state.db.get()?;
     let rooms = tokio::task::spawn_blocking(move || {
-        let mut stmt = conn.prepare(
-            "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-             r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-             (SELECT COUNT(*) FROM participants p \
-              WHERE p.room_id = r.id AND p.is_admitted = 0 AND p.is_kicked = 0) as waiting_count, \
-             sk.key_token, sk.name as stream_key_name \
-             FROM rooms r \
-             LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
-             ORDER BY r.created_at DESC",
-        )?;
-        let cols = &[
-            "id",
-            "name",
-            "slug",
-            "delivery_mode",
-            "waiting_room",
-            "noise_reduction",
-            "echo_cancellation",
-            "push_to_talk",
-            "starts_at",
-            "expires_at",
-            "status",
-            "stream_key_id",
-            "created_at",
-            "started_at",
-            "ended_at",
-            "presenter_key",
-            "password_hash",
-            "waiting_count",
-            "key_token",
-            "stream_key_name",
-        ];
+        let mut stmt = conn.prepare(ROOM_LIST_SELECT)?;
+        let cols = ROOM_LIST_COLS;
         let rows = stmt
             .query_map([], |row| row_to_json(row, cols))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -133,36 +84,8 @@ async fn get_room(
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
     let room = tokio::task::spawn_blocking(move || {
-        let mut stmt = conn.prepare(
-            "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-             r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-             sk.key_token, sk.name as stream_key_name \
-             FROM rooms r \
-             LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
-             WHERE r.id = ?1",
-        )?;
-        let cols = &[
-            "id",
-            "name",
-            "slug",
-            "delivery_mode",
-            "waiting_room",
-            "noise_reduction",
-            "echo_cancellation",
-            "push_to_talk",
-            "starts_at",
-            "expires_at",
-            "status",
-            "stream_key_id",
-            "created_at",
-            "started_at",
-            "ended_at",
-            "presenter_key",
-            "password_hash",
-            "key_token",
-            "stream_key_name",
-        ];
+        let mut stmt = conn.prepare(ROOM_SELECT_BY_ID)?;
+        let cols = ROOM_COLS;
         let row = stmt
             .query_row(rusqlite::params![id], |row| row_to_json(row, cols))
             .map_err(|e| match e {
@@ -264,36 +187,8 @@ async fn create_room(
                     stream_key_id,
                 ],
             )?;
-            let mut stmt = conn.prepare(
-                "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-                 r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-                 r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-                 sk.key_token, sk.name as stream_key_name \
-                 FROM rooms r \
-                 LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
-                 WHERE r.id = ?1",
-            )?;
-            let cols = &[
-                "id",
-                "name",
-                "slug",
-                "delivery_mode",
-                "waiting_room",
-                "noise_reduction",
-                "echo_cancellation",
-                "push_to_talk",
-                "starts_at",
-            "expires_at",
-                "status",
-                "stream_key_id",
-                "created_at",
-                "started_at",
-                "ended_at",
-                "presenter_key",
-                "password_hash",
-                "key_token",
-                "stream_key_name",
-            ];
+            let mut stmt = conn.prepare(ROOM_SELECT_BY_ID)?;
+        let cols = ROOM_COLS;
             let row = stmt.query_row(rusqlite::params![id], |row| row_to_json(row, cols))?;
             Ok::<_, rusqlite::Error>(row)
         })
@@ -504,36 +399,8 @@ async fn update_room(
         // Nothing to update, just return the room
         let conn = state.db.get()?;
         let room = tokio::task::spawn_blocking(move || {
-            let mut stmt = conn.prepare(
-                "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-                 r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-                 r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-                 sk.key_token, sk.name as stream_key_name \
-                 FROM rooms r \
-                 LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
-                 WHERE r.id = ?1",
-            )?;
-            let cols = &[
-                "id",
-                "name",
-                "slug",
-                "delivery_mode",
-                "waiting_room",
-                "noise_reduction",
-                "echo_cancellation",
-                "push_to_talk",
-                "starts_at",
-            "expires_at",
-                "status",
-                "stream_key_id",
-                "created_at",
-                "started_at",
-                "ended_at",
-                "presenter_key",
-                "password_hash",
-                "key_token",
-                "stream_key_name",
-            ];
+            let mut stmt = conn.prepare(ROOM_SELECT_BY_ID)?;
+            let cols = ROOM_COLS;
             let row = stmt.query_row(rusqlite::params![id], |row| row_to_json(row, cols))?;
             Ok::<_, rusqlite::Error>(row)
         })
@@ -563,36 +430,8 @@ async fn update_room(
         all_params.push(&id_clone as &dyn rusqlite::types::ToSql);
         conn.execute(&sql, all_params.as_slice())?;
 
-        let mut stmt = conn.prepare(
-            "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-             r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-             sk.key_token, sk.name as stream_key_name \
-             FROM rooms r \
-             LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
-             WHERE r.id = ?1",
-        )?;
-        let cols = &[
-            "id",
-            "name",
-            "slug",
-            "delivery_mode",
-            "waiting_room",
-            "noise_reduction",
-            "echo_cancellation",
-            "push_to_talk",
-            "starts_at",
-            "expires_at",
-            "status",
-            "stream_key_id",
-            "created_at",
-            "started_at",
-            "ended_at",
-            "presenter_key",
-            "password_hash",
-            "key_token",
-            "stream_key_name",
-        ];
+        let mut stmt = conn.prepare(ROOM_SELECT_BY_ID)?;
+        let cols = ROOM_COLS;
         let row = stmt.query_row(rusqlite::params![id_clone], |row| row_to_json(row, cols))?;
         Ok::<_, rusqlite::Error>(row)
     })
@@ -748,36 +587,8 @@ async fn reactivate_room(
              WHERE id = ?1",
             rusqlite::params![id],
         )?;
-        let mut stmt = conn.prepare(
-            "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-             r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-             sk.key_token, sk.name as stream_key_name \
-             FROM rooms r \
-             LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
-             WHERE r.id = ?1",
-        )?;
-        let cols = &[
-            "id",
-            "name",
-            "slug",
-            "delivery_mode",
-            "waiting_room",
-            "noise_reduction",
-            "echo_cancellation",
-            "push_to_talk",
-            "starts_at",
-            "expires_at",
-            "status",
-            "stream_key_id",
-            "created_at",
-            "started_at",
-            "ended_at",
-            "presenter_key",
-            "password_hash",
-            "key_token",
-            "stream_key_name",
-        ];
+        let mut stmt = conn.prepare(ROOM_SELECT_BY_ID)?;
+        let cols = ROOM_COLS;
         let row = stmt.query_row(rusqlite::params![id], |row| row_to_json(row, cols))?;
         Ok::<_, AppError>(row)
     })
@@ -985,36 +796,8 @@ async fn rotate_presenter_key(
     // Return the full room row so the admin UI can refresh the card.
     let conn = state.db.get()?;
     let room = tokio::task::spawn_blocking(move || {
-        let mut stmt = conn.prepare(
-            "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
-             r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-             r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-             sk.key_token, sk.name as stream_key_name \
-             FROM rooms r \
-             LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
-             WHERE r.id = ?1",
-        )?;
-        let cols = &[
-            "id",
-            "name",
-            "slug",
-            "delivery_mode",
-            "waiting_room",
-            "noise_reduction",
-            "echo_cancellation",
-            "push_to_talk",
-            "starts_at",
-            "expires_at",
-            "status",
-            "stream_key_id",
-            "created_at",
-            "started_at",
-            "ended_at",
-            "presenter_key",
-            "password_hash",
-            "key_token",
-            "stream_key_name",
-        ];
+        let mut stmt = conn.prepare(ROOM_SELECT_BY_ID)?;
+        let cols = ROOM_COLS;
         let row = stmt
             .query_row(rusqlite::params![id], |row| row_to_json(row, cols))
             .map_err(|e| match e {

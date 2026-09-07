@@ -266,3 +266,83 @@ async fn deleting_a_key_demotes_and_announces_its_rooms() {
         .unwrap();
     assert_eq!(status, "pending", "room left stuck at 'live' with no key");
 }
+
+/// Joining a room past its `expires_at` is a 410, distinct from a 404 for a
+/// room that never existed. The comparison moved from a hand-rolled UTC clock
+/// in Rust to SQLite's own CURRENT_TIMESTAMP; this pins the behaviour.
+#[tokio::test]
+async fn join_returns_410_for_an_expired_room() {
+    let state = common::test_state();
+    let room_id = common::seed_room(&state, "Old", "join-expired");
+    set_room(&state, &room_id, "expires_at", "2000-01-01 00:00:00");
+
+    let server = common::test_app(state);
+    let res = server
+        .post("/api/public/rooms/join-expired/join")
+        .json(&serde_json::json!({ "name": "Ana" }))
+        .await;
+    assert_eq!(res.status_code(), 410, "expired room should be Gone");
+}
+
+/// A far-future expiry must not be read as expired — the boundary is the part
+/// a clock bug gets wrong.
+#[tokio::test]
+async fn join_succeeds_for_a_room_expiring_later() {
+    let state = common::test_state();
+    let room_id = common::seed_room(&state, "Soon", "join-future");
+    set_room(&state, &room_id, "expires_at", "2999-01-01 00:00:00");
+
+    let server = common::test_app(state);
+    let res = server
+        .post("/api/public/rooms/join-future/join")
+        .json(&serde_json::json!({ "name": "Ana" }))
+        .await;
+    assert_eq!(res.status_code(), 200, "future expiry should still admit");
+}
+
+/// The LiveKit token's `exp` is capped by the room's expiry. That value now
+/// comes from SQLite's strftime rather than a hand-written parser, so check a
+/// room expiring soon yields a token that expires at that time, not in an hour.
+#[tokio::test]
+async fn livekit_token_expiry_tracks_the_room() {
+    let state = common::test_state();
+    let room_id = common::seed_room(&state, "Short", "lk-short");
+    let (pid, tok) = common::seed_participant(&state, &room_id, "Ana", "viewer", true, false);
+    // ~5 minutes out, well inside the token's own 1h ceiling.
+    {
+        let conn = state.db.get().unwrap();
+        conn.execute(
+            "UPDATE rooms SET expires_at = datetime('now', '+5 minutes') WHERE id = ?1",
+            rusqlite::params![room_id],
+        )
+        .unwrap();
+    }
+
+    let server = common::test_app(state);
+    let res = server
+        .get(&format!(
+            "/api/public/rooms/lk-short/livekit-token?participantId={pid}&token={tok}"
+        ))
+        .await;
+    assert_eq!(res.status_code(), 200);
+
+    // Decode the JWT payload without verifying — we only want `exp`.
+    let jwt = res.json::<Value>()["token"].as_str().unwrap().to_string();
+    let payload_b64 = jwt.split('.').nth(1).unwrap();
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .unwrap();
+    let exp = serde_json::from_slice::<Value>(&payload).unwrap()["exp"]
+        .as_u64()
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    assert!(
+        exp > now && exp <= now + 400,
+        "exp {exp} should track the room's ~5min expiry, not the 1h cap (now={now})"
+    );
+}

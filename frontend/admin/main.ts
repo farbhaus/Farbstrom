@@ -1,5 +1,4 @@
 import {
-  apiFetch,
   clearToken,
   fetchAuthMethods,
   getToken,

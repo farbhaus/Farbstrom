@@ -19,7 +19,10 @@ use crate::events::{FileSharedEvent, FileUnsharedEvent};
 use crate::state::AppState;
 use crate::uploads::stream_field_to_temp;
 
-const MAX_FILE_SIZE: usize = 2560 * 1024 * 1024; // 2.5 GB
+/// Upload size ceiling, shared by the participant and admin-library upload
+/// routes. `uploads::stream_field_to_temp` formats its rejection message from
+/// this value, so the number and the message it produces cannot disagree.
+pub const MAX_FILE_SIZE: usize = 2560 * 1024 * 1024; // 2.5 GB
 
 pub const SAFE_MIMES: &[&str] = &[
     "image/jpeg",

@@ -38,6 +38,10 @@ pub fn test_config() -> AppConfig {
         srt_public_host: "stream.example.com".into(),
         srt_public_port: 9998,
         srt_latency_ms: 500,
+        // `test_state_with_config` hashes its own bootstrap password below, so
+        // this is only here to satisfy the struct; keep the two in step if a
+        // test ever exercises the env-derived password path.
+        admin_password: "test-admin-password".into(),
     }
 }
 
