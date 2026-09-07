@@ -1,9 +1,22 @@
+/**
+ * HTML-escape a value for interpolation into markup, in text or in an
+ * attribute.
+ *
+ * `'` is escaped as well as `"`. There used to be three of these — this one and
+ * `roster.ts`'s, which did escape `'`, and `conference.ts`'s `escAttr`, which
+ * did not — so which characters were neutralised depended on which module you
+ * happened to be in. Nothing was exploitable, because every attribute in the
+ * codebase is double-quoted, but that is a property of the current templates
+ * rather than of the escaper. Covering both quote characters means a
+ * single-quoted attribute is safe the day someone writes one.
+ */
 export function esc(str: unknown): string {
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // Autolink URLs in user-typed text. This is an escaping problem before it is a

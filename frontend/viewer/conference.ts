@@ -4,7 +4,7 @@
 // LiveKit's track state.
 
 import { confirmModal, noticeModal } from '../shared/components.js';
-import { toast } from '../shared/utils.js';
+import { esc, toast } from '../shared/utils.js';
 import {
   clearQuality,
   countConfReconnect,
@@ -80,10 +80,6 @@ const SVG_MIC =
   '<svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="1" width="6" height="11" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
 const SVG_MIC_OFF =
   '<svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
-
-function escAttr(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
 
 export function getLivekitRoom(): LkRoom | null {
   return livekitRoom;
@@ -559,13 +555,13 @@ export function syncConferenceTiles(): void {
         `<video autoplay playsinline></video></div>` +
         `<div class="conf-user-icon">${SVG_USER}</div>` +
         `<div class="conf-mic-icon" style="display:none">${SVG_MIC}</div>` +
-        `<div class="tile-name">${escAttr(rp.name || pid)}</div>` +
+        `<div class="tile-name">${esc(rp.name || pid)}</div>` +
         (myRole === 'presenter' && !isTargetPresenter
           ? `<div class="tile-actions">` +
             `<button class="tile-btn${micMuted ? ' muted-indicator' : ''}" title="${micMuted ? 'Unmute' : 'Mute'}" ` +
-            `data-action="presenter-mute" data-identity="${escAttr(pid)}" data-sid="${escAttr(micSid)}">${micMuted ? SVG_MIC_OFF : SVG_MIC}</button>` +
+            `data-action="presenter-mute" data-identity="${esc(pid)}" data-sid="${esc(micSid)}">${micMuted ? SVG_MIC_OFF : SVG_MIC}</button>` +
             `<button class="tile-btn danger" title="Remove from conference" ` +
-            `data-action="presenter-kick" data-identity="${escAttr(pid)}">` +
+            `data-action="presenter-kick" data-identity="${esc(pid)}">` +
             `<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>` +
             `</div>`
           : '');

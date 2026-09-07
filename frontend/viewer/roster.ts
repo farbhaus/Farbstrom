@@ -5,7 +5,7 @@
 // (server-side filtered to presenters only, so non-hosts never see those
 // lists even though the markup is in the same panel).
 
-import { toast } from '../shared/utils.js';
+import { esc, toast } from '../shared/utils.js';
 import { getQuality, subscribeDiag, type Quality } from './diagnostics.js';
 import { getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
@@ -23,12 +23,6 @@ let kicked: ModParticipant[] = [];
 // no WS at all — so the host can see and kick them. Current Farbplay builds are
 // identified by their `client` marker on the WS roster instead (gh #227).
 let admitted: ModParticipant[] = [];
-
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
-  );
-}
 
 function isPresenter(): boolean {
   return viewerStore.get().role === 'presenter';
