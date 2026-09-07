@@ -139,7 +139,7 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/lib.rs` — re-exports the app builder so integration tests can spin up the server in-process
 - `src/config.rs` — `AppConfig::from_env`, secret length validation (fail-fast)
 - `src/state.rs` — `AppState` (Arc'd, cloned into handlers)
-- `src/db.rs` — R2D2 SQLite pool (8 connections), WAL mode, schema bootstrap from `schema.sql`
+- `src/db.rs` — R2D2 SQLite pool (8 connections), WAL mode, schema bootstrap from `schema.sql`. Connection-scoped pragmas go in `with_init` so they apply to **every** pooled connection — `foreign_keys`, `synchronous`, `busy_timeout`. `journal_mode = WAL` is set once instead, being persisted in the file header
 - `src/error.rs` — `AppError` + `IntoResponse` impl; central error → HTTP mapping
 - `src/events.rs` — typed WS event payloads shared between hub and routes
 - `src/auth.rs` — JWT (HS256, 7d) + bcrypt helpers
@@ -150,7 +150,9 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/tasks.rs` — background pollers: OME stream status, room expiry, file cleanup
 - `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename)
 - `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages)
-- `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, WebAuthn RP builder
+- `src/routes/sql.rs` — shared SQL: `row_to_json`, the room projection (`ROOM_SELECT` / `ROOM_SELECT_BY_ID` / `ROOM_COLS`, plus the `ROOM_LIST_*` variant carrying `waiting_count`) and `FILE_ROOM_SLUGS`. **A new `rooms` column is added here, not in seven handlers** — the projection and its column names are paired positionally, and a unit test asserts they stay the same length
+- `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, `verify_totp_or_recovery` (the one definition of "valid second factor", shared by login and 2FA teardown), WebAuthn RP builder
+- `src/time.rs` — `now_ms()`. **Every timestamp crossing the wire to a browser is epoch milliseconds**; route new ones through here rather than re-deriving, or they land in `new Date(ts)` as 1970
 - `tests/common/mod.rs` — shared test fixtures (in-memory DB, app setup)
 
 ## Frontend structure
@@ -244,7 +246,7 @@ meant neither could be promoted to `components.css`. Keep them distinct.
 - Participant: `POST /api/public/rooms/:slug/join` — returns a scoped JWT for WS + file access
 - Presenter role is admin-only (`POST /api/rooms/:id/enter`), never grantable from the public join flow
 
-**Presenter entry handoff.** Admin clicks "Enter Room" → backend creates `role='presenter', is_admitted=1` → admin JS writes `{jwt, participantId}` to `localStorage['viewer_presession_{slug}']` and opens `/watch/{slug}` in a new tab → viewer reads the presession on load, moves it into `sessionStorage['viewer_session_{slug}']`, and deletes the localStorage entry. The localStorage key exists for milliseconds. No public URL grants presenter role.
+**Presenter entry handoff.** Admin clicks "Enter Room" → backend creates `role='presenter', is_admitted=1` → admin JS writes `{participantId, token, deliveryMode, streamKey, role}` to `localStorage['_presession_{slug}']` and opens `/watch/{slug}` in a new tab → viewer reads the presession on load, moves it into `sessionStorage['viewer_session_{slug}']`, and deletes the localStorage entry. The localStorage key exists for milliseconds. No public URL grants presenter role. (The key really is `_presession_{slug}`, with no `viewer` prefix, unlike every other viewer key — see `PRESESSION_KEY` in `frontend/viewer/session.ts` and the writer in `frontend/admin/rooms.ts`.)
 
 **Session isolation.** `viewer_session_{slug}` is in `sessionStorage` (per-tab, survives refresh, cleared on tab close); `viewer_name__/pass__{slug}` stay in `localStorage` (shared across tabs — intentional). `viewer_kicked_{slug}` is set on `{type:'kicked'}` or WS close 1008 and is checked at page load *before* WS connect, so a kicked viewer sees "Removed" instantly on refresh. If the sessionStorage flag is lost, the WS hub re-detects `is_kicked=1` and re-expels on reconnect.
 
@@ -281,13 +283,17 @@ put back on the way out. New steps are a `TourStep` in `buildSteps()`.
 
 **The privacy page is the cookie disclosure** (`www/privacy/index.html`, gh
 #247). It is linked from the landing page, the join screen and the device
-picker, and it enumerates every key this app writes to the browser —
-`farbstrom_tour` (the tour's cookie, the **only** cookie set anywhere), the
-`sessionStorage` session, and the `localStorage` room/tool preferences including
-`viewer_scopes`. Anything new that writes to a cookie, `localStorage` or
-`sessionStorage` belongs on that page in the same commit; it shipped claiming
-"not in cookies" for a whole release after the tour landed, and claiming the
-room password was saved behind a checkbox that has never existed.
+picker, and it discloses every *category* of browser storage this app writes:
+the session token + participant id and the kicked flag (`sessionStorage`), the
+per-room device/audio preferences, the tool preferences (scopes window, tour
+seen), the saved name and room password, and the admin sign-in token. The only
+key named literally is `farbstrom_tour` — the tour's cookie, and the **only**
+cookie set anywhere; the rest are described in prose rather than by key name
+(`viewer_scopes`, `conf_pref_*`, `stream_token` are not spelled out). Anything
+new that writes to a cookie, `localStorage` or `sessionStorage` belongs on that
+page in the same commit; it shipped claiming "not in cookies" for a whole
+release after the tour landed, and claiming the room password was saved behind a
+checkbox that has never existed.
 
 **The ? toolbar button** (`frontend/viewer/shortcuts.ts`) opens the shortcuts
 sheet, and offers the tour as its second button rather than launching it. The
@@ -357,7 +363,7 @@ and have drifted before, so it must never move on its own.
 ## Recommended tests to add
 
 Thin areas in the integration suite worth regression coverage:
-1. Viewer JWT → presenter endpoints (`/conference/kick`, `/conference/mute`) → 403.
+1. Viewer JWT → presenter endpoints (`/conference/kick`, `/conference/mute`) → 403. (A *kicked presenter* is covered — `room_state_test.rs` — but a plain viewer is not.)
 2. `POST /api/rooms/:id/enter` (admin JWT) produces `role='presenter' AND is_admitted=1`; no public endpoint reaches the same state.
 3. Kick blocks re-join by case-insensitive name match (`POST /api/public/rooms/:slug/join` → 403).
 4. WS hub rejects kicked participants — `{type:'kicked'}` frame, close 1008.
@@ -365,9 +371,68 @@ Thin areas in the integration suite worth regression coverage:
 6. Rate limiter: 6th `/api/auth/login` in a minute → 429 (requires the real HTTP server, not `TestServer`, so `ConnectInfo` is populated).
 7. Status endpoint shape: `GET /api/public/rooms/:slug/status/:pid?token=…` → `{admitted, kicked, room_status}` for each of waiting/admitted/kicked/ended.
 
+**The WS hub has no test harness at all** — `common::test_app` builds only
+`routes::build_router`, so nothing exercises `ws.rs`, and nothing exercises the
+static/SPA wiring in `main.rs` either (the asset-vs-room decision is unit-tested
+against `pages::path_looks_like_asset` instead). Items 1 and 4 above need that
+harness first.
+
+Suites added by the audit pass, worth knowing before writing overlapping ones:
+`db_integrity_test` (pool pragmas, cascades, `created_at` → epoch ms),
+`file_visibility_test` (draft visibility, dedup blast radius, delete
+accounting), `room_state_test` (ended/expired gates, kicked presenters, slugs,
+stream-key deletion), `robustness_test` (colour validation, OME name
+allowlist).
+
 ## Gotchas
 
 Non-obvious facts that aren't derivable from reading the code.
+
+**Database / pool**
+- **`foreign_keys` is ON here by accident of the build, not by the pragma in
+  `db.rs`.** libsqlite3-sys's bundled SQLite is compiled with
+  `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, and rusqlite calls
+  `sqlite3_busy_timeout(db, 5000)` on open — measured, on every pooled
+  connection and on a raw `Connection::open`. Dropping the `bundled` feature for
+  a system SQLite would silently turn every `ON DELETE CASCADE` in `schema.sql`
+  into a no-op, and four call sites depend on those cascades
+  (`rooms::delete_room`, `stream_keys::delete_key`, `files::delete_room_file`,
+  `admin_files::delete_files_inner`). `db.rs` restates both pragmas in
+  `with_init` so the guarantee is ours; `tests/db_integrity_test.rs` pins it.
+- **Pragmas set on a connection pulled from the pool configure only that
+  connection.** r2d2's `min_idle` defaults to `max_size`, so all 8 exist by the
+  time `build()` returns. This is not theoretical — `synchronous = NORMAL`
+  reached exactly one of them for a long time while the other seven ran `FULL`.
+
+**Wire timestamps**
+- **Everything sent to a browser is epoch milliseconds** (`crate::time::now_ms`).
+  `file:shared` used to send seconds from four call sites while `chat:message`
+  sent milliseconds, and the viewer renders both through one `new Date(ts)` —
+  so shared files showed a January 1970 clock time. Chat history converts
+  `created_at` with `strftime('%s', ...) * 1000`, which reads the stored value as
+  UTC; `new Date("YYYY-MM-DD HH:MM:SS")` parses as *local* time and shifted the
+  whole replay by the viewer's offset.
+
+**Admin 2FA**
+- **Teardown needs the second factor, not just the password.** The admin JWT is
+  minted from the password alone, so gating `totp/disable` on a password
+  re-check would gate 2FA removal on exactly the factor 2FA backstops. Recovery
+  codes are accepted there too — losing the authenticator is when you need it.
+- **`totp/setup` is refused while TOTP is enabled.** It rotates the secret and
+  sets `totp_enabled = 0`, so re-opening the setup panel used to switch 2FA off
+  silently and invalidate the authenticator.
+
+**Files**
+- **Content-hash dedup means one `session_files` row can serve several rooms** —
+  a second uploader of identical bytes gets the *existing* row id back. So
+  "this file originated in my room" does not imply "only my room has it": the
+  host delete path checks `room_files` for other rooms before hard-deleting, and
+  otherwise only detaches. Same reason blob unlinking always recounts
+  `stored_path` references first.
+- **Drafts (`is_shared = 0`) are hidden from every read path**, including
+  `download_file` — which authorises on room membership, so without the filter
+  any room member who knew a file id could pull someone else's unsent upload.
+  The uploader still reaches their own.
 
 **LiveKit**
 - `entrypoint.sh` generates `/livekit.yaml` with a `keys:` map (`KEY: SECRET`) — the **space after the colon** is required (YAML), else LiveKit boots with no auth and only logs "Could not parse keys". The backend must mint tokens with the same `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`. Keys are inlined into the YAML so the LiveKit process needs no key secrets in its env (`supervisord.conf` strips them with `env -u`).
