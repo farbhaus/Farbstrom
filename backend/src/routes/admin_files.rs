@@ -99,7 +99,7 @@ async fn list_files(
              LEFT JOIN participants p ON p.id = sf.uploader_id \
              LEFT JOIN room_files rf ON rf.file_id = sf.id \
              LEFT JOIN rooms r ON r.id = rf.room_id \
-             WHERE 1=1 ",
+             WHERE sf.is_shared = 1 ",
         );
         let mut args: Vec<String> = Vec::new();
 
@@ -141,9 +141,13 @@ async fn files_stats(
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
     let payload = tokio::task::spawn_blocking(move || -> Result<Value, AppError> {
+        // `is_shared = 0` rows are drafts sitting in someone's chat composer,
+        // not library files — they are excluded from the listing above, so they
+        // must be excluded from its totals too or the two disagree.
         let (total_count, total_bytes): (i64, i64) = conn
             .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM session_files",
+                "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) \
+                 FROM session_files WHERE is_shared = 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -151,7 +155,7 @@ async fn files_stats(
 
         let mut stmt = conn.prepare(
             "SELECT mime_type, COUNT(*), COALESCE(SUM(size_bytes), 0) \
-             FROM session_files GROUP BY mime_type",
+             FROM session_files WHERE is_shared = 1 GROUP BY mime_type",
         )?;
         let mut buckets: std::collections::HashMap<&str, (i64, i64)> =
             std::collections::HashMap::new();
@@ -384,6 +388,34 @@ async fn replace_file(
         let content_hash = uploaded.sha256_hex.clone();
         let temp_path = format!("{}/{}", files_dir, uploaded.temp_name);
 
+        // `content_hash` is UNIQUE, so replacing a file with bytes that already
+        // exist under a *different* row would violate the index. Check before
+        // the rename below commits the new blob: otherwise the UPDATE fails
+        // after the blob is in place and it is orphaned on disk with nothing
+        // referencing it (and the admin sees a bare 500).
+        let conn = state.db.get()?;
+        let hash_probe = content_hash.clone();
+        let file_id_probe = file_id.clone();
+        let clash: Option<String> = tokio::task::spawn_blocking(move || {
+            conn.query_row(
+                "SELECT original_name FROM session_files \
+                 WHERE content_hash = ?1 AND id != ?2 LIMIT 1",
+                params![hash_probe, file_id_probe],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??;
+
+        if let Some(existing_name) = clash {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(AppError::Conflict(format!(
+                "That file's contents are already in the library as “{existing_name}”"
+            )));
+        }
+
         let ext = extract_extension(&original_name);
         let new_stored = format!("{}{}", uuid::Uuid::new_v4(), ext);
         tokio::fs::rename(&temp_path, format!("{}/{}", files_dir, new_stored))
@@ -474,17 +506,22 @@ async fn bulk_delete_files(
     Ok(Json(json!({ "ok": true, "deleted": n })))
 }
 
+/// Delete library files by id. Returns the number of **files** actually
+/// removed — not the number of rooms notified, which is a different number
+/// whenever a file is assigned to zero rooms (reported 0) or several
+/// (over-counted).
 async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usize, AppError> {
     // For each file: collect assigned room slugs (for WS notify), collect
     // the stored_path, then DELETE the row (room_files cascades). If no
     // remaining row references the same stored_path, remove the blob.
     let conn = state.db.get()?;
     let ids_owned: Vec<String> = ids.to_vec();
-    type UnshareResult = Result<(Vec<(String, String)>, Vec<String>), AppError>;
-    let (to_notify, stored_paths) = tokio::task::spawn_blocking(
+    type UnshareResult = Result<(Vec<(String, String)>, Vec<String>, usize), AppError>;
+    let (to_notify, stored_paths, deleted) = tokio::task::spawn_blocking(
         move || -> UnshareResult {
             let mut notify: Vec<(String, String)> = Vec::new();
             let mut paths: Vec<String> = Vec::new();
+            let mut deleted = 0usize;
             for id in &ids_owned {
                 let stored: Option<String> = conn
                     .query_row(
@@ -513,9 +550,9 @@ async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usi
                     notify.push((slug, id.clone()));
                 }
 
-                conn.execute("DELETE FROM session_files WHERE id = ?1", params![id])?;
+                deleted += conn.execute("DELETE FROM session_files WHERE id = ?1", params![id])?;
             }
-            Ok((notify, paths))
+            Ok((notify, paths, deleted))
         },
     )
     .await
@@ -541,7 +578,6 @@ async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usi
         }
     }
 
-    let count = to_notify.len();
     for (slug, id) in to_notify {
         let _ = state
             .events
@@ -549,7 +585,7 @@ async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usi
             .send(FileUnsharedEvent { slug, id });
     }
 
-    Ok(count)
+    Ok(deleted)
 }
 
 async fn download_library_file(

@@ -11,6 +11,11 @@ pub enum AppError {
     Unauthorized(String),
     Forbidden(String),
     NotFound(String),
+    /// The request is well-formed but collides with existing state — e.g.
+    /// replacing a library file with content another row already holds, which
+    /// the UNIQUE `content_hash` index forbids. Distinct from `BadRequest` so
+    /// the client can tell "you sent something wrong" from "this clashes".
+    Conflict(String),
     Gone(String),
     Internal(String),
     BadGateway(String),
@@ -27,6 +32,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             AppError::Gone(msg) => (StatusCode::GONE, "GONE", msg),
             AppError::Internal(msg) => {
                 tracing::error!(error = %msg, "internal error");
