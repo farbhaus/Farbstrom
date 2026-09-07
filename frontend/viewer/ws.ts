@@ -311,12 +311,15 @@ export function connectWs(): void {
         startKickedPoller();
         return;
       }
-      // Auth rejected — session is stale; return to join form.
+      // Auth rejected — session is stale; return to join form. Not "expired"
+      // (the room ending or a presenter-key rotation land here too) and no
+      // instruction to re-enter anything: the join screen pre-fills name and
+      // password from localStorage.
       sessionStorage.removeItem(SESSION_KEY);
       document.getElementById('app')?.classList.remove('visible');
       document.getElementById('join-screen')?.classList.remove('hidden');
       const errEl = document.getElementById('join-error');
-      if (errEl) errEl.textContent = 'Session expired. Please re-enter your name.';
+      if (errEl) errEl.textContent = 'This session has ended.';
       return;
     }
     setWsStatus('error', 'Reconnecting');
