@@ -159,11 +159,30 @@ async fn list_streams(
     Ok(Json(data))
 }
 
+/// OME stream names are our own key tokens (24 hex bytes) or the `conf-<uuid>`
+/// conference streams, so they are always ASCII alphanumeric plus `-`.
+///
+/// The value is a path segment that gets spliced into the upstream OME API URL,
+/// and axum has already percent-decoded it — so without this check a crafted
+/// name containing `/`, `..` or `?` would address a different OME endpoint
+/// entirely. Admin-only, but the handler shouldn't be the thing standing
+/// between an admin typo and an arbitrary OME API call.
+fn valid_stream_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 async fn get_stream(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
     Path(stream_key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    if !valid_stream_name(&stream_key) {
+        return Err(AppError::BadRequest("Invalid stream name".into()));
+    }
     let path = format!("/vhosts/default/apps/live/streams/{}", stream_key);
     let data = ome_request(
         &state.http_client,
@@ -182,6 +201,10 @@ async fn delete_stream(
     State(state): State<Arc<AppState>>,
     Path(stream_key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    if !valid_stream_name(&stream_key) {
+        return Err(AppError::BadRequest("Invalid stream name".into()));
+    }
+
     // Block the key BEFORE disconnecting so the encoder can't win the race by
     // reconnecting between the OME DELETE and the block landing. The OME stream
     // name is the ingest key token, so it matches key_token directly. Conference

@@ -42,7 +42,12 @@ impl LiveKitClient {
         }
     }
 
-    fn service_token(&self, room: &str) -> String {
+    /// Mint a short-lived RoomService admin token.
+    ///
+    /// Returns the encode error rather than an empty string: sending `Bearer `
+    /// makes LiveKit answer 401, so a signing failure used to surface as
+    /// "LiveKit API error: 401" and read as a key mismatch.
+    fn service_token(&self, room: &str) -> Result<String, String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -68,11 +73,11 @@ impl LiveKitClient {
             &claims,
             &EncodingKey::from_secret(self.api_secret.as_bytes()),
         )
-        .unwrap_or_default()
+        .map_err(|e| format!("LiveKit service token signing failed: {e}"))
     }
 
     pub async fn delete_room(&self, room_name: &str) -> Result<(), String> {
-        let token = self.service_token(room_name);
+        let token = self.service_token(room_name)?;
         let res = self
             .http
             .post(format!(
@@ -94,7 +99,7 @@ impl LiveKitClient {
     }
 
     pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<(), String> {
-        let token = self.service_token(room);
+        let token = self.service_token(room)?;
         let res = self
             .http
             .post(format!(
@@ -122,7 +127,7 @@ impl LiveKitClient {
         track_sid: &str,
         muted: bool,
     ) -> Result<(), String> {
-        let token = self.service_token(room);
+        let token = self.service_token(room)?;
         let res = self
             .http
             .post(format!(

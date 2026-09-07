@@ -19,6 +19,7 @@ use rusqlite::OptionalExtension;
 
 use crate::events::FileSharedEvent;
 use crate::state::AppState;
+use crate::time::now_ms;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,7 +35,7 @@ pub struct WsParticipant {
     /// Published on the roster so the host can tell a native Farbplay viewer from
     /// a browser one (gh #227).
     pub client: Option<String>,
-    pub tx: mpsc::UnboundedSender<Message>,
+    pub tx: mpsc::Sender<Message>,
     pub disconnect_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -97,8 +98,6 @@ fn display_state_msg(state: Option<&DisplayState>) -> String {
     }
 }
 
-use crate::time::now_ms;
-
 // ---------------------------------------------------------------------------
 // Auth message
 // ---------------------------------------------------------------------------
@@ -147,9 +146,24 @@ async fn ws_handler(
 // Socket handler
 // ---------------------------------------------------------------------------
 
+/// Per-connection outbound queue depth.
+///
+/// This was unbounded, which meant a client that stopped reading — a suspended
+/// laptop, a stalled mobile link — buffered every room broadcast in server
+/// memory indefinitely, and `pointer:move` alone can be tens of messages a
+/// second.
+///
+/// Every send is a `try_send`, so a backed-up consumer drops frames rather than
+/// growing the queue or stalling the sender. That is the right trade here: the
+/// messages are state snapshots (roster, focus, display, pointer position), so
+/// the next broadcast supersedes whatever was dropped, and a client that is
+/// 256 messages behind has already lost the connection in every way that
+/// matters — the pinger closes it after 15 s of silence.
+const WS_SEND_QUEUE: usize = 256;
+
 async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    let (tx, mut rx) = mpsc::channel::<Message>(WS_SEND_QUEUE);
 
     // Spawn send task: forward from mpsc channel to websocket sink
     let send_task = tokio::spawn(async move {
@@ -164,7 +178,7 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     let auth = match wait_for_auth(&mut stream).await {
         Some(a) => a,
         None => {
-            let _ = tx.send(Message::Close(Some(CloseFrame {
+            let _ = tx.try_send(Message::Close(Some(CloseFrame {
                 code: 1008,
                 reason: "Auth required".into(),
             })));
@@ -174,7 +188,7 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     };
 
     if auth.msg_type != "auth" {
-        let _ = tx.send(Message::Close(Some(CloseFrame {
+        let _ = tx.try_send(Message::Close(Some(CloseFrame {
             code: 1008,
             reason: "First message must be auth".into(),
         })));
@@ -192,7 +206,7 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
             Ok(c) => c,
             Err(e) => {
                 error!("DB pool error during WS auth: {}", e);
-                let _ = tx.send(Message::Close(Some(CloseFrame {
+                let _ = tx.try_send(Message::Close(Some(CloseFrame {
                     code: 1011,
                     reason: "Internal error".into(),
                 })));
@@ -201,39 +215,48 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
             }
         };
 
-        // Ended/expired rooms are filtered here as well as in the HTTP paths:
-        // the room:ended listener force-closes the sockets that are already
-        // open, but nothing stopped a *new* socket authenticating against a
-        // room that is over.
-        conn.query_row(
-            "SELECT p.id, p.name, p.role, p.is_admitted, p.is_kicked, r.slug
-             FROM participants p
-             JOIN rooms r ON r.id = p.room_id
-             WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3
-               AND r.status != 'ended'
-               AND (r.expires_at IS NULL OR r.expires_at > CURRENT_TIMESTAMP)",
-            rusqlite::params![participant_id, token, slug],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?, // id
-                    row.get::<_, String>(1)?, // name
-                    row.get::<_, String>(2)?, // role
-                    row.get::<_, bool>(3)?,   // is_admitted
-                    row.get::<_, bool>(4)?,   // is_kicked
-                ))
-            },
-        )
+        let slug_q = slug.clone();
+        // rusqlite is blocking, so this goes on the blocking pool like every
+        // HTTP handler's queries do — a socket handshake must not stall an
+        // executor thread.
+        tokio::task::spawn_blocking(move || {
+            // Ended/expired rooms are filtered here as well as in the HTTP
+            // paths: the room:ended listener force-closes the sockets that are
+            // already open, but nothing stopped a *new* socket authenticating
+            // against a room that is over.
+            conn.query_row(
+                "SELECT p.id, p.name, p.role, p.is_admitted, p.is_kicked, r.slug
+                 FROM participants p
+                 JOIN rooms r ON r.id = p.room_id
+                 WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3
+                   AND r.status != 'ended'
+                   AND (r.expires_at IS NULL OR r.expires_at > CURRENT_TIMESTAMP)",
+                rusqlite::params![participant_id, token, slug_q],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?, // id
+                        row.get::<_, String>(1)?, // name
+                        row.get::<_, String>(2)?, // role
+                        row.get::<_, bool>(3)?,   // is_admitted
+                        row.get::<_, bool>(4)?,   // is_kicked
+                    ))
+                },
+            )
+        })
+        .await
     };
 
     let (pid, name, role, is_admitted, is_kicked) = match db_result {
-        Ok(row) => row,
-        Err(_) => {
-            let _ = tx.send(Message::Text(
+        Ok(Ok(row)) => row,
+        // No matching row (bad token, wrong room, or the room has ended), or
+        // the blocking task itself failed — both are "you don't get in".
+        _ => {
+            let _ = tx.try_send(Message::Text(
                 json!({"type": "error", "message": "Invalid credentials"})
                     .to_string()
                     .into(),
             ));
-            let _ = tx.send(Message::Close(Some(CloseFrame {
+            let _ = tx.try_send(Message::Close(Some(CloseFrame {
                 code: 1008,
                 reason: "Auth failed".into(),
             })));
@@ -243,8 +266,8 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     };
 
     if is_kicked {
-        let _ = tx.send(Message::Text(json!({"type": "kicked"}).to_string().into()));
-        let _ = tx.send(Message::Close(Some(CloseFrame {
+        let _ = tx.try_send(Message::Text(json!({"type": "kicked"}).to_string().into()));
+        let _ = tx.try_send(Message::Close(Some(CloseFrame {
             code: 1008,
             reason: "Kicked".into(),
         })));
@@ -253,12 +276,12 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     }
 
     if !is_admitted {
-        let _ = tx.send(Message::Text(
+        let _ = tx.try_send(Message::Text(
             json!({"type": "error", "message": "Not admitted"})
                 .to_string()
                 .into(),
         ));
-        let _ = tx.send(Message::Close(Some(CloseFrame {
+        let _ = tx.try_send(Message::Close(Some(CloseFrame {
             code: 1008,
             reason: "Not admitted".into(),
         })));
@@ -297,14 +320,14 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     }
 
     // Send auth:ok
-    let _ = tx.send(Message::Text(json!({"type": "auth:ok"}).to_string().into()));
+    let _ = tx.try_send(Message::Text(json!({"type": "auth:ok"}).to_string().into()));
 
     // Replay current host-pinned focus so a late joiner lands in the same
     // view as everyone else.
     {
         let focus = WS_ROOM_FOCUS.read().await;
         if let Some(tile_id) = focus.get(&slug) {
-            let _ = tx.send(Message::Text(
+            let _ = tx.try_send(Message::Text(
                 json!({"type": "focus:set", "tileId": tile_id})
                     .to_string()
                     .into(),
@@ -317,12 +340,12 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     {
         let display = WS_ROOM_DISPLAY.read().await;
         if let Some(state) = display.get(&slug) {
-            let _ = tx.send(Message::Text(display_state_msg(Some(state)).into()));
+            let _ = tx.try_send(Message::Text(display_state_msg(Some(state)).into()));
         }
     }
 
     // Send chat history (last 50)
-    send_chat_history(&state, &slug, &tx);
+    send_chat_history(&state, &slug, &tx).await;
 
     // Broadcast participants update
     broadcast_participants(&WS_ROOMS, &slug).await;
@@ -399,7 +422,7 @@ async fn handle_text_message(
     participant_id: &str,
     name: &str,
     role: &str,
-    tx: &mpsc::UnboundedSender<Message>,
+    tx: &mpsc::Sender<Message>,
     text: &str,
 ) {
     let msg: Value = match serde_json::from_str(text) {
@@ -420,7 +443,7 @@ async fn handle_text_message(
         // the measurement never depends on the two clocks agreeing.
         "ping" => {
             let t = msg.get("t").and_then(|v| v.as_u64()).unwrap_or_default();
-            let _ = tx.send(Message::Text(
+            let _ = tx.try_send(Message::Text(
                 json!({ "type": "pong", "t": t }).to_string().into(),
             ));
         }
@@ -438,13 +461,23 @@ async fn handle_text_message(
             let msg_id = uuid::Uuid::new_v4().to_string();
             let ts = now_ms();
 
-            // Persist to DB
+            // Persist to DB (on the blocking pool — rusqlite blocks).
             if let Ok(conn) = state.db.get() {
-                let _ = conn.execute(
-                    "INSERT INTO chat_messages (id, room_id, name, role, text)
-                     VALUES (?1, (SELECT id FROM rooms WHERE slug = ?2), ?3, ?4, ?5)",
-                    rusqlite::params![msg_id, slug, name, role, trimmed],
+                let (id_db, slug_db, name_db, role_db, text_db) = (
+                    msg_id.clone(),
+                    slug.to_string(),
+                    name.to_string(),
+                    role.to_string(),
+                    trimmed.clone(),
                 );
+                let _ = tokio::task::spawn_blocking(move || {
+                    conn.execute(
+                        "INSERT INTO chat_messages (id, room_id, name, role, text)
+                         VALUES (?1, (SELECT id FROM rooms WHERE slug = ?2), ?3, ?4, ?5)",
+                        rusqlite::params![id_db, slug_db, name_db, role_db, text_db],
+                    )
+                })
+                .await;
             }
 
             let broadcast_msg = json!({
@@ -722,12 +755,29 @@ async fn handle_text_message(
 // Chat history
 // ---------------------------------------------------------------------------
 
-fn send_chat_history(state: &Arc<AppState>, slug: &str, tx: &mpsc::UnboundedSender<Message>) {
+/// Replay the room's last 50 chat messages and shared files to one client.
+///
+/// The query is a `UNION ALL` across two joined tables with an ORDER BY, and
+/// rusqlite blocks — so it runs on the blocking pool rather than on an executor
+/// thread, matching every HTTP handler in the codebase.
+async fn send_chat_history(state: &Arc<AppState>, slug: &str, tx: &mpsc::Sender<Message>) {
     let conn = match state.db.get() {
         Ok(c) => c,
         Err(_) => return,
     };
+    let slug = slug.to_string();
+    let history_msg = tokio::task::spawn_blocking(move || build_chat_history(&conn, &slug)).await;
+    if let Ok(Some(msg)) = history_msg {
+        let _ = tx.try_send(Message::Text(msg.into()));
+    }
+}
 
+/// Blocking half of [`send_chat_history`]: returns the serialised
+/// `chat:history` frame, or `None` if the query could not be run.
+fn build_chat_history(
+    conn: &r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>,
+    slug: &str,
+) -> Option<String> {
     // Interleave chat messages and file uploads by timestamp so files
     // appear in their original chat-sequence position on rejoin.
     //
@@ -759,7 +809,7 @@ fn send_chat_history(state: &Arc<AppState>, slug: &str, tx: &mpsc::UnboundedSend
          LIMIT 50",
     ) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(_) => return None,
     };
 
     let messages: Vec<Value> = stmt
@@ -794,12 +844,13 @@ fn send_chat_history(state: &Arc<AppState>, slug: &str, tx: &mpsc::UnboundedSend
     let mut messages = messages;
     messages.reverse();
 
-    let history_msg = json!({
-        "type": "chat:history",
-        "messages": messages,
-    });
-
-    let _ = tx.send(Message::Text(history_msg.to_string().into()));
+    Some(
+        json!({
+            "type": "chat:history",
+            "messages": messages,
+        })
+        .to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -859,7 +910,9 @@ async fn broadcast_to_room(rooms: &WsRooms, slug: &str, msg: &str) {
     let rooms_guard = rooms.read().await;
     if let Some(room) = rooms_guard.get(slug) {
         for participant in room.values() {
-            let _ = participant.tx.send(Message::Text(msg.to_string().into()));
+            let _ = participant
+                .tx
+                .try_send(Message::Text(msg.to_string().into()));
         }
     }
 }
@@ -887,7 +940,7 @@ async fn broadcast_participants(rooms: &WsRooms, slug: &str) {
         .to_string();
 
         for participant in room.values() {
-            let _ = participant.tx.send(Message::Text(msg.clone().into()));
+            let _ = participant.tx.try_send(Message::Text(msg.clone().into()));
         }
     }
 }
@@ -899,7 +952,9 @@ async fn send_to_presenters_in_room(rooms: &WsRooms, slug: &str, msg: &str) {
     if let Some(room) = rooms_guard.get(slug) {
         for participant in room.values() {
             if participant.role == "presenter" {
-                let _ = participant.tx.send(Message::Text(msg.to_string().into()));
+                let _ = participant
+                    .tx
+                    .try_send(Message::Text(msg.to_string().into()));
             }
         }
     }
@@ -912,7 +967,9 @@ async fn send_to_non_presenters_in_room(rooms: &WsRooms, slug: &str, msg: &str) 
     if let Some(room) = rooms_guard.get(slug) {
         for participant in room.values() {
             if participant.role != "presenter" {
-                let _ = participant.tx.send(Message::Text(msg.to_string().into()));
+                let _ = participant
+                    .tx
+                    .try_send(Message::Text(msg.to_string().into()));
             }
         }
     }
@@ -923,7 +980,9 @@ async fn send_to_participant(rooms: &WsRooms, slug: &str, participant_id: &str, 
     let rooms_guard = rooms.read().await;
     if let Some(room) = rooms_guard.get(slug) {
         if let Some(participant) = room.get(participant_id) {
-            let _ = participant.tx.send(Message::Text(msg.to_string().into()));
+            let _ = participant
+                .tx
+                .try_send(Message::Text(msg.to_string().into()));
         }
     }
 }
@@ -938,8 +997,10 @@ async fn send_to_participant_and_close(
     let mut rooms_guard = rooms.write().await;
     if let Some(room) = rooms_guard.get_mut(slug) {
         if let Some(participant) = room.remove(participant_id) {
-            let _ = participant.tx.send(Message::Text(msg.to_string().into()));
-            let _ = participant.tx.send(Message::Close(Some(CloseFrame {
+            let _ = participant
+                .tx
+                .try_send(Message::Text(msg.to_string().into()));
+            let _ = participant.tx.try_send(Message::Close(Some(CloseFrame {
                 code: 1008,
                 reason: "Kicked".into(),
             })));
@@ -999,8 +1060,8 @@ pub fn spawn_event_listeners(state: Arc<AppState>) {
                     let mut rooms = WS_ROOMS.write().await;
                     if let Some(room) = rooms.remove(&slug) {
                         for (_pid, participant) in room {
-                            let _ = participant.tx.send(Message::Text(msg.clone().into()));
-                            let _ = participant.tx.send(Message::Close(Some(CloseFrame {
+                            let _ = participant.tx.try_send(Message::Text(msg.clone().into()));
+                            let _ = participant.tx.try_send(Message::Close(Some(CloseFrame {
                                 code: 1001,
                                 reason: "Room ended".into(),
                             })));
