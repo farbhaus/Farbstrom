@@ -42,43 +42,6 @@ async fn methods(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppE
     ))
 }
 
-/// Consume a one-time recovery code (bcrypt-matched). Returns true and
-/// persists the shortened list if the code was valid and unused.
-async fn try_recovery_code(state: &AppState, code: &str) -> Result<bool, AppError> {
-    let conn = state.db.get()?;
-    let stored =
-        tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_RECOVERY))
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    let Some(json) = stored else { return Ok(false) };
-    let hashes: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
-    let code = code.to_string();
-    let (matched, remaining) = tokio::task::spawn_blocking(move || {
-        let mut remaining = Vec::with_capacity(hashes.len());
-        let mut matched = false;
-        for h in hashes {
-            if !matched && bcrypt::verify(&code, &h).unwrap_or(false) {
-                matched = true; // drop this one
-            } else {
-                remaining.push(h);
-            }
-        }
-        (matched, remaining)
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    if matched {
-        let conn = state.db.get()?;
-        let json = serde_json::to_string(&remaining).unwrap();
-        tokio::task::spawn_blocking(move || {
-            cred::settings_set(&conn, cred::KEY_TOTP_RECOVERY, &json)
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))??;
-    }
-    Ok(matched)
-}
-
 async fn login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginBody>,
@@ -105,17 +68,7 @@ async fn login(
             // Password OK, code still needed — tell the UI to prompt.
             return Ok(Json(json!({ "totpRequired": true })));
         };
-        let conn = state.db.get()?;
-        let secret =
-            tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_SECRET))
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))?
-                .ok_or_else(|| AppError::Internal("TOTP misconfigured".into()))?;
-        let totp = cred::totp_from_secret(&secret)?;
-        let code_ok = totp
-            .check_current(code.trim())
-            .map_err(|e| AppError::Internal(format!("TOTP: {e}")))?;
-        if !code_ok && !try_recovery_code(&state, code.trim()).await? {
+        if !cred::verify_totp_or_recovery(&state, &code).await? {
             return Err(AppError::Unauthorized("Invalid code".into()));
         }
     }

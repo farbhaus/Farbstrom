@@ -105,7 +105,10 @@ async function changePassword(): Promise<void> {
 async function startTotpSetup(): Promise<void> {
   const res = await apiFetch('/api/admin/settings/totp/setup', { method: 'POST' });
   if (!res || !res.ok) {
-    toast('Could not start setup');
+    // Refused while already enrolled — re-running setup would rotate the secret
+    // and switch 2FA off, so the server sends back what to do instead.
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not start setup');
     return;
   }
   const d = await res.json();
@@ -140,18 +143,30 @@ async function confirmTotp(): Promise<void> {
   void loadSettings();
 }
 
+// Teardown needs both factors: the password, then a current authenticator code
+// (or a recovery code, for the case where the authenticator is what was lost).
+// The server enforces this — asking for the password alone would just 401.
 async function disableTotp(): Promise<void> {
   const password = await promptModal({
     title: 'Disable Two-Factor',
     message: 'Confirm your password to turn off TOTP 2FA.',
     label: 'Password',
     inputType: 'password',
-    confirmLabel: 'Disable 2FA',
+    confirmLabel: 'Continue',
   });
   if (!password) return;
+
+  const code = await promptModal({
+    title: 'Disable Two-Factor',
+    message: 'Enter a code from your authenticator app, or one of your recovery codes.',
+    label: 'Code',
+    confirmLabel: 'Disable 2FA',
+  });
+  if (!code) return;
+
   const res = await apiFetch('/api/admin/settings/totp/disable', {
     method: 'POST',
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, code }),
   });
   if (res && res.ok) {
     const box = $('set-totp-recovery');
@@ -159,7 +174,8 @@ async function disableTotp(): Promise<void> {
     toast('Two-factor disabled');
     void loadSettings();
   } else {
-    toast('Could not disable 2FA');
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not disable 2FA');
   }
 }
 

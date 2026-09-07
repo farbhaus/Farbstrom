@@ -97,6 +97,69 @@ pub fn gen_totp_secret() -> String {
     Secret::Raw(bytes.to_vec()).to_encoded().to_string()
 }
 
+/// Verify a submitted second factor: a current TOTP code, or — if that fails —
+/// one of the stored one-time recovery codes, which is consumed on use.
+///
+/// Shared by the login path and by TOTP teardown, so "what counts as a valid
+/// second factor" is defined once. Returns `false` when TOTP is not enrolled at
+/// all, so callers must decide whether a second factor is required.
+pub async fn verify_totp_or_recovery(state: &AppState, code: &str) -> Result<bool, AppError> {
+    let code = code.trim();
+    if code.is_empty() {
+        return Ok(false);
+    }
+    let conn = state.db.get()?;
+    let secret = tokio::task::spawn_blocking(move || settings_get(&conn, KEY_TOTP_SECRET))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let Some(secret) = secret else {
+        return Ok(false);
+    };
+    let totp = totp_from_secret(&secret)?;
+    if totp
+        .check_current(code)
+        .map_err(|e| AppError::Internal(format!("TOTP: {e}")))?
+    {
+        return Ok(true);
+    }
+    consume_recovery_code(state, code).await
+}
+
+/// Consume a one-time recovery code (bcrypt-matched). Returns true and persists
+/// the shortened list if the code was valid and unused.
+pub async fn consume_recovery_code(state: &AppState, code: &str) -> Result<bool, AppError> {
+    let conn = state.db.get()?;
+    let stored = tokio::task::spawn_blocking(move || settings_get(&conn, KEY_TOTP_RECOVERY))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let Some(json) = stored else { return Ok(false) };
+    let hashes: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+    let code = code.to_string();
+    let (matched, remaining) = tokio::task::spawn_blocking(move || {
+        let mut remaining = Vec::with_capacity(hashes.len());
+        let mut matched = false;
+        for h in hashes {
+            if !matched && bcrypt::verify(&code, &h).unwrap_or(false) {
+                matched = true; // drop this one
+            } else {
+                remaining.push(h);
+            }
+        }
+        (matched, remaining)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    if matched {
+        let conn = state.db.get()?;
+        let json = serde_json::to_string(&remaining)
+            .map_err(|e| AppError::Internal(format!("recovery codes: {e}")))?;
+        tokio::task::spawn_blocking(move || settings_set(&conn, KEY_TOTP_RECOVERY, &json))
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))??;
+    }
+    Ok(matched)
+}
+
 // ---- Recovery codes -------------------------------------------------------
 
 /// 10 human-typable one-time codes, returned plaintext (shown once) plus
