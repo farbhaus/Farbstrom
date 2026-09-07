@@ -116,13 +116,17 @@ function switchTab(tab: TabId): void {
 function initLoginForm(): void {
   const totpRow = document.getElementById('totp-row');
   const totpInput = document.getElementById('totp-input') as HTMLInputElement | null;
+  // Both sign-in paths honour the checkbox; the 2FA step re-submits this same
+  // form, so reading it at submit time picks up whatever it is set to then.
+  const trusted = (): boolean =>
+    (document.getElementById('trust-browser') as HTMLInputElement | null)?.checked ?? false;
 
   document.getElementById('login-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const errEl = document.getElementById('login-error');
     if (errEl) errEl.textContent = '';
     const passwordInput = document.getElementById('password-input') as HTMLInputElement;
-    const result = await login(passwordInput.value, totpInput?.value || undefined);
+    const result = await login(passwordInput.value, totpInput?.value || undefined, trusted());
     if (result.totpRequired) {
       if (totpRow) totpRow.style.display = '';
       totpInput?.focus();
@@ -141,7 +145,7 @@ function initLoginForm(): void {
   document.getElementById('passkey-btn')?.addEventListener('click', async () => {
     const errEl = document.getElementById('login-error');
     if (errEl) errEl.textContent = '';
-    const result = await passkeyLogin(doAuthenticate);
+    const result = await passkeyLogin(doAuthenticate, trusted());
     if (!result.ok) {
       if (errEl) errEl.textContent = result.error || 'Passkey sign in failed';
       return;

@@ -12,6 +12,9 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use webauthn_rs::prelude::*;
 
 pub const KEY_PASSWORD_HASH: &str = "admin_password_hash";
+/// Generation counter stamped into every admin JWT. Bumping it invalidates
+/// every token minted before the bump — see [`bump_token_version`].
+pub const KEY_TOKEN_VERSION: &str = "admin_token_version";
 pub const KEY_TOTP_SECRET: &str = "totp_secret";
 pub const KEY_TOTP_ENABLED: &str = "totp_enabled";
 pub const KEY_TOTP_RECOVERY: &str = "totp_recovery";
@@ -57,6 +60,47 @@ pub async fn current_password_hash(state: &AppState) -> Result<(String, bool), A
         Some(h) => Ok((h, true)),
         None => Ok((state.admin_password_hash.clone(), false)),
     }
+}
+
+// ---- Admin session invalidation -------------------------------------------
+
+/// Current admin token generation, straight from the DB. Absent or unparseable
+/// means 0, which is also what a token minted before this existed decodes to —
+/// so upgrading does not spuriously sign anyone out.
+pub fn token_version_get(conn: &rusqlite::Connection) -> u64 {
+    settings_get(conn, KEY_TOKEN_VERSION)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Invalidate every admin token issued so far.
+///
+/// Admin JWTs are stateless: nothing tied them to the password, so changing it
+/// revoked nothing and a stolen token stayed valid for its full 7 days. Each
+/// token now carries the generation it was minted under, and `AdminAuth` refuses
+/// any that does not match the current one.
+///
+/// The DB row is the source of truth; the `AppState` counter is a cache so the
+/// check costs no I/O on a path that runs for every admin request. One process
+/// serves the DB, so the two cannot diverge — and a restart reloads from the row
+/// regardless.
+///
+/// Returns the new generation, so the caller can mint a replacement token for
+/// whoever triggered this and keep *their* session alive.
+pub async fn bump_token_version(state: &AppState) -> Result<u64, AppError> {
+    let conn = state.db.get()?;
+    let next = tokio::task::spawn_blocking(move || -> Result<u64, rusqlite::Error> {
+        let next = token_version_get(&conn).wrapping_add(1);
+        settings_set(&conn, KEY_TOKEN_VERSION, &next.to_string())?;
+        Ok(next)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    state
+        .admin_token_version
+        .store(next, std::sync::atomic::Ordering::SeqCst);
+    Ok(next)
 }
 
 /// Verify a candidate password against the current admin hash.

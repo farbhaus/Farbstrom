@@ -21,6 +21,25 @@ use crate::state::{AppState, CEREMONY_TTL_SECS};
 struct LoginBody {
     password: Option<String>,
     totp_code: Option<String>,
+    /// "Trust this browser" — issue a 90-day session instead of the 7-day
+    /// default. Safe only because sessions can now be revoked; see
+    /// [`crate::auth::ADMIN_TOKEN_TRUSTED_TTL_SECS`].
+    #[serde(default)]
+    trust: bool,
+}
+
+/// Mint a session token for a successful sign-in, stamped with the current
+/// generation so a later revocation invalidates it.
+async fn issue_session(state: &AppState, trust: bool) -> Result<String, AppError> {
+    let ttl = if trust {
+        crate::auth::ADMIN_TOKEN_TRUSTED_TTL_SECS
+    } else {
+        crate::auth::ADMIN_TOKEN_TTL_SECS
+    };
+    let version = state
+        .admin_token_version
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Ok(create_admin_token(&state.config.jwt_secret, version, ttl)?)
 }
 
 /// Public: which extra factors the login screen should offer. Reveals only
@@ -73,7 +92,7 @@ async fn login(
         }
     }
 
-    let token = create_admin_token(&state.config.jwt_secret)?;
+    let token = issue_session(&state, body.trust).await?;
     Ok(Json(json!({ "token": token })))
 }
 
@@ -108,6 +127,9 @@ async fn passkey_start(State(state): State<Arc<AppState>>) -> Result<Json<Value>
 struct PasskeyFinishBody {
     id: Uuid,
     credential: PublicKeyCredential,
+    /// "Trust this browser", same meaning as on the password login.
+    #[serde(default)]
+    trust: bool,
 }
 
 async fn passkey_finish(
@@ -154,7 +176,7 @@ async fn passkey_finish(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let token = create_admin_token(&state.config.jwt_secret)?;
+    let token = issue_session(&state, body.trust).await?;
     Ok(Json(json!({ "token": token })))
 }
 

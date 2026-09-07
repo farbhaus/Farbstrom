@@ -61,6 +61,7 @@ pub fn test_state_with_config(config: AppConfig) -> Arc<AppState> {
     let webauthn = std::sync::Arc::new(stream_backend::credentials::build_webauthn(
         &config.public_origin,
     ));
+    let token_version = stream_backend::credentials::token_version_get(&pool.get().unwrap());
 
     Arc::new(AppState {
         db: pool,
@@ -68,6 +69,7 @@ pub fn test_state_with_config(config: AppConfig) -> Arc<AppState> {
         config,
         http_client: reqwest::Client::new(),
         admin_password_hash,
+        admin_token_version: std::sync::atomic::AtomicU64::new(token_version),
         metrics_samples: tokio::sync::Mutex::new(stream_backend::state::MetricsSamples::default()),
         webauthn,
         passkey_reg: tokio::sync::Mutex::new(std::collections::HashMap::new()),
@@ -88,8 +90,18 @@ pub fn test_app(state: Arc<AppState>) -> TestServer {
     TestServer::new(router).unwrap()
 }
 
+/// An admin JWT stamped with this state's current token generation. Minting it
+/// from the live counter (rather than a hardcoded 0) keeps it valid after a test
+/// exercises revocation.
 pub fn admin_token(state: &Arc<AppState>) -> String {
-    auth::create_admin_token(&state.config.jwt_secret).unwrap()
+    auth::create_admin_token(
+        &state.config.jwt_secret,
+        state
+            .admin_token_version
+            .load(std::sync::atomic::Ordering::SeqCst),
+        auth::ADMIN_TOKEN_TTL_SECS,
+    )
+    .unwrap()
 }
 
 pub fn seed_stream_key(state: &Arc<AppState>, name: &str) -> (String, String) {

@@ -546,6 +546,9 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
             <div class="form-row" id="totp-row" style="display:none">
                 <input type="text" id="totp-input" placeholder="2FA / recovery code" autocomplete="one-time-code" inputmode="text">
             </div>
+            <div class="form-row">
+                <label class="inline"><input type="checkbox" id="trust-browser"> Trust this browser (stay signed in)</label>
+            </div>
             <button type="submit" class="btn btn-primary btn-block">Sign in</button>
         </form>
         <button class="btn btn-block" id="passkey-btn" style="display:none;margin-top:8px">Sign in with passkey</button>
@@ -887,6 +890,10 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
                 <div class="form-row"><input type="password" id="set-pw-new" placeholder="New password (min 12 chars)" autocomplete="new-password"></div>
                 <div class="form-row"><input type="password" id="set-pw-confirm" placeholder="Confirm new password" autocomplete="new-password"></div>
                 <button class="btn btn-sm btn-primary" id="set-pw-btn">Change password</button>
+                <div class="form-row u-mt-3">
+                    <div class="room-card-meta">Signs out every other browser, including any you ticked &ldquo;trust this browser&rdquo; on. This session stays active.</div>
+                </div>
+                <button class="btn btn-sm btn-danger" id="set-signout-all-btn">Sign out other devices</button>
             </div>
         </div>
 

@@ -244,7 +244,7 @@ meant neither could be promoted to `components.css`. Keep them distinct.
 ## Key implementation details
 
 **Authentication roles:**
-- Admin: `POST /api/auth/login` (password → JWT, 7d) — required for all `/api/rooms/*` mutations
+- Admin: `POST /api/auth/login` (password → JWT) — required for all `/api/rooms/*` mutations. 7 days by default, **90 days** when the login form's "trust this browser" box is ticked (`trust: true` in the body; the passkey login takes it too)
 - Participant: `POST /api/public/rooms/:slug/join` — returns a scoped JWT for WS + file access
 - Presenter role is admin-only (`POST /api/rooms/:id/enter`), never grantable from the public join flow
 
@@ -288,7 +288,7 @@ put back on the way out. New steps are a `TourStep` in `buildSteps()`.
 picker, and it discloses every *category* of browser storage this app writes:
 the session token + participant id and the kicked flag (`sessionStorage`), the
 per-room device/audio preferences, the tool preferences (scopes window, tour
-seen), the saved name and room password, and the admin sign-in token. The only
+seen), the saved name and room password, and the admin sign-in token (7 days, or 90 with "trust this browser"). The only
 key named literally is `farbstrom_tour` — the tour's cookie, and the **only**
 cookie set anywhere; the rest are described in prose rather than by key name
 (`viewer_scopes`, `conf_pref_*`, `stream_token` are not spelled out). Anything
@@ -448,6 +448,35 @@ Non-obvious facts that aren't derivable from reading the code.
   `created_at` with `strftime('%s', ...) * 1000`, which reads the stored value as
   UTC; `new Date("YYYY-MM-DD HH:MM:SS")` parses as *local* time and shifted the
   whole replay by the viewer's offset.
+
+**Admin sessions**
+- **Admin JWTs carry a generation (`ver`) and are revocable.** They used to be
+  pure `{admin, exp}` — nothing tied them to the password, so changing it
+  revoked nothing and a stolen token stayed valid for its full expiry. A
+  password change, or Settings → "Sign out other devices", bumps
+  `settings.admin_token_version`; `AdminAuth` refuses any token stamped with an
+  older one. That is what makes the 90-day "trust this browser" session
+  defensible — without revocation it would be a 90-day liability in
+  localStorage.
+- The DB row is authoritative; `AppState.admin_token_version` is a cache so the
+  per-request check does no I/O, reloaded at startup so revocation survives a
+  restart. One process owns it, so the two cannot diverge.
+- `ver` is `#[serde(default)]`, so a token minted before the claim existed reads
+  as generation 0 — the same value a fresh install starts at. Upgrading does not
+  sign the operator out.
+- **Both revoking endpoints return a replacement token**, and the SPA adopts it
+  (`adoptReissuedToken`), so the tab that performed the revocation is not logged
+  out by its own action. "Sign out other devices" is password-gated on top of
+  `AdminAuth`: otherwise a stolen token could lock the real operator out while
+  minting itself a fresh one.
+
+**401 vs 403 on admin endpoints**
+- **401 from an admin endpoint means exactly one thing: this session is no
+  longer valid** (expired, or revoked). `apiFetch` signs the operator out on any
+  401, so a handler behind `AdminAuth` that returns 401 for a *wrong submitted
+  credential* logs you out on a typo — which is what "current password is wrong"
+  in the change-password form used to do. Those are `AppError::Forbidden` now.
+  Anything new that re-checks a password mid-session must be 403, not 401.
 
 **Admin 2FA**
 - **Teardown needs the second factor, not just the password.** The admin JWT is

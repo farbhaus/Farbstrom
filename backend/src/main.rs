@@ -47,8 +47,15 @@ async fn main() {
     // SRT encryption is DB-managed (gh #208): write <data>/srt.env from the
     // settings table so OME — which starts after the backend — reads the current
     // passphrase from it.
+    //
+    // The admin token generation is read here too: it is the DB row that is
+    // authoritative, and `AppState` only caches it so the per-request check
+    // costs no I/O. Loading it at startup is what makes revocation survive a
+    // restart.
+    let mut admin_token_version = 0u64;
     if let Ok(conn) = db.get() {
         stream_backend::srt::init_startup(&conn, &config.data_path);
+        admin_token_version = stream_backend::credentials::token_version_get(&conn);
     }
 
     // Create shared state
@@ -63,6 +70,7 @@ async fn main() {
         config,
         http_client,
         admin_password_hash,
+        admin_token_version: std::sync::atomic::AtomicU64::new(admin_token_version),
         metrics_samples: tokio::sync::Mutex::new(state::MetricsSamples::default()),
         webauthn,
         passkey_reg: tokio::sync::Mutex::new(std::collections::HashMap::new()),

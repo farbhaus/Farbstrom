@@ -53,8 +53,12 @@ body {
     <ul>
         <li><strong>Session</strong> — a short-lived access token and your participant ID for the
             room you are in, so you stay connected across a page refresh, plus a note if you were
-            removed from a room. Cleared when you close the browser tab. (Administrators’
-            sign-in tokens for the admin interface are kept the same way.)</li>
+            removed from a room. Cleared when you close the browser tab.</li>
+        <li><strong>Administrator sign-in</strong> — for the admin interface only, a sign-in
+            token kept between visits rather than cleared when the tab closes. It lasts seven
+            days, or ninety if “trust this browser” was ticked at sign-in. An administrator can
+            end every other signed-in browser at any time from the admin Settings tab, and
+            changing the admin password does so automatically.</li>
         <li><strong>Room preferences</strong> — per-room settings such as your camera and
             microphone choice, noise reduction, echo cancellation, and push-to-talk, so they
             persist the next time you join the same room.</li>
