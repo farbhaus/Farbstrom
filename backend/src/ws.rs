@@ -161,6 +161,37 @@ async fn ws_handler(
 /// matters — the pinger closes it after 15 s of silence.
 const WS_SEND_QUEUE: usize = 256;
 
+/// Refuse a connection: queue an optional explanatory frame, then a close, and
+/// **wait for the forwarding task to actually put them on the wire**.
+///
+/// Aborting that task straight after queueing — which is what this used to do —
+/// usually drops both frames unsent, because the task has not been polled yet.
+/// The client then sees a transport reset (close code 1006) rather than the 1008
+/// it branches on, so a kicked or stale-auth viewer never gets its `kicked` /
+/// `error` frame and sits in the reconnect loop instead of showing the right
+/// screen (`frontend/viewer/ws.ts`, the `e.code === 1008` branch).
+///
+/// Only safe before the participant is registered in `WS_ROOMS`: it works by
+/// dropping the last sender so the forwarding loop ends once the queue drains,
+/// and after registration the room map holds a clone.
+async fn reject_socket(
+    tx: mpsc::Sender<Message>,
+    send_task: tokio::task::JoinHandle<()>,
+    frame: Option<String>,
+    reason: &'static str,
+) {
+    if let Some(text) = frame {
+        let _ = tx.try_send(Message::Text(text.into()));
+    }
+    let _ = tx.try_send(Message::Close(Some(CloseFrame {
+        code: 1008,
+        reason: reason.into(),
+    })));
+    drop(tx);
+    // Bounded, so a peer that has stopped reading cannot wedge the handler.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send_task).await;
+}
+
 async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Message>(WS_SEND_QUEUE);
@@ -178,21 +209,13 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     let auth = match wait_for_auth(&mut stream).await {
         Some(a) => a,
         None => {
-            let _ = tx.try_send(Message::Close(Some(CloseFrame {
-                code: 1008,
-                reason: "Auth required".into(),
-            })));
-            send_task.abort();
+            reject_socket(tx, send_task, None, "Auth required").await;
             return;
         }
     };
 
     if auth.msg_type != "auth" {
-        let _ = tx.try_send(Message::Close(Some(CloseFrame {
-            code: 1008,
-            reason: "First message must be auth".into(),
-        })));
-        send_task.abort();
+        reject_socket(tx, send_task, None, "First message must be auth").await;
         return;
     }
 
@@ -210,7 +233,8 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
                     code: 1011,
                     reason: "Internal error".into(),
                 })));
-                send_task.abort();
+                drop(tx);
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send_task).await;
                 return;
             }
         };
@@ -251,41 +275,36 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
         // No matching row (bad token, wrong room, or the room has ended), or
         // the blocking task itself failed — both are "you don't get in".
         _ => {
-            let _ = tx.try_send(Message::Text(
-                json!({"type": "error", "message": "Invalid credentials"})
-                    .to_string()
-                    .into(),
-            ));
-            let _ = tx.try_send(Message::Close(Some(CloseFrame {
-                code: 1008,
-                reason: "Auth failed".into(),
-            })));
-            send_task.abort();
+            reject_socket(
+                tx,
+                send_task,
+                Some(json!({"type": "error", "message": "Invalid credentials"}).to_string()),
+                "Auth failed",
+            )
+            .await;
             return;
         }
     };
 
     if is_kicked {
-        let _ = tx.try_send(Message::Text(json!({"type": "kicked"}).to_string().into()));
-        let _ = tx.try_send(Message::Close(Some(CloseFrame {
-            code: 1008,
-            reason: "Kicked".into(),
-        })));
-        send_task.abort();
+        reject_socket(
+            tx,
+            send_task,
+            Some(json!({"type": "kicked"}).to_string()),
+            "Kicked",
+        )
+        .await;
         return;
     }
 
     if !is_admitted {
-        let _ = tx.try_send(Message::Text(
-            json!({"type": "error", "message": "Not admitted"})
-                .to_string()
-                .into(),
-        ));
-        let _ = tx.try_send(Message::Close(Some(CloseFrame {
-            code: 1008,
-            reason: "Not admitted".into(),
-        })));
-        send_task.abort();
+        reject_socket(
+            tx,
+            send_task,
+            Some(json!({"type": "error", "message": "Not admitted"}).to_string()),
+            "Not admitted",
+        )
+        .await;
         return;
     }
 
