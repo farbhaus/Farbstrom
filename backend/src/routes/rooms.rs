@@ -35,7 +35,20 @@ fn row_to_json(row: &rusqlite::Row, columns: &[&str]) -> rusqlite::Result<serde_
     Ok(Value::Object(map))
 }
 
+/// Room slug: a lowercased ASCII-alphanumeric skeleton of the name plus a
+/// random suffix.
+///
+/// Every character outside `[a-z0-9]` becomes a separator, so a name written
+/// wholly in a non-Latin script (Japanese, Cyrillic, Greek) reduces to nothing
+/// and used to yield a leading-dash slug like `-a1b2c3`. Such names fall back
+/// to `room`, giving `room-a1b2c3` — no name in the URL either way, but a
+/// well-formed slug rather than one starting with punctuation.
+///
+/// The mapping guarantees pure ASCII output, so the byte-slice truncation below
+/// cannot split a multi-byte character.
 fn generate_slug(name: &str) -> String {
+    const FALLBACK: &str = "room";
+
     let slug_base: String = name
         .to_lowercase()
         .chars()
@@ -46,7 +59,11 @@ fn generate_slug(name: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    let slug_base = &slug_base[..slug_base.len().min(80)];
+    let slug_base = if slug_base.is_empty() {
+        FALLBACK
+    } else {
+        &slug_base[..slug_base.len().min(80)]
+    };
     let random_suffix: [u8; 3] = rand::rng().random();
     let hex: String = random_suffix.iter().map(|b| format!("{:02x}", b)).collect();
     format!("{}-{}", slug_base, hex)

@@ -567,11 +567,19 @@ async fn livekit_token(
     let slug_clone = slug.clone();
     let pid = participant_id.clone();
     let participant_data = tokio::task::spawn_blocking(move || {
+        // Ended and expired rooms collapse to "no row" -> 404, matching
+        // `watch.rs`. A LiveKit token is a live A/V publish grant, so a session
+        // that is over must not keep minting them; the room's own `expires_at`
+        // capped the token's lifetime but nothing stopped it being issued.
+        // `expires_at` is a UTC "YYYY-MM-DD HH:MM:SS" string (see
+        // `rooms::normalize_datetime`), so it compares against CURRENT_TIMESTAMP.
         let mut stmt = conn.prepare(
             "SELECT p.name, p.role, p.is_admitted, p.is_kicked, r.slug, r.expires_at \
              FROM participants p \
              JOIN rooms r ON r.id = p.room_id \
-             WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
+             WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3 \
+               AND r.status != 'ended' \
+               AND (r.expires_at IS NULL OR r.expires_at > CURRENT_TIMESTAMP)",
         )?;
         let result = stmt
             .query_row(rusqlite::params![pid, token, slug_clone], |row| {
@@ -641,33 +649,15 @@ async fn kick_participant(
         .target_id
         .ok_or_else(|| AppError::BadRequest("targetId required".into()))?;
 
-    // Validate requester is presenter
-    let conn = state.db.get()?;
-    let slug_clone = slug.clone();
-    let pid = participant_id.clone();
-    let role = tokio::task::spawn_blocking(move || {
-        let role: String = conn
-            .query_row(
-                "SELECT p.role FROM participants p \
-                 JOIN rooms r ON r.id = p.room_id \
-                 WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
-                rusqlite::params![pid, token, slug_clone],
-                |row| row.get(0),
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    AppError::NotFound("Participant not found".into())
-                }
-                _ => AppError::Internal(e.to_string()),
-            })?;
-        Ok::<_, AppError>(role)
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))??;
-
-    if role != "presenter" {
-        return Err(AppError::Forbidden("Only presenters can kick".into()));
-    }
+    // Shares the presenter gate with the rest of the moderation endpoints, so
+    // the `is_kicked` half of it can't drift out of this one.
+    require_presenter(
+        &state,
+        &slug,
+        Some(participant_id.clone()),
+        Some(token.clone()),
+    )
+    .await?;
 
     // Mark target as kicked
     let conn = state.db.get()?;
@@ -756,33 +746,13 @@ async fn mute_participant(
         .ok_or_else(|| AppError::BadRequest("trackSid required".into()))?;
     let muted = body.muted.unwrap_or(true);
 
-    // Validate requester is presenter
-    let conn = state.db.get()?;
-    let slug_clone = slug.clone();
-    let pid = participant_id.clone();
-    let role = tokio::task::spawn_blocking(move || {
-        let role: String = conn
-            .query_row(
-                "SELECT p.role FROM participants p \
-                 JOIN rooms r ON r.id = p.room_id \
-                 WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
-                rusqlite::params![pid, token, slug_clone],
-                |row| row.get(0),
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    AppError::NotFound("Participant not found".into())
-                }
-                _ => AppError::Internal(e.to_string()),
-            })?;
-        Ok::<_, AppError>(role)
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))??;
-
-    if role != "presenter" {
-        return Err(AppError::Forbidden("Only presenters can mute".into()));
-    }
+    require_presenter(
+        &state,
+        &slug,
+        Some(participant_id.clone()),
+        Some(token.clone()),
+    )
+    .await?;
 
     if muted {
         // Server-side mute is enforced by LiveKit and the target's SDK
@@ -834,9 +804,13 @@ struct PresenterAuthBody {
     token: Option<String>,
 }
 
-/// Verify (participantId, token, slug) belongs to a presenter and return the
-/// underlying room_id for use in subsequent queries. Used by every endpoint
-/// in this block.
+/// Verify (participantId, token, slug) belongs to an active presenter and
+/// return the underlying room_id for use in subsequent queries. Used by every
+/// presenter-gated endpoint in this file.
+///
+/// `is_kicked` is part of the check: a kick sets the flag but leaves `role`
+/// alone, so reading role by itself left a kicked presenter's token still able
+/// to admit, kick and unkick.
 async fn require_presenter(
     state: &Arc<AppState>,
     slug: &str,
@@ -849,24 +823,36 @@ async fn require_presenter(
     let slug = slug.to_string();
 
     let conn = state.db.get()?;
-    let (role, room_id): (String, String) = tokio::task::spawn_blocking(move || {
-        conn.query_row(
-            "SELECT p.role, p.room_id FROM participants p \
-             JOIN rooms r ON r.id = p.room_id \
-             WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
-            rusqlite::params![participant_id, token, slug],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                AppError::NotFound("Participant not found".into())
-            }
-            _ => AppError::Internal(e.to_string()),
+    let (role, is_kicked, room_id): (String, i32, String) =
+        tokio::task::spawn_blocking(move || {
+            conn.query_row(
+                "SELECT p.role, p.is_kicked, p.room_id FROM participants p \
+                 JOIN rooms r ON r.id = p.room_id \
+                 WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
+                rusqlite::params![participant_id, token, slug],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i32>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::NotFound("Participant not found".into())
+                }
+                _ => AppError::Internal(e.to_string()),
+            })
         })
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))??;
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??;
 
+    if is_kicked == 1 {
+        return Err(AppError::Forbidden(
+            "You have been kicked from this room".into(),
+        ));
+    }
     if role != "presenter" {
         return Err(AppError::Forbidden("Presenter role required".into()));
     }

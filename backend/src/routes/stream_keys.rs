@@ -166,13 +166,29 @@ async fn unblock_key(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Delete a stream key. Rooms pointing at it have `stream_key_id` cleared by
+/// the FK's ON DELETE SET NULL.
+///
+/// Those rooms' viewers have to be told, exactly as `rooms::update_room` tells
+/// them when an admin detaches a key by hand: otherwise they sit on a player
+/// pointed at a stream that no longer exists. A room left at `status = 'live'`
+/// would also stay there — the OME reconciler's demote query inner-joins
+/// `stream_keys`, so a room with no key never matches it.
 async fn delete_key(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
-    tokio::task::spawn_blocking(move || {
+    let affected: Vec<String> = tokio::task::spawn_blocking(move || {
+        // Collect the affected rooms before the delete; afterwards the link is
+        // gone and they are unfindable.
+        let mut stmt = conn.prepare("SELECT slug FROM rooms WHERE stream_key_id = ?1")?;
+        let slugs: Vec<String> = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
         let changes = conn.execute(
             "DELETE FROM stream_keys WHERE id = ?1",
             rusqlite::params![id],
@@ -180,10 +196,23 @@ async fn delete_key(
         if changes == 0 {
             return Err(AppError::NotFound("Stream key not found".into()));
         }
-        Ok(())
+
+        // A live room whose key just vanished has nothing to be live about.
+        for slug in &slugs {
+            conn.execute(
+                "UPDATE rooms SET status = 'pending' WHERE slug = ?1 AND status = 'live'",
+                rusqlite::params![slug],
+            )?;
+        }
+        Ok(slugs)
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    for slug in affected {
+        let _ = state.events.room_pending.send(slug.clone());
+        let _ = state.events.stream_key_removed.send(slug);
+    }
 
     Ok(Json(json!({ "ok": true })))
 }

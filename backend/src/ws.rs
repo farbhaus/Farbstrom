@@ -201,11 +201,17 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
             }
         };
 
+        // Ended/expired rooms are filtered here as well as in the HTTP paths:
+        // the room:ended listener force-closes the sockets that are already
+        // open, but nothing stopped a *new* socket authenticating against a
+        // room that is over.
         conn.query_row(
             "SELECT p.id, p.name, p.role, p.is_admitted, p.is_kicked, r.slug
              FROM participants p
              JOIN rooms r ON r.id = p.room_id
-             WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
+             WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3
+               AND r.status != 'ended'
+               AND (r.expires_at IS NULL OR r.expires_at > CURRENT_TIMESTAMP)",
             rusqlite::params![participant_id, token, slug],
             |row| {
                 Ok((
