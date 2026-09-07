@@ -11,6 +11,9 @@ pub struct FileSharedEvent {
     pub name: String,
     pub size: u64,
     pub mime: String,
+    /// Milliseconds since the Unix epoch — see [`crate::time::now_ms`]. This
+    /// used to be seconds while `chat:message` sent milliseconds, and the
+    /// viewer renders both through one `new Date(ts)`.
     pub ts: u64,
 }
 

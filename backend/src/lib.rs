@@ -11,5 +11,6 @@ pub mod signed_policy;
 pub mod srt;
 pub mod state;
 pub mod tasks;
+pub mod time;
 pub mod uploads;
 pub mod ws;

@@ -671,10 +671,7 @@ async fn assign_files_to_room(
 
     // Emit file:shared for each newly assigned file so viewers' right-panel
     // Files section updates live.
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let ts = crate::time::now_ms();
 
     for fid in &newly_assigned {
         let conn = state.db.get()?;
@@ -794,10 +791,7 @@ async fn broadcast_shared_to_assigned(
         _ => return,
     };
 
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let ts = crate::time::now_ms();
     for slug in slugs {
         let _ = state.events.file_shared.send(FileSharedEvent {
             slug,

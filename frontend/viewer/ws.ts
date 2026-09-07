@@ -205,7 +205,7 @@ function handleMessage(msg: WsMessage): void {
       updateRoster(msg.participants);
       return;
     case 'chat:history':
-      appendChatHistory(msg.messages as never);
+      appendChatHistory(msg.messages);
       return;
     case 'chat:message':
       appendChatMessage(msg);

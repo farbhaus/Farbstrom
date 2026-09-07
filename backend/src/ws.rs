@@ -97,12 +97,7 @@ fn display_state_msg(state: Option<&DisplayState>) -> String {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
+use crate::time::now_ms;
 
 // ---------------------------------------------------------------------------
 // Auth message
@@ -435,10 +430,7 @@ async fn handle_text_message(
             }
 
             let msg_id = uuid::Uuid::new_v4().to_string();
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let ts = now_ms();
 
             // Persist to DB
             if let Ok(conn) = state.db.get() {
@@ -559,10 +551,7 @@ async fn handle_text_message(
             })
             .await;
 
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let ts = now_ms();
 
             let _ = state.events.file_shared.send(FileSharedEvent {
                 slug: slug.to_string(),
@@ -735,19 +724,26 @@ fn send_chat_history(state: &Arc<AppState>, slug: &str, tx: &mpsc::UnboundedSend
 
     // Interleave chat messages and file uploads by timestamp so files
     // appear in their original chat-sequence position on rejoin.
+    //
+    // `created_at` is a UTC "YYYY-MM-DD HH:MM:SS" string, which `new Date(...)`
+    // parses as *local* time — so history used to render shifted by the
+    // viewer's UTC offset. `strftime('%s', ...)` reads it as UTC and gives
+    // seconds; × 1000 matches the milliseconds every live event now sends (see
+    // `crate::time`). Ordering is unaffected: both forms sort monotonically,
+    // and the integer form sorts numerically rather than lexicographically.
     let mut stmt = match conn.prepare(
         "SELECT kind, id, name, role, text, file_name, size_bytes, mime_type, ts \
          FROM ( \
              SELECT 'chat' AS kind, cm.id, cm.name, cm.role, cm.text, \
                     NULL AS file_name, NULL AS size_bytes, NULL AS mime_type, \
-                    cm.created_at AS ts \
+                    CAST(strftime('%s', cm.created_at) AS INTEGER) * 1000 AS ts \
              FROM chat_messages cm \
              JOIN rooms r ON r.id = cm.room_id \
              WHERE r.slug = ?1 \
              UNION ALL \
              SELECT 'file' AS kind, sf.id, p.name, p.role, NULL AS text, \
                     sf.original_name AS file_name, sf.size_bytes, sf.mime_type, \
-                    sf.created_at AS ts \
+                    CAST(strftime('%s', sf.created_at) AS INTEGER) * 1000 AS ts \
              FROM session_files sf \
              JOIN rooms r ON r.id = sf.room_id \
              LEFT JOIN participants p ON p.id = sf.uploader_id \
@@ -772,7 +768,7 @@ fn send_chat_history(state: &Arc<AppState>, slug: &str, tx: &mpsc::UnboundedSend
                     "name": row.get::<_, String>(5)?,
                     "size": row.get::<_, i64>(6)?,
                     "mime": row.get::<_, String>(7)?,
-                    "ts": row.get::<_, String>(8)?,
+                    "ts": row.get::<_, i64>(8)?,
                 }))
             } else {
                 Ok(json!({
@@ -780,7 +776,7 @@ fn send_chat_history(state: &Arc<AppState>, slug: &str, tx: &mpsc::UnboundedSend
                     "name": row.get::<_, String>(2)?,
                     "role": row.get::<_, String>(3)?,
                     "text": row.get::<_, String>(4)?,
-                    "ts": row.get::<_, String>(8)?,
+                    "ts": row.get::<_, i64>(8)?,
                 }))
             }
         })

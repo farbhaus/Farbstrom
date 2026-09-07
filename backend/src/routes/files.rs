@@ -214,10 +214,11 @@ async fn upload_file(
                 .map_err(|e| AppError::Internal(e.to_string()))??
             };
 
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            // Two units, deliberately named: the wire carries milliseconds (see
+            // `crate::time`), while the `created_at` insert below uses SQLite's
+            // `unixepoch` modifier, which is defined in seconds.
+            let ts_ms = crate::time::now_ms();
+            let ts_secs = (ts_ms / 1000) as i64;
 
             let (file_id, effective_name) = if let Some(id) = existing {
                 // Dedup hit — discard the temp we just wrote; the
@@ -269,7 +270,7 @@ async fn upload_file(
                             size as i64,
                             hash_clone,
                             is_shared_val,
-                            ts as i64,
+                            ts_secs,
                         ],
                     )
                 })
@@ -308,7 +309,7 @@ async fn upload_file(
                     name: effective_name.clone(),
                     size,
                     mime: mime.clone(),
-                    ts,
+                    ts: ts_ms,
                 });
             }
 

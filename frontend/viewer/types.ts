@@ -81,17 +81,31 @@ export interface SessionFile {
 
 // ---- WebSocket message variants (server → client) ----
 
-interface ChatHistoryItem {
-  type: 'chat:message' | 'file:shared';
-  ts: number;
-  name: string;
-  role: Role;
-  text?: string;
-  // file:shared fields
-  id?: string;
-  size?: number;
-  uploaderName?: string;
-}
+// One entry of the `chat:history` replay (ws.rs `send_chat_history`). The two
+// variants are shaped differently and the chat one carries **no** `type` field —
+// the server omits it — so an absent `type` is what identifies a chat message.
+// `ts` is milliseconds since the epoch, matching every live event (the query
+// converts `created_at` via `strftime`; see `crate::time`).
+export type ChatHistoryItem =
+  | {
+      type?: undefined;
+      id: string;
+      ts: number;
+      name: string;
+      role: Role;
+      text: string;
+    }
+  | {
+      type: 'file:shared';
+      id: string;
+      ts: number;
+      /** The file's name. The uploader is `uploaderName`. */
+      name: string;
+      role: Role;
+      size: number;
+      mime?: string;
+      uploaderName: string;
+    };
 
 export type WsMessage =
   | { type: 'auth:ok' }
