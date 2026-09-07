@@ -38,7 +38,7 @@ webauthn-rs = { version = "0.5", default-features = false }
 openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
-axum-test = "17"
+axum-test = { version = "17", features = ["ws"] }
 
 [profile.release]
 lto = true

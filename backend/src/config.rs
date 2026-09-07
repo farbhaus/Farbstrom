@@ -35,6 +35,15 @@ pub struct AppConfig {
     /// the length validation below is the only place that decides what is
     /// acceptable.
     pub admin_password: String,
+    /// Root of the built frontend: the static mounts (`/admin`, `/shared`,
+    /// `/dist`), `/privacy`, `/favicon.ico`, and the two HTML documents
+    /// `routes::pages` rewrites.
+    ///
+    /// Defaults to `/www`, which is where the Dockerfile copies it and where
+    /// `docker-compose.dev.yml` bind-mounts `./www` — so deployments need no
+    /// change. It is configurable purely so tests can point it at a fixture
+    /// tree; without that, the static and SPA routes cannot be exercised at all.
+    pub web_root: String,
 }
 
 /// Extract the host portion of a URL-ish origin (`https://host:port/path` →
@@ -112,6 +121,7 @@ impl AppConfig {
                 .unwrap_or(500),
             public_origin,
             admin_password,
+            web_root: env::var("WEB_ROOT").unwrap_or_else(|_| "/www".into()),
         }
     }
 }

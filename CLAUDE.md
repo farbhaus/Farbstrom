@@ -92,6 +92,7 @@ cp .env.example .env
 | `PUBLIC_ORIGIN` | `http://localhost:4001` | WebAuthn RP origin/ID — must match the browser origin exactly. In the container, **derived from `PUBLIC_HOST`** (`https://<PUBLIC_HOST>`). |
 | `SITE_ADDRESS` | `localhost` | Caddy site address for the container's own Caddy. Set to your domain for standalone TLS, or `:80` (plain HTTP) to run behind an external TLS proxy. |
 | `PUBLIC_HOST` | `$SITE_ADDRESS` | Browser-facing host that `PUBLIC_ORIGIN`/`LIVEKIT_URL` derive from. Defaults to `SITE_ADDRESS` (standalone). **Required** when `SITE_ADDRESS=:80` — a bare port is not a valid host, so without it the backend panics. |
+| `WEB_ROOT` | `/www` | Root of the built frontend (static mounts, `/privacy`, `/favicon.ico`, and the two HTML documents `routes::pages` rewrites). The Dockerfile copies there and the dev overlay bind-mounts `./www:/www`, so deployments never set it; it exists so tests can point at a fixture tree. |
 | `WEB_BIND` | `0.0.0.0` | Host interface the published HTTP/HTTPS ports bind to. Set to `127.0.0.1` when behind an external proxy so the plain-HTTP port isn't internet-reachable (Docker bypasses ufw). |
 | `OME_ICE_ADDRESS` | `*`, or `127.0.0.1` when `PUBLIC_HOST` is localhost | ICE candidate address OME advertises to WHIP encoders. Derived in `entrypoint.sh`; set explicitly (e.g. a LAN IP) to push to a dev box from another machine. |
 | `SRT_PUBLIC_HOST` | host of `PUBLIC_ORIGIN` | SRT host returned by `/api/watch/:slug`. |
@@ -137,6 +138,7 @@ to `SITE_ADDRESS`); the Caddyfile
 
 - `src/main.rs` — startup: config, DB pool, background tasks, Axum router mount on :4001
 - `src/lib.rs` — re-exports the app builder so integration tests can spin up the server in-process
+- `src/app.rs` — `build_app(state) -> Router`: the **whole** router (API + WS + static + SPA fallback + Cache-Control/Trace layers). `main.rs` and the tests build the same one. Anything mounted only in `main.rs` is by definition untestable, which is how `ws.rs` went 1350 lines with no coverage
 - `src/config.rs` — `AppConfig::from_env`, secret length validation (fail-fast)
 - `src/state.rs` — `AppState` (Arc'd, cloned into handlers)
 - `src/db.rs` — R2D2 SQLite pool (8 connections), WAL mode, schema bootstrap from `schema.sql`. Connection-scoped pragmas go in `with_init` so they apply to **every** pooled connection — `foreign_keys`, `synchronous`, `busy_timeout`. `journal_mode = WAL` is set once instead, being persisted in the file header
@@ -362,31 +364,65 @@ and have drifted before, so it must never move on its own.
 
 ## Recommended tests to add
 
-Thin areas in the integration suite worth regression coverage:
-1. Viewer JWT → presenter endpoints (`/conference/kick`, `/conference/mute`) → 403. (A *kicked presenter* is covered — `room_state_test.rs` — but a plain viewer is not.)
+Still thin, worth regression coverage:
+1. Viewer JWT → presenter endpoints (`/conference/kick`, `/conference/mute`) → 403. (A *kicked* presenter is covered in `room_state_test.rs`; a plain viewer is not.)
 2. `POST /api/rooms/:id/enter` (admin JWT) produces `role='presenter' AND is_admitted=1`; no public endpoint reaches the same state.
 3. Kick blocks re-join by case-insensitive name match (`POST /api/public/rooms/:slug/join` → 403).
-4. WS hub rejects kicked participants — `{type:'kicked'}` frame, close 1008.
-5. Webhook HMAC: wrong signature → 401; tampered body → 401.
-6. Rate limiter: 6th `/api/auth/login` in a minute → 429 (requires the real HTTP server, not `TestServer`, so `ConnectInfo` is populated).
-7. Status endpoint shape: `GET /api/public/rooms/:slug/status/:pid?token=…` → `{admitted, kicked, room_status}` for each of waiting/admitted/kicked/ended.
+4. Webhook HMAC: wrong signature → 401; tampered body → 401.
+5. Status endpoint shape: `GET /api/public/rooms/:slug/status/:pid?token=…` → `{admitted, kicked, room_status}` for each of waiting/admitted/kicked/ended.
 
-**The WS hub has no test harness at all** — `common::test_app` builds only
-`routes::build_router`, so nothing exercises `ws.rs`, and nothing exercises the
-static/SPA wiring in `main.rs` either (the asset-vs-room decision is unit-tested
-against `pages::path_looks_like_asset` instead). Items 1 and 4 above need that
-harness first.
+**Two fixtures, and the difference matters.** `common::test_app` builds only
+`routes::build_router` (the `/api/*` half) over a mock transport — fine for HTTP
+handlers, and left alone because most of the suite runs through it.
+`common::test_app_http` builds the whole app via `app::build_app` over a real
+port, which is the only way to reach the WS hub, the static/SPA routes, the
+response layers, or `ConnectInfo`. A test written against the wrong one can pass
+while exercising nothing: an early SPA-fallback test did exactly that, because
+everything unmatched 404s in the API-only router anyway.
 
-Suites added by the audit pass, worth knowing before writing overlapping ones:
+Existing suites, worth knowing before writing overlapping ones:
 `db_integrity_test` (pool pragmas, cascades, `created_at` → epoch ms),
 `file_visibility_test` (draft visibility, dedup blast radius, delete
 accounting), `room_state_test` (ended/expired gates, kicked presenters, slugs,
-stream-key deletion), `robustness_test` (colour validation, OME name
-allowlist).
+stream-key deletion), `robustness_test` (colour validation, OME name allowlist),
+`ws_test` (the WS protocol surface — auth gate, kick, chat + history, roster
+markers, presenter gating, moderation filtering), `app_routing_test` (cache
+headers, SPA fallback, Open Graph injection), `rate_limit_test`.
 
 ## Gotchas
 
 Non-obvious facts that aren't derivable from reading the code.
+
+**WebSocket hub**
+- **A rejected socket must have its close frame *flushed*, not just queued.**
+  `handle_socket` queues the explanatory frame plus a 1008 close on the outbound
+  channel, and a forwarding task moves them to the wire. Calling
+  `send_task.abort()` straight afterwards — which it used to — usually drops both
+  unsent, because the task has not been polled yet. The client then sees a
+  transport reset (1006), and `frontend/viewer/ws.ts` branches specifically on
+  `e.code === 1008` to decide "kicked or stale auth" — so a kicked viewer got no
+  `kicked` frame and sat in the reconnect loop instead of the Removed screen.
+  `reject_socket` drops the last sender and awaits the task instead. It is only
+  safe *before* registration in `WS_ROOMS`, which holds a clone of the sender.
+- **The hub's room maps are process-global statics** (`WS_ROOMS`,
+  `WS_ROOM_FOCUS`, `WS_ROOM_DISPLAY`, and `presence::SSE_PRESENCE`). Cargo runs a
+  test binary's cases on parallel threads, so every WS test must use
+  `common::unique_slug`; two tests sharing a room slug will see each other's
+  sockets.
+- **The reconnect branch reuses the `WsParticipant`**, so a farbplay→farbplay
+  reconnect cannot detect a marker it fails to re-read — the value is already
+  right. `reconnect_updates_the_client_marker` reconnects with a *different*
+  marker, which is what actually pins that line (gh #227).
+
+**Rate limiting**
+- **The buckets are process-global.** `tower_governor` keeps its limiter inside
+  `GovernorConfig` (built once in `finish()`), and `routes::rate_limit` caches
+  each config in a `static OnceLock` — so every router in a process shares one
+  bucket per layer, keyed by client IP. In production that is exactly right; in
+  tests it means rate-limit cases cannot run in parallel (they all come from
+  127.0.0.1 and drain each other), which is why `rate_limit_test.rs` is one test
+  function in its own binary. It also cannot share a binary with anything calling
+  `test_app`, which sets `STREAM_DISABLE_RATE_LIMIT` process-wide.
 
 **Database / pool**
 - **`foreign_keys` is ON here by accident of the build, not by the pragma in

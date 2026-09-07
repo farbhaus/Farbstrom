@@ -16,8 +16,10 @@ use crate::error::AppError;
 use crate::routes::branding::read_site_name;
 use crate::state::AppState;
 
-const LANDING_HTML: &str = "/www/landing/index.html";
-const VIEWER_HTML: &str = "/www/viewer/index.html";
+/// Paths of the two HTML documents these handlers rewrite, relative to
+/// `config.web_root` (`/www` in the container).
+const LANDING_HTML: &str = "landing/index.html";
+const VIEWER_HTML: &str = "viewer/index.html";
 
 /// Minimal HTML-attribute escaping for values injected into `content="…"` /
 /// `<title>…</title>`. `site_name` is admin-set, but escape anyway so the brand
@@ -90,10 +92,15 @@ pub fn path_looks_like_asset(path: &str) -> bool {
 
 async fn serve_page(
     state: &Arc<AppState>,
-    path: &str,
+    relative_path: &str,
     is_room: bool,
 ) -> Result<Html<String>, AppError> {
-    let html = tokio::fs::read_to_string(path)
+    let path = format!(
+        "{}/{}",
+        state.config.web_root.trim_end_matches('/'),
+        relative_path
+    );
+    let html = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| AppError::Internal(format!("read {path}: {e}")))?;
 
