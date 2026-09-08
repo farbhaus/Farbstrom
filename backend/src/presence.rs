@@ -40,7 +40,11 @@ pub fn remove(slug: &str, participant_id: &str) {
     let mut map = SSE_PRESENCE.lock().expect("SSE_PRESENCE poisoned");
     if let Some(room) = map.get_mut(slug) {
         if let Some(count) = room.get_mut(participant_id) {
-            *count -= 1;
+            // `saturating_sub`, not `-= 1`: this runs from a `Drop` guard, and
+            // an unbalanced remove would underflow a u32 — which panics in a
+            // Drop impl, i.e. aborts the process. Bottoming out at zero and
+            // deregistering is the correct outcome either way.
+            *count = count.saturating_sub(1);
             if *count == 0 {
                 room.remove(participant_id);
             }

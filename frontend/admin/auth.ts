@@ -31,6 +31,11 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
     ...((opts.headers as Record<string, string> | undefined) ?? {}),
   };
   const res = await fetch(path, { ...opts, headers });
+  // 401 from an admin endpoint means one thing only: this session is no longer
+  // valid — expired, or revoked by a password change / "sign out other
+  // devices". Anything that is merely *refused* (a wrong password typed into a
+  // confirmation form, say) is a 403 and is left for the caller to report;
+  // returning 401 for those used to sign you out on a typo.
   if (res.status === 401) {
     if (onLogout) onLogout();
     return null;
@@ -44,13 +49,21 @@ export interface LoginResult {
   totpRequired?: boolean;
 }
 
-export async function login(password: string, totpCode?: string): Promise<LoginResult> {
+/// `trust` asks the server for a 90-day session instead of the 7-day default —
+/// the "trust this browser" checkbox. Only reasonable because sessions are now
+/// revocable: "Sign out other devices" in Settings kills a trusted browser you
+/// no longer have.
+export async function login(
+  password: string,
+  totpCode?: string,
+  trust = false,
+): Promise<LoginResult> {
   let res: Response;
   try {
     res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password, totp_code: totpCode }),
+      body: JSON.stringify({ password, totp_code: totpCode, trust }),
     });
   } catch {
     return { ok: false, error: 'Cannot reach server — is the backend running?' };
@@ -81,6 +94,7 @@ export async function fetchAuthMethods(): Promise<AuthMethods> {
 // Run the WebAuthn assertion ceremony; sets the token on success.
 export async function passkeyLogin(
   doAuthenticate: (options: unknown) => Promise<unknown>,
+  trust = false,
 ): Promise<LoginResult> {
   let res: Response;
   try {
@@ -102,7 +116,7 @@ export async function passkeyLogin(
   const fin = await fetch('/api/auth/passkey/finish', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, credential }),
+    body: JSON.stringify({ id, credential, trust }),
   });
   const data = await fin.json().catch(() => ({}));
   if (!fin.ok) return { ok: false, error: data.error || 'Passkey rejected' };

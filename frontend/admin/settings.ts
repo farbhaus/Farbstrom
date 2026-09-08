@@ -1,7 +1,7 @@
 // Settings tab: change the admin password, enrol/disable TOTP 2FA, and
 // register/remove WebAuthn passkeys. Mirrors branding.ts's load/init split.
 
-import { apiFetch } from './auth.js';
+import { apiFetch, setToken } from './auth.js';
 import { toast, esc, fmtDateTime } from '../shared/utils.js';
 import { closeModal, confirmModal, openModal, promptModal } from '../shared/components.js';
 import { doRegister, webauthnSupported } from './webauthn.js';
@@ -94,7 +94,11 @@ async function changePassword(): Promise<void> {
     (['set-pw-current', 'set-pw-new', 'set-pw-confirm'] as const).forEach(
       (id) => (($(id) as HTMLInputElement).value = ''),
     );
-    toast('Password changed');
+    // Changing the password revokes every session minted before it — including
+    // this one. The server hands back a replacement stamped with the new
+    // generation; adopt it or the next request from this tab 401s.
+    await adoptReissuedToken(res);
+    toast('Password changed — other devices signed out');
     void loadSettings();
   } else {
     const e = res ? await res.json().catch(() => ({})) : {};
@@ -105,7 +109,10 @@ async function changePassword(): Promise<void> {
 async function startTotpSetup(): Promise<void> {
   const res = await apiFetch('/api/admin/settings/totp/setup', { method: 'POST' });
   if (!res || !res.ok) {
-    toast('Could not start setup');
+    // Refused while already enrolled — re-running setup would rotate the secret
+    // and switch 2FA off, so the server sends back what to do instead.
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not start setup');
     return;
   }
   const d = await res.json();
@@ -140,18 +147,31 @@ async function confirmTotp(): Promise<void> {
   void loadSettings();
 }
 
+// Teardown needs both factors: the password, then a current authenticator code
+// (or a recovery code, for the case where the authenticator is what was lost).
+// The server enforces this — asking for the password alone gets a 403, which
+// reports the reason rather than signing you out the way a 401 would.
 async function disableTotp(): Promise<void> {
   const password = await promptModal({
     title: 'Disable Two-Factor',
     message: 'Confirm your password to turn off TOTP 2FA.',
     label: 'Password',
     inputType: 'password',
-    confirmLabel: 'Disable 2FA',
+    confirmLabel: 'Continue',
   });
   if (!password) return;
+
+  const code = await promptModal({
+    title: 'Disable Two-Factor',
+    message: 'Enter a code from your authenticator app, or one of your recovery codes.',
+    label: 'Code',
+    confirmLabel: 'Disable 2FA',
+  });
+  if (!code) return;
+
   const res = await apiFetch('/api/admin/settings/totp/disable', {
     method: 'POST',
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, code }),
   });
   if (res && res.ok) {
     const box = $('set-totp-recovery');
@@ -159,7 +179,51 @@ async function disableTotp(): Promise<void> {
     toast('Two-factor disabled');
     void loadSettings();
   } else {
-    toast('Could not disable 2FA');
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not disable 2FA');
+  }
+}
+
+/// Take the replacement token an endpoint hands back after revoking sessions.
+/// Without this the tab that performed the revocation would be logged out by
+/// its own action.
+async function adoptReissuedToken(res: Response): Promise<void> {
+  const data = await res.json().catch(() => ({}));
+  if (typeof data.token === 'string' && data.token) setToken(data.token);
+}
+
+/// Revoke every other admin session — including trusted browsers, which is the
+/// thing that makes a 90-day "trust this browser" token safe to hand out.
+/// Password-gated server-side, so ask for it here.
+async function signOutEverywhere(): Promise<void> {
+  const ok = await confirmModal({
+    title: 'Sign out other devices',
+    message:
+      'Every other signed-in browser will be logged out immediately, including any you ticked "trust this browser" on. This session stays active.',
+    confirmLabel: 'Sign out others',
+    danger: true,
+  });
+  if (!ok) return;
+
+  const password = await promptModal({
+    title: 'Sign out other devices',
+    message: 'Confirm your password.',
+    label: 'Password',
+    inputType: 'password',
+    confirmLabel: 'Sign out others',
+  });
+  if (!password) return;
+
+  const res = await apiFetch('/api/admin/settings/sign-out-everywhere', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+  if (res && res.ok) {
+    await adoptReissuedToken(res);
+    toast('Other devices signed out');
+  } else {
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not sign out other devices');
   }
 }
 
@@ -307,6 +371,7 @@ export function initSettings(): void {
   $('srt-enc-playback')?.addEventListener('change', updateSrtApplyState);
   $('srt-enc-apply')?.addEventListener('click', () => void applySrtEncryption());
   $('set-totp-enable-btn')?.addEventListener('click', startTotpSetup);
+  $('set-signout-all-btn')?.addEventListener('click', signOutEverywhere);
   $('set-totp-confirm-btn')?.addEventListener('click', confirmTotp);
   $('set-totp-disable-btn')?.addEventListener('click', disableTotp);
   $('set-pk-add-btn')?.addEventListener('click', openPasskeyModal);

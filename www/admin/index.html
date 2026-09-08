@@ -27,6 +27,19 @@
 /* Same accent + ring as every other input in the product. */
 .login-box input:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
 .login-box input::placeholder { color: var(--faint); }
+/* Checkbox row in the login box. Needs its own rule because `.login-box input`
+   above sets `width: 100%` for the text fields — which stretched the checkbox
+   across the full box so it sat on top of its own label. `.form-row label` would
+   also force `display: block` and win on specificity, so this carries its own
+   spacing instead of nesting inside a form row. */
+.login-check {
+    display: flex; align-items: center; gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    font-size: var(--fs-sm); color: var(--dim); cursor: pointer;
+}
+.login-check input[type="checkbox"] {
+    width: auto; flex: none; margin: 0; accent-color: var(--accent);
+}
 .login-error { color: var(--danger); font-size: var(--fs-sm); margin-top: 12px; min-height: 16px; }
 
 /* ---- Nav — floating pill (#186): top on desktop, bottom on mobile ---- */
@@ -549,6 +562,10 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
             <button type="submit" class="btn btn-primary btn-block">Sign in</button>
         </form>
         <button class="btn btn-block" id="passkey-btn" style="display:none;margin-top:8px">Sign in with passkey</button>
+        <!-- Below both buttons on purpose: it applies to whichever sign-in you
+             use, and sitting inside the form read as password-only. Outside the
+             form is fine — the handler reads it by id. -->
+        <label class="login-check"><input type="checkbox" id="trust-browser"> Trust this browser</label>
         <p class="login-error" id="login-error"></p>
     </div>
 </div>
@@ -887,6 +904,10 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
                 <div class="form-row"><input type="password" id="set-pw-new" placeholder="New password (min 12 chars)" autocomplete="new-password"></div>
                 <div class="form-row"><input type="password" id="set-pw-confirm" placeholder="Confirm new password" autocomplete="new-password"></div>
                 <button class="btn btn-sm btn-primary" id="set-pw-btn">Change password</button>
+                <div class="form-row u-mt-3">
+                    <div class="room-card-meta">Signs out every other browser, including any you ticked &ldquo;trust this browser&rdquo; on. This session stays active.</div>
+                </div>
+                <button class="btn btn-sm btn-danger" id="set-signout-all-btn">Sign out other devices</button>
             </div>
         </div>
 

@@ -4,7 +4,7 @@ import { esc, fmtBytes, linkify, toast } from '../shared/utils.js';
 import { setChatOpen, switchPanelTab } from './layout.js';
 import { getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
-import type { Role, SessionFile, WsClientMessage } from './types.js';
+import type { ChatHistoryItem, Role, SessionFile, WsClientMessage } from './types.js';
 
 let sendFn: ((msg: WsClientMessage) => void) | null = null;
 
@@ -25,6 +25,10 @@ function notifyChat(): void {
   }
 }
 
+// `ts` is milliseconds since the epoch, for live messages and replayed history
+// alike. That is a server-side contract (`crate::time::now_ms`, plus the
+// `strftime` conversion in the history query) — `file:shared` once sent seconds
+// and history sent a UTC datetime string, and both rendered wrong here.
 function fmtTime(ts: number): string {
   const t = new Date(ts);
   return (
@@ -93,7 +97,7 @@ interface ChatMsg {
   text: string;
 }
 
-export function appendChatMessage(msg: ChatMsg): void {
+export function appendChatMessage(msg: ChatMsg, notify = true): void {
   const list = document.getElementById('chat-messages');
   if (!list) return;
   const d = document.createElement('div');
@@ -103,7 +107,7 @@ export function appendChatMessage(msg: ChatMsg): void {
     `<div class="chat-text">${linkify(msg.text)}</div>`;
   list.appendChild(d);
   list.scrollTop = list.scrollHeight;
-  notifyChat();
+  if (notify) notifyChat();
 }
 
 interface FileMsg {
@@ -173,35 +177,37 @@ export function addFileToSection(f: SessionFile, notify = true): void {
   }
 }
 
-export function appendChatHistory(
-  messages: Array<ChatMsg | (FileMsg & { type: 'file:shared' })>,
-): void {
+// Replay the room's recent chat + file history. Both branches go through the
+// same renderers as the live path — re-implementing the chat markup here is how
+// the two drifted apart over the `ts` unit in the first place.
+export function appendChatHistory(messages: ChatHistoryItem[]): void {
   for (const m of messages) {
-    if ('type' in m && m.type === 'file:shared') {
-      appendFileMessage(m as FileMsg, false);
-      {
-        const mime = (m as FileMsg).mime;
-        addFileToSection(
-          {
-            id: m.id,
-            name: m.name,
-            size: m.size,
-            ...(mime ? { mime } : {}),
-            uploaderName: m.uploaderName,
-            role: m.role,
-          },
-          false,
-        );
-      }
+    if (m.type === 'file:shared') {
+      appendFileMessage(
+        {
+          ts: m.ts,
+          name: m.name,
+          role: m.role,
+          id: m.id,
+          size: m.size,
+          ...(m.mime ? { mime: m.mime } : {}),
+          uploaderName: m.uploaderName,
+        },
+        false,
+      );
+      addFileToSection(
+        {
+          id: m.id,
+          name: m.name,
+          size: m.size,
+          ...(m.mime ? { mime: m.mime } : {}),
+          uploaderName: m.uploaderName,
+          role: m.role,
+        },
+        false,
+      );
     } else {
-      const list = document.getElementById('chat-messages');
-      if (!list) continue;
-      const d = document.createElement('div');
-      d.className = 'chat-msg';
-      d.innerHTML =
-        `<div class="chat-meta"><span class="chat-who ${esc(m.role)}">${esc(m.name)}</span><span class="chat-time">${fmtTime(m.ts)}</span></div>` +
-        `<div class="chat-text">${linkify((m as ChatMsg).text)}</div>`;
-      list.appendChild(d);
+      appendChatMessage({ ts: m.ts, name: m.name, role: m.role, text: m.text }, false);
     }
   }
   const list = document.getElementById('chat-messages');

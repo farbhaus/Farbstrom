@@ -23,10 +23,14 @@
 //! expiry / replay-limiting, **not** path secrecy — the key is already handed to
 //! web viewers on join. See #165 and the credential-separation follow-up.
 //!
-//! When `SRT_PLAYBACK_PASSPHRASE` is configured, this endpoint also returns the
-//! passphrase + pbkeylen so Farbplay can AES-encrypt the SRT playback leg. That
+//! When SRT playback encryption is enabled, this endpoint also returns the
+//! passphrase + pbkeylen so Farbplay can AES-decrypt the SRT playback leg. That
 //! protects the *media payload* from a passive network eavesdropper; the
 //! streamid (with the key) is SRT handshake metadata and is not covered.
+//!
+//! That toggle is DB-managed and read live from the `settings` table via
+//! [`crate::srt::resolve`] (gh #208) — there is no `SRT_PLAYBACK_PASSPHRASE` env
+//! var any more.
 
 use axum::{
     extract::{Path, Query, State},

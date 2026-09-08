@@ -3,7 +3,6 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use base64::Engine;
 use rand::RngExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -11,27 +10,8 @@ use std::sync::Arc;
 
 use crate::auth::AdminAuth;
 use crate::error::AppError;
+use crate::routes::sql::row_to_json;
 use crate::state::AppState;
-
-fn row_to_json(row: &rusqlite::Row, columns: &[&str]) -> rusqlite::Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for (i, col) in columns.iter().enumerate() {
-        let val: rusqlite::types::Value = row.get(i)?;
-        map.insert(
-            col.to_string(),
-            match val {
-                rusqlite::types::Value::Null => Value::Null,
-                rusqlite::types::Value::Integer(n) => json!(n),
-                rusqlite::types::Value::Real(f) => json!(f),
-                rusqlite::types::Value::Text(s) => json!(s),
-                rusqlite::types::Value::Blob(b) => {
-                    json!(base64::engine::general_purpose::STANDARD.encode(b))
-                }
-            },
-        );
-    }
-    Ok(Value::Object(map))
-}
 
 async fn list_keys(
     _auth: AdminAuth,
@@ -166,13 +146,29 @@ async fn unblock_key(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Delete a stream key. Rooms pointing at it have `stream_key_id` cleared by
+/// the FK's ON DELETE SET NULL.
+///
+/// Those rooms' viewers have to be told, exactly as `rooms::update_room` tells
+/// them when an admin detaches a key by hand: otherwise they sit on a player
+/// pointed at a stream that no longer exists. A room left at `status = 'live'`
+/// would also stay there — the OME reconciler's demote query inner-joins
+/// `stream_keys`, so a room with no key never matches it.
 async fn delete_key(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
-    tokio::task::spawn_blocking(move || {
+    let affected: Vec<String> = tokio::task::spawn_blocking(move || {
+        // Collect the affected rooms before the delete; afterwards the link is
+        // gone and they are unfindable.
+        let mut stmt = conn.prepare("SELECT slug FROM rooms WHERE stream_key_id = ?1")?;
+        let slugs: Vec<String> = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
         let changes = conn.execute(
             "DELETE FROM stream_keys WHERE id = ?1",
             rusqlite::params![id],
@@ -180,10 +176,23 @@ async fn delete_key(
         if changes == 0 {
             return Err(AppError::NotFound("Stream key not found".into()));
         }
-        Ok(())
+
+        // A live room whose key just vanished has nothing to be live about.
+        for slug in &slugs {
+            conn.execute(
+                "UPDATE rooms SET status = 'pending' WHERE slug = ?1 AND status = 'live'",
+                rusqlite::params![slug],
+            )?;
+        }
+        Ok(slugs)
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    for slug in affected {
+        let _ = state.events.room_pending.send(slug.clone());
+        let _ = state.events.stream_key_removed.send(slug);
+    }
 
     Ok(Json(json!({ "ok": true })))
 }

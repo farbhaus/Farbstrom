@@ -31,3 +31,11 @@ services:
       # www/dist to exist on the host — `make dev` builds it (frontend-build);
       # for a direct compose run, `cd frontend && npm ci && npm run build` first.
       - ./www:/www
+    ports:
+      # OME's signalling/LLHLS port, published for local WHIP ingest testing.
+      # The admin panel's WHIP URL goes through Caddy on https://localhost, whose
+      # certificate is signed by Caddy's internal CA — libcurl-based clients (OBS
+      # included) reject it, so a local WHIP push fails before ICE is reached.
+      # Pushing to http://localhost:3333/live/<key>?direction=whip skips both TLS
+      # and Caddy. Dev overlay only — the base compose file does not publish this.
+      - "3333:3333"

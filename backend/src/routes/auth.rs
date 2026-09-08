@@ -21,6 +21,25 @@ use crate::state::{AppState, CEREMONY_TTL_SECS};
 struct LoginBody {
     password: Option<String>,
     totp_code: Option<String>,
+    /// "Trust this browser" — issue a 90-day session instead of the 7-day
+    /// default. Safe only because sessions can now be revoked; see
+    /// [`crate::auth::ADMIN_TOKEN_TRUSTED_TTL_SECS`].
+    #[serde(default)]
+    trust: bool,
+}
+
+/// Mint a session token for a successful sign-in, stamped with the current
+/// generation so a later revocation invalidates it.
+async fn issue_session(state: &AppState, trust: bool) -> Result<String, AppError> {
+    let ttl = if trust {
+        crate::auth::ADMIN_TOKEN_TRUSTED_TTL_SECS
+    } else {
+        crate::auth::ADMIN_TOKEN_TTL_SECS
+    };
+    let version = state
+        .admin_token_version
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Ok(create_admin_token(&state.config.jwt_secret, version, ttl)?)
 }
 
 /// Public: which extra factors the login screen should offer. Reveals only
@@ -40,43 +59,6 @@ async fn methods(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppE
     Ok(Json(
         json!({ "totpEnabled": totp, "passkeyEnabled": passkeys }),
     ))
-}
-
-/// Consume a one-time recovery code (bcrypt-matched). Returns true and
-/// persists the shortened list if the code was valid and unused.
-async fn try_recovery_code(state: &AppState, code: &str) -> Result<bool, AppError> {
-    let conn = state.db.get()?;
-    let stored =
-        tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_RECOVERY))
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    let Some(json) = stored else { return Ok(false) };
-    let hashes: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
-    let code = code.to_string();
-    let (matched, remaining) = tokio::task::spawn_blocking(move || {
-        let mut remaining = Vec::with_capacity(hashes.len());
-        let mut matched = false;
-        for h in hashes {
-            if !matched && bcrypt::verify(&code, &h).unwrap_or(false) {
-                matched = true; // drop this one
-            } else {
-                remaining.push(h);
-            }
-        }
-        (matched, remaining)
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    if matched {
-        let conn = state.db.get()?;
-        let json = serde_json::to_string(&remaining).unwrap();
-        tokio::task::spawn_blocking(move || {
-            cred::settings_set(&conn, cred::KEY_TOTP_RECOVERY, &json)
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))??;
-    }
-    Ok(matched)
 }
 
 async fn login(
@@ -105,22 +87,12 @@ async fn login(
             // Password OK, code still needed — tell the UI to prompt.
             return Ok(Json(json!({ "totpRequired": true })));
         };
-        let conn = state.db.get()?;
-        let secret =
-            tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_SECRET))
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))?
-                .ok_or_else(|| AppError::Internal("TOTP misconfigured".into()))?;
-        let totp = cred::totp_from_secret(&secret)?;
-        let code_ok = totp
-            .check_current(code.trim())
-            .map_err(|e| AppError::Internal(format!("TOTP: {e}")))?;
-        if !code_ok && !try_recovery_code(&state, code.trim()).await? {
+        if !cred::verify_totp_or_recovery(&state, &code).await? {
             return Err(AppError::Unauthorized("Invalid code".into()));
         }
     }
 
-    let token = create_admin_token(&state.config.jwt_secret)?;
+    let token = issue_session(&state, body.trust).await?;
     Ok(Json(json!({ "token": token })))
 }
 
@@ -155,6 +127,9 @@ async fn passkey_start(State(state): State<Arc<AppState>>) -> Result<Json<Value>
 struct PasskeyFinishBody {
     id: Uuid,
     credential: PublicKeyCredential,
+    /// "Trust this browser", same meaning as on the password login.
+    #[serde(default)]
+    trust: bool,
 }
 
 async fn passkey_finish(
@@ -201,7 +176,7 @@ async fn passkey_finish(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let token = create_admin_token(&state.config.jwt_secret)?;
+    let token = issue_session(&state, body.trust).await?;
     Ok(Json(json!({ "token": token })))
 }
 

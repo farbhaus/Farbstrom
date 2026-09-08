@@ -29,6 +29,21 @@ pub struct AppConfig {
     pub srt_public_port: u16,
     /// SRT latency (ms) advertised to clients. Defaults to `500`.
     pub srt_latency_ms: u32,
+    /// Plaintext bootstrap admin password, straight from the environment.
+    /// `main` bcrypt-hashes this once at startup and drops it; nothing else
+    /// should read it. Carried here rather than re-read from the environment so
+    /// the length validation below is the only place that decides what is
+    /// acceptable.
+    pub admin_password: String,
+    /// Root of the built frontend: the static mounts (`/admin`, `/shared`,
+    /// `/dist`), `/privacy`, `/favicon.ico`, and the two HTML documents
+    /// `routes::pages` rewrites.
+    ///
+    /// Defaults to `/www`, which is where the Dockerfile copies it and where
+    /// `docker-compose.dev.yml` bind-mounts `./www` — so deployments need no
+    /// change. It is configurable purely so tests can point it at a fixture
+    /// tree; without that, the static and SPA routes cannot be exercised at all.
+    pub web_root: String,
 }
 
 /// Extract the host portion of a URL-ish origin (`https://host:port/path` →
@@ -67,7 +82,7 @@ impl AppConfig {
         let ome_api_token = required_min_len("OME_API_TOKEN", 32);
 
         // Admin password is bcrypt-hashed at startup; enforce a sensible minimum.
-        let _admin_password = required_min_len("ADMIN_PASSWORD", 12);
+        let admin_password = required_min_len("ADMIN_PASSWORD", 12);
 
         // LiveKit API key is an identifier (becomes the `iss` JWT claim), not a
         // secret — require presence but don't enforce length.
@@ -105,6 +120,8 @@ impl AppConfig {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(500),
             public_origin,
+            admin_password,
+            web_root: env::var("WEB_ROOT").unwrap_or_else(|_| "/www".into()),
         }
     }
 }

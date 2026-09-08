@@ -19,7 +19,10 @@ use crate::events::{FileSharedEvent, FileUnsharedEvent};
 use crate::state::AppState;
 use crate::uploads::stream_field_to_temp;
 
-const MAX_FILE_SIZE: usize = 2560 * 1024 * 1024; // 2.5 GB
+/// Upload size ceiling, shared by the participant and admin-library upload
+/// routes. `uploads::stream_field_to_temp` formats its rejection message from
+/// this value, so the number and the message it produces cannot disagree.
+pub const MAX_FILE_SIZE: usize = 2560 * 1024 * 1024; // 2.5 GB
 
 pub const SAFE_MIMES: &[&str] = &[
     "image/jpeg",
@@ -214,10 +217,11 @@ async fn upload_file(
                 .map_err(|e| AppError::Internal(e.to_string()))??
             };
 
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            // Two units, deliberately named: the wire carries milliseconds (see
+            // `crate::time`), while the `created_at` insert below uses SQLite's
+            // `unixepoch` modifier, which is defined in seconds.
+            let ts_ms = crate::time::now_ms();
+            let ts_secs = (ts_ms / 1000) as i64;
 
             let (file_id, effective_name) = if let Some(id) = existing {
                 // Dedup hit — discard the temp we just wrote; the
@@ -269,7 +273,7 @@ async fn upload_file(
                             size as i64,
                             hash_clone,
                             is_shared_val,
-                            ts as i64,
+                            ts_secs,
                         ],
                     )
                 })
@@ -308,7 +312,7 @@ async fn upload_file(
                     name: effective_name.clone(),
                     size,
                     mime: mime.clone(),
-                    ts,
+                    ts: ts_ms,
                 });
             }
 
@@ -411,12 +415,20 @@ async fn download_file(
 
         // Authorised if the file is directly attached to the room OR assigned
         // to it via room_files (admin library).
+        //
+        // Drafts (`is_shared = 0`) are excluded for everyone except the person
+        // who uploaded them: they are files attached to a chat composer and not
+        // yet sent, so room membership alone must not grant access. `list_files`
+        // has always filtered them; this path did not, which left them
+        // retrievable by anyone in the room who knew the id.
         let (stored_name, original_name, mime): (String, String, String) = conn
             .query_row(
                 "SELECT stored_path, original_name, mime_type FROM session_files \
-                 WHERE id = ?1 AND (room_id = ?2 \
+                 WHERE id = ?1 \
+                   AND (is_shared = 1 OR uploader_id = ?3) \
+                   AND (room_id = ?2 \
                     OR id IN (SELECT file_id FROM room_files WHERE room_id = ?2))",
-                params![file_id, participant.room_id],
+                params![file_id, participant.room_id, participant.id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
@@ -580,7 +592,24 @@ async fn delete_room_file(
         if !direct_here && !linked_here {
             return Ok(DeleteOutcome::NotFound);
         }
-        if direct_here {
+
+        // Content-hash dedup means one `session_files` row can serve several
+        // rooms: a second uploader of identical bytes gets the *existing* row id
+        // back rather than a new row. So "this file originated in my room" does
+        // not imply "only my room has it" — hard-deleting on `direct_here` alone
+        // removed the file, and its blob, out from under every other room
+        // holding it. Only take the row when no other room still does.
+        let other_rooms: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM room_files WHERE file_id = ?1 AND room_id != ?2",
+                params![file_id_for_block, participant.room_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .unwrap_or(0);
+
+        if direct_here && other_rooms == 0 {
             // Hard delete the row (room_files links cascade via FK).
             conn.execute(
                 "DELETE FROM session_files WHERE id = ?1",
@@ -589,6 +618,18 @@ async fn delete_room_file(
             .map_err(|e| AppError::Internal(e.to_string()))?;
             Ok(DeleteOutcome::HostHardDelete { stored_path })
         } else {
+            // Detach from this room only. When the row also *originated* here,
+            // clearing `room_id` is part of detaching — `list_files` matches on
+            // `sf.room_id` as well as the junction table, so dropping only the
+            // link would leave the file still listed in this room. It survives
+            // as a library row for whichever rooms still hold it.
+            if direct_here {
+                conn.execute(
+                    "UPDATE session_files SET room_id = NULL WHERE id = ?1 AND room_id = ?2",
+                    params![file_id_for_block, participant.room_id],
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            }
             conn.execute(
                 "DELETE FROM room_files WHERE room_id = ?1 AND file_id = ?2",
                 params![participant.room_id, file_id_for_block],

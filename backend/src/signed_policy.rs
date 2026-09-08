@@ -23,11 +23,14 @@ type HmacSha1 = Hmac<Sha1>;
 /// `{vhost}/{app}` prefix every playback streamid carries. The stream name is
 /// the ingest stream key (`OutputStreamName=${OriginStreamName}` in Server.xml).
 ///
-/// Nothing is appended after the stream name: OME's SRT streamid is
-/// `{vhost}/{app}/{stream}/{playlist}`, and the publisher's auto-created default
-/// playlist is named `master`, so a `/playlist` suffix addresses a playlist that
-/// does not exist. SignedPolicy signs the path, so the two forms are not
-/// interchangeable anyway.
+/// Nothing is appended after the stream name. OME's SRT streamid may be
+/// `{vhost}/{app}/{stream}` or `{vhost}/{app}/{stream}/{playlist}`, and this
+/// OME does auto-create a playlist — logged as
+/// `SRTPublisher | A SRT playist [playlist] has been created`, i.e. named
+/// `playlist`, not `master` as the upstream docs claim. Farbstrom addresses the
+/// stream directly and does not append either name: SignedPolicy signs the whole
+/// path, so the forms are not interchangeable and appending one to a signed
+/// streamid breaks it.
 pub const SRT_PATH_PREFIX: &str = "default/live";
 
 /// Mint an OME SignedPolicy streamid for SRT playback, valid for `ttl_seconds`.

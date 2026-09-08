@@ -12,6 +12,9 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use webauthn_rs::prelude::*;
 
 pub const KEY_PASSWORD_HASH: &str = "admin_password_hash";
+/// Generation counter stamped into every admin JWT. Bumping it invalidates
+/// every token minted before the bump — see [`bump_token_version`].
+pub const KEY_TOKEN_VERSION: &str = "admin_token_version";
 pub const KEY_TOTP_SECRET: &str = "totp_secret";
 pub const KEY_TOTP_ENABLED: &str = "totp_enabled";
 pub const KEY_TOTP_RECOVERY: &str = "totp_recovery";
@@ -59,6 +62,59 @@ pub async fn current_password_hash(state: &AppState) -> Result<(String, bool), A
     }
 }
 
+// ---- Admin session invalidation -------------------------------------------
+
+/// Current admin token generation, straight from the DB. Absent or unparseable
+/// means 0, which is also what a token minted before this existed decodes to —
+/// so upgrading does not spuriously sign anyone out.
+pub fn token_version_get(conn: &rusqlite::Connection) -> u64 {
+    settings_get(conn, KEY_TOKEN_VERSION)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Invalidate every admin token issued so far.
+///
+/// Admin JWTs are stateless: nothing tied them to the password, so changing it
+/// revoked nothing and a stolen token stayed valid for its full 7 days. Each
+/// token now carries the generation it was minted under, and `AdminAuth` refuses
+/// any that does not match the current one.
+///
+/// The DB row is the source of truth; the `AppState` counter is a cache so the
+/// check costs no I/O on a path that runs for every admin request. One process
+/// serves the DB, so the two cannot diverge — and a restart reloads from the row
+/// regardless.
+///
+/// Returns the new generation, so the caller can mint a replacement token for
+/// whoever triggered this and keep *their* session alive.
+pub async fn bump_token_version(state: &AppState) -> Result<u64, AppError> {
+    let conn = state.db.get()?;
+    let next = tokio::task::spawn_blocking(move || -> Result<u64, rusqlite::Error> {
+        // One statement, so concurrent bumps cannot lose an increment by both
+        // reading the same value before either writes. A read-then-write pair
+        // did exactly that: eight concurrent calls landed on generation 4.
+        // `RETURNING` hands back the value *this* call established.
+        conn.query_row(
+            "INSERT INTO settings (key, value) VALUES (?1, '1') \
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 \
+             RETURNING CAST(value AS INTEGER)",
+            params![KEY_TOKEN_VERSION],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|v| v.max(0) as u64)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    // `fetch_max`, not `store`: the DB write and this update are separate steps,
+    // so a slower call finishing last must not walk the cache backwards below
+    // the row it would be read from on restart.
+    state
+        .admin_token_version
+        .fetch_max(next, std::sync::atomic::Ordering::SeqCst);
+    Ok(next)
+}
+
 /// Verify a candidate password against the current admin hash.
 pub async fn verify_password(state: &AppState, password: String) -> Result<bool, AppError> {
     let (hash, _) = current_password_hash(state).await?;
@@ -95,6 +151,69 @@ pub fn gen_totp_secret() -> String {
     let mut bytes = [0u8; 20];
     rand::rng().fill_bytes(&mut bytes);
     Secret::Raw(bytes.to_vec()).to_encoded().to_string()
+}
+
+/// Verify a submitted second factor: a current TOTP code, or — if that fails —
+/// one of the stored one-time recovery codes, which is consumed on use.
+///
+/// Shared by the login path and by TOTP teardown, so "what counts as a valid
+/// second factor" is defined once. Returns `false` when TOTP is not enrolled at
+/// all, so callers must decide whether a second factor is required.
+pub async fn verify_totp_or_recovery(state: &AppState, code: &str) -> Result<bool, AppError> {
+    let code = code.trim();
+    if code.is_empty() {
+        return Ok(false);
+    }
+    let conn = state.db.get()?;
+    let secret = tokio::task::spawn_blocking(move || settings_get(&conn, KEY_TOTP_SECRET))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let Some(secret) = secret else {
+        return Ok(false);
+    };
+    let totp = totp_from_secret(&secret)?;
+    if totp
+        .check_current(code)
+        .map_err(|e| AppError::Internal(format!("TOTP: {e}")))?
+    {
+        return Ok(true);
+    }
+    consume_recovery_code(state, code).await
+}
+
+/// Consume a one-time recovery code (bcrypt-matched). Returns true and persists
+/// the shortened list if the code was valid and unused.
+pub async fn consume_recovery_code(state: &AppState, code: &str) -> Result<bool, AppError> {
+    let conn = state.db.get()?;
+    let stored = tokio::task::spawn_blocking(move || settings_get(&conn, KEY_TOTP_RECOVERY))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let Some(json) = stored else { return Ok(false) };
+    let hashes: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+    let code = code.to_string();
+    let (matched, remaining) = tokio::task::spawn_blocking(move || {
+        let mut remaining = Vec::with_capacity(hashes.len());
+        let mut matched = false;
+        for h in hashes {
+            if !matched && bcrypt::verify(&code, &h).unwrap_or(false) {
+                matched = true; // drop this one
+            } else {
+                remaining.push(h);
+            }
+        }
+        (matched, remaining)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    if matched {
+        let conn = state.db.get()?;
+        let json = serde_json::to_string(&remaining)
+            .map_err(|e| AppError::Internal(format!("recovery codes: {e}")))?;
+        tokio::task::spawn_blocking(move || settings_set(&conn, KEY_TOTP_RECOVERY, &json))
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))??;
+    }
+    Ok(matched)
 }
 
 // ---- Recovery codes -------------------------------------------------------

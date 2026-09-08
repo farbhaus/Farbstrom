@@ -63,19 +63,34 @@
                 </Signalling>
                 <IceCandidates>
                     <!--
-                        Relay-forced on purpose. Direct ICE was tried on OME v0.21.0
-                        (${PublicIP} candidates + RFC 6544 TCP ICE, TcpRelayForce=false)
-                        and broke Firefox: it never nominated a candidate and looped
-                        "Added session"/"Removed session" forever. Offering the relay
-                        alongside direct candidates did not fix it either, because with
-                        the container behind Docker NAT the relay is only advertised at
-                        ${PublicIP} and 172.x — neither reachable as localhost. Forcing
-                        the relay is the configuration that works in every browser.
+                        INGEST side (WHIP / WebRTC push). Relay must NOT be forced
+                        here — that is the Publishers block's business, further down.
+
+                        With TcpRelayForce=true, OME withholds its real candidates
+                        and advertises the working path only through its embedded
+                        TURN server, carried solely in "Link: rel=ice-server"
+                        response headers. The SDP answer then contains a single
+                        placeholder candidate (100.127.255.254 on a port nothing
+                        listens on). OBS parses those Link headers and attempts
+                        direct ICE anyway — obsproject/obs-studio#12790 — so every
+                        WHIP push died the same way: HTTP 201 and a resource URL,
+                        then "PeerConnection state is now: Connecting" → "Failed"
+                        about 40 s later, with no media ever sent.
+
+                        The Firefox finding that justifies forcing the relay is
+                        about *playback* and lives in the Publishers block; it does
+                        not apply to ingest. TcpRelay stays configured, so clients
+                        that do honour the Link headers keep a relay fallback.
                         TcpRelayForce is v0.21.0's rename of the deprecated TcpForce.
+
+                        OME_ICE_ADDRESS is derived in entrypoint.sh: "*" (enumerate
+                        interfaces + the STUN-discovered public IP) on a real host,
+                        127.0.0.1 on a localhost dev stack, where the enumerated
+                        172.x/public addresses are not reachable from the host.
                     -->
-                    <IceCandidate>*:10000-10009/udp</IceCandidate>
+                    <IceCandidate>${env:OME_ICE_ADDRESS:*}:10000-10009/udp</IceCandidate>
                     <TcpRelay>*:3478</TcpRelay>
-                    <TcpRelayForce>true</TcpRelayForce>
+                    <TcpRelayForce>false</TcpRelayForce>
                     <TcpRelayWorkerCount>1</TcpRelayWorkerCount>
                 </IceCandidates>
             </WebRTC>
@@ -96,8 +111,21 @@
                     <WorkerCount>2</WorkerCount>
                 </Signalling>
                 <IceCandidates>
-                    <!-- Same transport policy as the WebRTC provider above — see there
-                         for why the relay is forced rather than direct ICE. -->
+                    <!--
+                        PLAYBACK side, and here the relay IS forced on purpose —
+                        deliberately unlike the ingest provider above.
+
+                        Direct ICE was tried on OME v0.21.0 (${PublicIP} candidates
+                        + RFC 6544 TCP ICE, TcpRelayForce=false) and broke Firefox:
+                        it never nominated a candidate and looped "Added session"/
+                        "Removed session" forever. Offering the relay alongside
+                        direct candidates did not fix it either, because with the
+                        container behind Docker NAT the relay is only advertised at
+                        ${PublicIP} and 172.x — neither reachable as localhost.
+                        Forcing the relay is the configuration verified to work in
+                        Chrome, Safari and Firefox. Don't flip it without retesting
+                        Firefox playback.
+                    -->
                     <IceCandidate>*:10000-10009/udp</IceCandidate>
                     <TcpRelay>*:3478</TcpRelay>
                     <TcpRelayForce>true</TcpRelayForce>

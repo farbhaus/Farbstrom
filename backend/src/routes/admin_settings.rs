@@ -14,7 +14,7 @@ use std::time::Instant;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
-use crate::auth::AdminAuth;
+use crate::auth::{create_admin_token, AdminAuth};
 use crate::credentials as cred;
 use crate::error::AppError;
 use crate::state::{AppState, CEREMONY_TTL_SECS};
@@ -79,8 +79,14 @@ async fn change_password(
             "New password must be at least 12 characters".into(),
         ));
     }
+    // 403, not 401. These handlers already sit behind `AdminAuth`, so the
+    // session is valid — it is the password typed into the form that is wrong.
+    // The admin SPA treats *any* 401 as "token dead" and signs you out, so
+    // returning 401 here meant a single typo while changing your password
+    // dumped you back to the login screen. 401 from an admin endpoint now means
+    // exactly one thing: your session is no longer valid.
     if !cred::verify_password(&state, body.current).await? {
-        return Err(AppError::Unauthorized("Current password is wrong".into()));
+        return Err(AppError::Forbidden("Current password is wrong".into()));
     }
     let new = body.new;
     let hash = tokio::task::spawn_blocking(move || bcrypt::hash(new, 12))
@@ -90,17 +96,74 @@ async fn change_password(
     tokio::task::spawn_blocking(move || cred::settings_set(&conn, cred::KEY_PASSWORD_HASH, &hash))
         .await
         .map_err(|e| AppError::Internal(e.to_string()))??;
-    Ok(Json(json!({ "ok": true })))
+
+    // Changing the password is the "I think I am compromised" action, so it has
+    // to end every other session — previously it revoked nothing and a stolen
+    // token stayed good for the rest of its expiry. The caller gets a
+    // replacement stamped with the new generation so they are not signed out of
+    // the tab they just did this in.
+    let version = cred::bump_token_version(&state).await?;
+    let token = create_admin_token(
+        &state.config.jwt_secret,
+        version,
+        crate::auth::ADMIN_TOKEN_TTL_SECS,
+    )?;
+    Ok(Json(json!({ "ok": true, "token": token })))
+}
+
+#[derive(Deserialize)]
+struct SignOutBody {
+    password: String,
+}
+
+/// Revoke every admin session except the one making the request.
+///
+/// Password-gated even though it sits behind `AdminAuth`: without that, someone
+/// holding a stolen token could sign the real operator out and take a freshly
+/// minted token for themselves — turning theft into lockout plus persistence.
+async fn sign_out_everywhere(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SignOutBody>,
+) -> Result<Json<Value>, AppError> {
+    if !cred::verify_password(&state, body.password).await? {
+        return Err(AppError::Forbidden("Wrong password".into()));
+    }
+    let version = cred::bump_token_version(&state).await?;
+    let token = create_admin_token(
+        &state.config.jwt_secret,
+        version,
+        crate::auth::ADMIN_TOKEN_TTL_SECS,
+    )?;
+    Ok(Json(json!({ "ok": true, "token": token })))
 }
 
 // ---- TOTP -----------------------------------------------------------------
 
 /// Generate a provisional secret (NOT yet enabled) and return the QR + secret
 /// for the operator to scan. Enrolment is confirmed by `/totp/enable`.
+///
+/// Refused outright while TOTP is already enabled: this handler rotates the
+/// stored secret and sets `totp_enabled = 0`, so re-opening the setup panel on
+/// an enrolled account would silently switch 2FA off and invalidate the
+/// authenticator. Disable first (which needs a current code), then re-enrol.
 async fn totp_setup(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, AppError> {
+    let conn = state.db.get()?;
+    let already_enabled =
+        tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_ENABLED))
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .as_deref()
+            == Some("1");
+    if already_enabled {
+        return Err(AppError::BadRequest(
+            "Two-factor authentication is already enabled. Disable it first to re-enrol.".into(),
+        ));
+    }
+
     let secret = cred::gen_totp_secret();
     let totp = cred::totp_from_secret(&secret)?;
     let qr = totp
@@ -161,16 +224,45 @@ async fn totp_enable(
 #[derive(Deserialize)]
 struct TotpDisableBody {
     password: String,
+    /// Current TOTP code, or one of the one-time recovery codes.
+    #[serde(default)]
+    code: Option<String>,
 }
 
+/// Turning 2FA off requires the second factor as well as the password.
+///
+/// The admin JWT guarding this route is itself minted from the password alone,
+/// so accepting the password as the only proof would gate 2FA teardown on
+/// exactly the factor 2FA exists to backstop — a stolen password (or a live
+/// admin session) could strip it silently. A recovery code is accepted too,
+/// since losing the authenticator is precisely when teardown is needed.
 async fn totp_disable(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
     Json(body): Json<TotpDisableBody>,
 ) -> Result<Json<Value>, AppError> {
     if !cred::verify_password(&state, body.password).await? {
-        return Err(AppError::Unauthorized("Wrong password".into()));
+        return Err(AppError::Forbidden("Wrong password".into()));
     }
+
+    // Only demand a code when there is an enrolment to protect; otherwise this
+    // endpoint is an idempotent no-op and should stay callable.
+    let conn = state.db.get()?;
+    let enabled =
+        tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_ENABLED))
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .as_deref()
+            == Some("1");
+    if enabled {
+        let code = body.code.unwrap_or_default();
+        if !cred::verify_totp_or_recovery(&state, &code).await? {
+            return Err(AppError::Forbidden(
+                "A current authenticator or recovery code is required to disable 2FA".into(),
+            ));
+        }
+    }
+
     let conn = state.db.get()?;
     tokio::task::spawn_blocking(move || {
         cred::settings_del(&conn, cred::KEY_TOTP_SECRET)?;
@@ -301,6 +393,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/status", get(status))
         .route("/password", post(change_password))
+        .route("/sign-out-everywhere", post(sign_out_everywhere))
         .route("/totp/setup", post(totp_setup))
         .route("/totp/enable", post(totp_enable))
         .route("/totp/disable", post(totp_disable))

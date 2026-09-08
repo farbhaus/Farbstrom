@@ -198,6 +198,21 @@ async fn delete_asset(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Accept only a CSS hex colour (`#rgb`, `#rrggbb`, `#rrggbbaa`).
+///
+/// These values are written straight into a CSS custom property client-side via
+/// `setProperty`, so a malformed one is not an injection vector — the CSSOM
+/// takes the value, not a declaration. It is a *breakage* vector: an
+/// unparseable custom property makes every `var(--accent)` in the sheet resolve
+/// to nothing, which strips colour from the whole UI with no error anywhere.
+/// Every other input in this file is strictly allowlisted; this one wasn't.
+fn is_hex_color(v: &str) -> bool {
+    let Some(hex) = v.strip_prefix('#') else {
+        return false;
+    };
+    matches!(hex.len(), 3 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 const COLOR_KEYS: &[&str] = &[
     "color_accent",
     "color_bg",
@@ -284,6 +299,18 @@ async fn save_colors(
     State(state): State<Arc<AppState>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
+    // Validate before opening a transaction, so a bad value rejects the whole
+    // request rather than leaving a half-applied palette.
+    for &key in COLOR_KEYS {
+        if let Some(val) = body.get(key).and_then(|v| v.as_str()) {
+            if !val.is_empty() && !is_hex_color(val) {
+                return Err(AppError::BadRequest(format!(
+                    "{key} must be a hex colour like #1a2b3c"
+                )));
+            }
+        }
+    }
+
     let conn = state.db.get()?;
     tokio::task::spawn_blocking(move || {
         for &key in COLOR_KEYS {

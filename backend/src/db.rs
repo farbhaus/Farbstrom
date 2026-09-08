@@ -296,7 +296,32 @@ fn migrate_blobs_to_flat_layout(conn: &rusqlite::Connection, data_path: &str) {
 }
 
 pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
-    let manager = SqliteConnectionManager::file(db_path);
+    // Connection-scoped pragmas belong in `with_init`, which runs for every
+    // connection the pool opens — not on a single connection checked out after
+    // `build()`. r2d2's `min_idle` defaults to `max_size`, so all 8 connections
+    // already exist by then and only the one we happened to hold would have been
+    // configured. That was the case for `synchronous`, leaving 7 of 8
+    // connections on SQLite's `FULL` default (an fsync per commit) despite the
+    // WAL setup below asking for `NORMAL`.
+    //
+    // `foreign_keys` and `busy_timeout` are already on by default here —
+    // libsqlite3-sys's bundled build compiles SQLite with
+    // `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, and rusqlite calls
+    // `sqlite3_busy_timeout(db, 5000)` on open. They are restated anyway so the
+    // guarantee is ours rather than a transitive dependency's: dropping the
+    // `bundled` feature for a system SQLite would otherwise silently turn every
+    // `ON DELETE CASCADE` in schema.sql into a no-op. `tests/db_integrity_test.rs`
+    // pins all three.
+    //
+    // `journal_mode = WAL` is deliberately NOT here: it is a persistent,
+    // database-level setting stored in the file header, so it is set once below.
+    let manager = SqliteConnectionManager::file(db_path).with_init(|conn| {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;",
+        )
+    });
     let pool = Pool::builder()
         .max_size(8)
         .build(manager)
@@ -305,10 +330,6 @@ pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
     let conn = pool.get().expect("Failed to get connection");
     conn.execute_batch("PRAGMA journal_mode = WAL;")
         .expect("Failed to set PRAGMA journal_mode = WAL");
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .expect("Failed to set PRAGMA foreign_keys = ON");
-    conn.execute_batch("PRAGMA synchronous = NORMAL;")
-        .expect("Failed to set PRAGMA synchronous = NORMAL");
 
     // Apply schema
     let schema = fs::read_to_string("schema.sql")

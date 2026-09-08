@@ -59,7 +59,10 @@ pub async fn stream_field_to_temp(
         size += chunk.len() as u64;
         if size > max_bytes {
             cleanup_temp(&temp_path).await;
-            return Err(AppError::BadRequest("File too large (max 2.5 GB)".into()));
+            return Err(AppError::BadRequest(format!(
+                "File too large (max {:.1} GB)",
+                max_bytes as f64 / 1_073_741_824.0
+            )));
         }
 
         hasher.update(&chunk);

@@ -16,8 +16,10 @@ use crate::error::AppError;
 use crate::routes::branding::read_site_name;
 use crate::state::AppState;
 
-const LANDING_HTML: &str = "/www/landing/index.html";
-const VIEWER_HTML: &str = "/www/viewer/index.html";
+/// Paths of the two HTML documents these handlers rewrite, relative to
+/// `config.web_root` (`/www` in the container).
+const LANDING_HTML: &str = "landing/index.html";
+const VIEWER_HTML: &str = "viewer/index.html";
 
 /// Minimal HTML-attribute escaping for values injected into `content="…"` /
 /// `<title>…</title>`. `site_name` is admin-set, but escape anyway so the brand
@@ -35,18 +37,70 @@ pub async fn serve_landing(State(state): State<Arc<AppState>>) -> Result<Html<St
     serve_page(&state, LANDING_HTML, false).await
 }
 
+/// File extensions that mean "this was meant to be a static asset". A request
+/// for one of these that reached the SPA fallback is a missing file, not a room
+/// slug — room slugs never contain a dot (see `rooms::generate_slug`).
+const ASSET_EXTENSIONS: &[&str] = &[
+    "js",
+    "mjs",
+    "css",
+    "map",
+    "json",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "avif",
+    "svg",
+    "ico",
+    "woff",
+    "woff2",
+    "ttf",
+    "otf",
+    "wasm",
+    "txt",
+    "xml",
+    "webmanifest",
+];
+
 /// Catch-all viewer (`/watch/{slug}` and any other unmatched path) with
 /// "<brand> streaming room" preview tags.
-pub async fn serve_viewer(State(state): State<Arc<AppState>>) -> Result<Html<String>, AppError> {
+///
+/// Asset-shaped paths get a real 404 instead. As the app-wide fallback this
+/// handler would otherwise answer a mistyped `/dist/foo.js` with `200 OK` and a
+/// body of HTML — which the browser then tries to parse as JavaScript, turning
+/// a missing file into an unrelated syntax error. It also costs a file read, an
+/// `fs::metadata` and a DB query per miss.
+pub async fn serve_viewer(
+    State(state): State<Arc<AppState>>,
+    uri: axum::http::Uri,
+) -> Result<Html<String>, AppError> {
+    if path_looks_like_asset(uri.path()) {
+        return Err(AppError::NotFound("Not found".into()));
+    }
     serve_page(&state, VIEWER_HTML, true).await
+}
+
+/// True when the last path segment ends in a known static-asset extension.
+pub fn path_looks_like_asset(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .and_then(|seg| seg.rsplit_once('.'))
+        .is_some_and(|(_, ext)| ASSET_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
 async fn serve_page(
     state: &Arc<AppState>,
-    path: &str,
+    relative_path: &str,
     is_room: bool,
 ) -> Result<Html<String>, AppError> {
-    let html = tokio::fs::read_to_string(path)
+    let path = format!(
+        "{}/{}",
+        state.config.web_root.trim_end_matches('/'),
+        relative_path
+    );
+    let html = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| AppError::Internal(format!("read {path}: {e}")))?;
 
@@ -110,4 +164,47 @@ async fn serve_page(
         .replacen("</head>", &format!("{meta}</head>"), 1);
 
     Ok(Html(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_looks_like_asset;
+
+    #[test]
+    fn asset_paths_are_recognised() {
+        for p in [
+            "/dist/viewer/main.js",
+            "/dist/admin/main.js.map",
+            "/shared/tokens.css",
+            "/favicon.ico",
+            "/x/y/font.woff2",
+            "/UPPER.PNG", // extension match is case-insensitive
+        ] {
+            assert!(path_looks_like_asset(p), "{p} should look like an asset");
+        }
+    }
+
+    #[test]
+    fn room_and_page_paths_are_not_assets() {
+        // Room slugs are `<name>-<hex>` and never contain a dot, so no real
+        // room URL can be mistaken for a static file.
+        for p in [
+            "/",
+            "/watch/grade-review-a1b2c3",
+            "/grade-review-a1b2c3",
+            "/room-a1b2c3",
+            "/privacy",
+            "/admin",
+        ] {
+            assert!(!path_looks_like_asset(p), "{p} must still reach the SPA");
+        }
+    }
+
+    #[test]
+    fn unknown_extensions_still_reach_the_spa() {
+        // Only *known* asset extensions 404. Anything else is treated as a
+        // potential room path, so an unfamiliar suffix can't black-hole a URL.
+        assert!(!path_looks_like_asset("/some.room.name"));
+        assert!(!path_looks_like_asset("/v1.2.3"));
+    }
 }

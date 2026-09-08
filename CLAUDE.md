@@ -92,7 +92,9 @@ cp .env.example .env
 | `PUBLIC_ORIGIN` | `http://localhost:4001` | WebAuthn RP origin/ID — must match the browser origin exactly. In the container, **derived from `PUBLIC_HOST`** (`https://<PUBLIC_HOST>`). |
 | `SITE_ADDRESS` | `localhost` | Caddy site address for the container's own Caddy. Set to your domain for standalone TLS, or `:80` (plain HTTP) to run behind an external TLS proxy. |
 | `PUBLIC_HOST` | `$SITE_ADDRESS` | Browser-facing host that `PUBLIC_ORIGIN`/`LIVEKIT_URL` derive from. Defaults to `SITE_ADDRESS` (standalone). **Required** when `SITE_ADDRESS=:80` — a bare port is not a valid host, so without it the backend panics. |
+| `WEB_ROOT` | `/www` | Root of the built frontend (static mounts, `/privacy`, `/favicon.ico`, and the two HTML documents `routes::pages` rewrites). The Dockerfile copies there and the dev overlay bind-mounts `./www:/www`, so deployments never set it; it exists so tests can point at a fixture tree. |
 | `WEB_BIND` | `0.0.0.0` | Host interface the published HTTP/HTTPS ports bind to. Set to `127.0.0.1` when behind an external proxy so the plain-HTTP port isn't internet-reachable (Docker bypasses ufw). |
+| `OME_ICE_ADDRESS` | `*`, or `127.0.0.1` when `PUBLIC_HOST` is localhost | ICE candidate address OME advertises to WHIP encoders. Derived in `entrypoint.sh`; set explicitly (e.g. a LAN IP) to push to a dev box from another machine. |
 | `SRT_PUBLIC_HOST` | host of `PUBLIC_ORIGIN` | SRT host returned by `/api/watch/:slug`. |
 | `SRT_PUBLIC_PORT` | `9998` | SRT playback UDP port returned by `/api/watch/:slug`. |
 | `SRT_LATENCY_MS` | `500` | SRT latency advertised to clients. |
@@ -136,9 +138,10 @@ to `SITE_ADDRESS`); the Caddyfile
 
 - `src/main.rs` — startup: config, DB pool, background tasks, Axum router mount on :4001
 - `src/lib.rs` — re-exports the app builder so integration tests can spin up the server in-process
+- `src/app.rs` — `build_app(state) -> Router`: the **whole** router (API + WS + static + SPA fallback + Cache-Control/Trace layers). `main.rs` and the tests build the same one. Anything mounted only in `main.rs` is by definition untestable, which is how `ws.rs` went 1350 lines with no coverage
 - `src/config.rs` — `AppConfig::from_env`, secret length validation (fail-fast)
 - `src/state.rs` — `AppState` (Arc'd, cloned into handlers)
-- `src/db.rs` — R2D2 SQLite pool (8 connections), WAL mode, schema bootstrap from `schema.sql`
+- `src/db.rs` — R2D2 SQLite pool (8 connections), WAL mode, schema bootstrap from `schema.sql`. Connection-scoped pragmas go in `with_init` so they apply to **every** pooled connection — `foreign_keys`, `synchronous`, `busy_timeout`. `journal_mode = WAL` is set once instead, being persisted in the file header
 - `src/error.rs` — `AppError` + `IntoResponse` impl; central error → HTTP mapping
 - `src/events.rs` — typed WS event payloads shared between hub and routes
 - `src/auth.rs` — JWT (HS256, 7d) + bcrypt helpers
@@ -149,7 +152,9 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/tasks.rs` — background pollers: OME stream status, room expiry, file cleanup
 - `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename)
 - `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages)
-- `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, WebAuthn RP builder
+- `src/routes/sql.rs` — shared SQL: `row_to_json`, the room projection (`ROOM_SELECT` / `ROOM_SELECT_BY_ID` / `ROOM_COLS`, plus the `ROOM_LIST_*` variant carrying `waiting_count`) and `FILE_ROOM_SLUGS`. **A new `rooms` column is added here, not in seven handlers** — the projection and its column names are paired positionally, and a unit test asserts they stay the same length
+- `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, `verify_totp_or_recovery` (the one definition of "valid second factor", shared by login and 2FA teardown), WebAuthn RP builder
+- `src/time.rs` — `now_ms()`. **Every timestamp crossing the wire to a browser is epoch milliseconds**; route new ones through here rather than re-deriving, or they land in `new Date(ts)` as 1970
 - `tests/common/mod.rs` — shared test fixtures (in-memory DB, app setup)
 
 ## Frontend structure
@@ -239,11 +244,11 @@ meant neither could be promoted to `components.css`. Keep them distinct.
 ## Key implementation details
 
 **Authentication roles:**
-- Admin: `POST /api/auth/login` (password → JWT, 7d) — required for all `/api/rooms/*` mutations
+- Admin: `POST /api/auth/login` (password → JWT) — required for all `/api/rooms/*` mutations. 7 days by default, **90 days** when the login form's "trust this browser" box is ticked (`trust: true` in the body; the passkey login takes it too)
 - Participant: `POST /api/public/rooms/:slug/join` — returns a scoped JWT for WS + file access
 - Presenter role is admin-only (`POST /api/rooms/:id/enter`), never grantable from the public join flow
 
-**Presenter entry handoff.** Admin clicks "Enter Room" → backend creates `role='presenter', is_admitted=1` → admin JS writes `{jwt, participantId}` to `localStorage['viewer_presession_{slug}']` and opens `/watch/{slug}` in a new tab → viewer reads the presession on load, moves it into `sessionStorage['viewer_session_{slug}']`, and deletes the localStorage entry. The localStorage key exists for milliseconds. No public URL grants presenter role.
+**Presenter entry handoff.** Admin clicks "Enter Room" → backend creates `role='presenter', is_admitted=1` → admin JS writes `{participantId, token, deliveryMode, streamKey, role}` to `localStorage['_presession_{slug}']` and opens `/watch/{slug}` in a new tab → viewer reads the presession on load, moves it into `sessionStorage['viewer_session_{slug}']`, and deletes the localStorage entry. The localStorage key exists for milliseconds. No public URL grants presenter role. (The key really is `_presession_{slug}`, with no `viewer` prefix, unlike every other viewer key — see `PRESESSION_KEY` in `frontend/viewer/session.ts` and the writer in `frontend/admin/rooms.ts`.)
 
 **Session isolation.** `viewer_session_{slug}` is in `sessionStorage` (per-tab, survives refresh, cleared on tab close); `viewer_name__/pass__{slug}` stay in `localStorage` (shared across tabs — intentional). `viewer_kicked_{slug}` is set on `{type:'kicked'}` or WS close 1008 and is checked at page load *before* WS connect, so a kicked viewer sees "Removed" instantly on refresh. If the sessionStorage flag is lost, the WS hub re-detects `is_kicked=1` and re-expels on reconnect.
 
@@ -280,13 +285,17 @@ put back on the way out. New steps are a `TourStep` in `buildSteps()`.
 
 **The privacy page is the cookie disclosure** (`www/privacy/index.html`, gh
 #247). It is linked from the landing page, the join screen and the device
-picker, and it enumerates every key this app writes to the browser —
-`farbstrom_tour` (the tour's cookie, the **only** cookie set anywhere), the
-`sessionStorage` session, and the `localStorage` room/tool preferences including
-`viewer_scopes`. Anything new that writes to a cookie, `localStorage` or
-`sessionStorage` belongs on that page in the same commit; it shipped claiming
-"not in cookies" for a whole release after the tour landed, and claiming the
-room password was saved behind a checkbox that has never existed.
+picker, and it discloses every *category* of browser storage this app writes:
+the session token + participant id and the kicked flag (`sessionStorage`), the
+per-room device/audio preferences, the tool preferences (scopes window, tour
+seen), the saved name and room password, and the admin sign-in token (7 days, or 90 with "trust this browser"). The only
+key named literally is `farbstrom_tour` — the tour's cookie, and the **only**
+cookie set anywhere; the rest are described in prose rather than by key name
+(`viewer_scopes`, `conf_pref_*`, `stream_token` are not spelled out). Anything
+new that writes to a cookie, `localStorage` or `sessionStorage` belongs on that
+page in the same commit; it shipped claiming "not in cookies" for a whole
+release after the tour landed, and claiming the room password was saved behind a
+checkbox that has never existed.
 
 **The ? toolbar button** (`frontend/viewer/shortcuts.ts`) opens the shortcuts
 sheet, and offers the tour as its second button rather than launching it. The
@@ -355,18 +364,140 @@ and have drifted before, so it must never move on its own.
 
 ## Recommended tests to add
 
-Thin areas in the integration suite worth regression coverage:
-1. Viewer JWT → presenter endpoints (`/conference/kick`, `/conference/mute`) → 403.
+Still thin, worth regression coverage:
+1. Viewer JWT → presenter endpoints (`/conference/kick`, `/conference/mute`) → 403. (A *kicked* presenter is covered in `room_state_test.rs`; a plain viewer is not.)
 2. `POST /api/rooms/:id/enter` (admin JWT) produces `role='presenter' AND is_admitted=1`; no public endpoint reaches the same state.
 3. Kick blocks re-join by case-insensitive name match (`POST /api/public/rooms/:slug/join` → 403).
-4. WS hub rejects kicked participants — `{type:'kicked'}` frame, close 1008.
-5. Webhook HMAC: wrong signature → 401; tampered body → 401.
-6. Rate limiter: 6th `/api/auth/login` in a minute → 429 (requires the real HTTP server, not `TestServer`, so `ConnectInfo` is populated).
-7. Status endpoint shape: `GET /api/public/rooms/:slug/status/:pid?token=…` → `{admitted, kicked, room_status}` for each of waiting/admitted/kicked/ended.
+4. Webhook HMAC: wrong signature → 401; tampered body → 401.
+5. Status endpoint shape: `GET /api/public/rooms/:slug/status/:pid?token=…` → `{admitted, kicked, room_status}` for each of waiting/admitted/kicked/ended.
+
+**Two fixtures, and the difference matters.** `common::test_app` builds only
+`routes::build_router` (the `/api/*` half) over a mock transport — fine for HTTP
+handlers, and left alone because most of the suite runs through it.
+`common::test_app_http` builds the whole app via `app::build_app` over a real
+port, which is the only way to reach the WS hub, the static/SPA routes, the
+response layers, or `ConnectInfo`. A test written against the wrong one can pass
+while exercising nothing: an early SPA-fallback test did exactly that, because
+everything unmatched 404s in the API-only router anyway.
+
+Existing suites, worth knowing before writing overlapping ones:
+`db_integrity_test` (pool pragmas, cascades, `created_at` → epoch ms),
+`file_visibility_test` (draft visibility, dedup blast radius, delete
+accounting), `room_state_test` (ended/expired gates, kicked presenters, slugs,
+stream-key deletion), `robustness_test` (colour validation, OME name allowlist),
+`ws_test` (the WS protocol surface — auth gate, kick, chat + history, roster
+markers, presenter gating, moderation filtering), `app_routing_test` (cache
+headers, SPA fallback, Open Graph injection), `rate_limit_test`.
 
 ## Gotchas
 
 Non-obvious facts that aren't derivable from reading the code.
+
+**WebSocket hub**
+- **A rejected socket must have its close frame *flushed*, not just queued.**
+  `handle_socket` queues the explanatory frame plus a 1008 close on the outbound
+  channel, and a forwarding task moves them to the wire. Calling
+  `send_task.abort()` straight afterwards — which it used to — usually drops both
+  unsent, because the task has not been polled yet. The client then sees a
+  transport reset (1006), and `frontend/viewer/ws.ts` branches specifically on
+  `e.code === 1008` to decide "kicked or stale auth" — so a kicked viewer got no
+  `kicked` frame and sat in the reconnect loop instead of the Removed screen.
+  `reject_socket` drops the last sender and awaits the task instead. It is only
+  safe *before* registration in `WS_ROOMS`, which holds a clone of the sender.
+- **The hub's room maps are process-global statics** (`WS_ROOMS`,
+  `WS_ROOM_FOCUS`, `WS_ROOM_DISPLAY`, and `presence::SSE_PRESENCE`). Cargo runs a
+  test binary's cases on parallel threads, so every WS test must use
+  `common::unique_slug`; two tests sharing a room slug will see each other's
+  sockets.
+- **The reconnect branch reuses the `WsParticipant`**, so a farbplay→farbplay
+  reconnect cannot detect a marker it fails to re-read — the value is already
+  right. `reconnect_updates_the_client_marker` reconnects with a *different*
+  marker, which is what actually pins that line (gh #227).
+
+**Rate limiting**
+- **The buckets are process-global.** `tower_governor` keeps its limiter inside
+  `GovernorConfig` (built once in `finish()`), and `routes::rate_limit` caches
+  each config in a `static OnceLock` — so every router in a process shares one
+  bucket per layer, keyed by client IP. In production that is exactly right; in
+  tests it means rate-limit cases cannot run in parallel (they all come from
+  127.0.0.1 and drain each other), which is why `rate_limit_test.rs` is one test
+  function in its own binary. It also cannot share a binary with anything calling
+  `test_app`, which sets `STREAM_DISABLE_RATE_LIMIT` process-wide.
+
+**Database / pool**
+- **`foreign_keys` is ON here by accident of the build, not by the pragma in
+  `db.rs`.** libsqlite3-sys's bundled SQLite is compiled with
+  `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, and rusqlite calls
+  `sqlite3_busy_timeout(db, 5000)` on open — measured, on every pooled
+  connection and on a raw `Connection::open`. Dropping the `bundled` feature for
+  a system SQLite would silently turn every `ON DELETE CASCADE` in `schema.sql`
+  into a no-op, and four call sites depend on those cascades
+  (`rooms::delete_room`, `stream_keys::delete_key`, `files::delete_room_file`,
+  `admin_files::delete_files_inner`). `db.rs` restates both pragmas in
+  `with_init` so the guarantee is ours; `tests/db_integrity_test.rs` pins it.
+- **Pragmas set on a connection pulled from the pool configure only that
+  connection.** r2d2's `min_idle` defaults to `max_size`, so all 8 exist by the
+  time `build()` returns. This is not theoretical — `synchronous = NORMAL`
+  reached exactly one of them for a long time while the other seven ran `FULL`.
+
+**Wire timestamps**
+- **Everything sent to a browser is epoch milliseconds** (`crate::time::now_ms`).
+  `file:shared` used to send seconds from four call sites while `chat:message`
+  sent milliseconds, and the viewer renders both through one `new Date(ts)` —
+  so shared files showed a January 1970 clock time. Chat history converts
+  `created_at` with `strftime('%s', ...) * 1000`, which reads the stored value as
+  UTC; `new Date("YYYY-MM-DD HH:MM:SS")` parses as *local* time and shifted the
+  whole replay by the viewer's offset.
+
+**Admin sessions**
+- **Admin JWTs carry a generation (`ver`) and are revocable.** They used to be
+  pure `{admin, exp}` — nothing tied them to the password, so changing it
+  revoked nothing and a stolen token stayed valid for its full expiry. A
+  password change, or Settings → "Sign out other devices", bumps
+  `settings.admin_token_version`; `AdminAuth` refuses any token stamped with an
+  older one. That is what makes the 90-day "trust this browser" session
+  defensible — without revocation it would be a 90-day liability in
+  localStorage.
+- The DB row is authoritative; `AppState.admin_token_version` is a cache so the
+  per-request check does no I/O, reloaded at startup so revocation survives a
+  restart. One process owns it, so the two cannot diverge.
+- `ver` is `#[serde(default)]`, so a token minted before the claim existed reads
+  as generation 0 — the same value a fresh install starts at. Upgrading does not
+  sign the operator out.
+- **Both revoking endpoints return a replacement token**, and the SPA adopts it
+  (`adoptReissuedToken`), so the tab that performed the revocation is not logged
+  out by its own action. "Sign out other devices" is password-gated on top of
+  `AdminAuth`: otherwise a stolen token could lock the real operator out while
+  minting itself a fresh one.
+
+**401 vs 403 on admin endpoints**
+- **401 from an admin endpoint means exactly one thing: this session is no
+  longer valid** (expired, or revoked). `apiFetch` signs the operator out on any
+  401, so a handler behind `AdminAuth` that returns 401 for a *wrong submitted
+  credential* logs you out on a typo — which is what "current password is wrong"
+  in the change-password form used to do. Those are `AppError::Forbidden` now.
+  Anything new that re-checks a password mid-session must be 403, not 401.
+
+**Admin 2FA**
+- **Teardown needs the second factor, not just the password.** The admin JWT is
+  minted from the password alone, so gating `totp/disable` on a password
+  re-check would gate 2FA removal on exactly the factor 2FA backstops. Recovery
+  codes are accepted there too — losing the authenticator is when you need it.
+- **`totp/setup` is refused while TOTP is enabled.** It rotates the secret and
+  sets `totp_enabled = 0`, so re-opening the setup panel used to switch 2FA off
+  silently and invalidate the authenticator.
+
+**Files**
+- **Content-hash dedup means one `session_files` row can serve several rooms** —
+  a second uploader of identical bytes gets the *existing* row id back. So
+  "this file originated in my room" does not imply "only my room has it": the
+  host delete path checks `room_files` for other rooms before hard-deleting, and
+  otherwise only detaches. Same reason blob unlinking always recounts
+  `stored_path` references first.
+- **Drafts (`is_shared = 0`) are hidden from every read path**, including
+  `download_file` — which authorises on room membership, so without the filter
+  any room member who knew a file id could pull someone else's unsent upload.
+  The uploader still reaches their own.
 
 **LiveKit**
 - `entrypoint.sh` generates `/livekit.yaml` with a `keys:` map (`KEY: SECRET`) — the **space after the colon** is required (YAML), else LiveKit boots with no auth and only logs "Could not parse keys". The backend must mint tokens with the same `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`. Keys are inlined into the YAML so the LiveKit process needs no key secrets in its env (`supervisord.conf` strips them with `env -u`).
@@ -381,9 +512,13 @@ Non-obvious facts that aren't derivable from reading the code.
 - LLHLS + Safari + H.265 historically failed because Safari MSE rejects the `hev1` sample entry. **v0.21.0 changed the packaging** (upstream #2258): verified that an H.265 ingest now yields `CODECS="hvc1…"` in the LL-HLS master playlist and an `hvc1`/`hvcC` sample entry in the fMP4 init segment — the form Safari requires. **Whether Safari decodes H.265 over LL-HLS is still untested** (the tests above all ran through WebRTC). Test it before relying on LLHLS for an H.265 room, and record the result here.
 
 **WebRTC transport (OME)**
-- Both `<IceCandidates>` blocks in [`ome/origin_conf/Server.xml`](ome/origin_conf/Server.xml) **force the built-in TURN relay** (`<TcpRelayForce>true</TcpRelayForce>` — v0.21.0's rename of the deprecated `<TcpForce>`). This looks wasteful and it is tempting to "fix"; **don't, without testing Firefox.** Direct ICE was tried on v0.21.0 (`${PublicIP}` candidates + RFC 6544 TCP ICE on `10000/tcp`, `TcpRelayForce=false`) and Chrome and Safari worked while **Firefox never nominated a candidate**, looping `Added session`/`Removed session` at OvenPlayer's 8 s `connectionTimeout` forever. Offering the relay *alongside* direct candidates (`<DefaultTransport>all</DefaultTransport>`) does not rescue it either: behind Docker NAT, OME can only advertise the relay at `${PublicIP}` and `172.x`, and neither is reachable as `localhost`. Relay-forced is the only configuration verified to work in all three browsers.
+- **The two `<IceCandidates>` blocks in [`ome/origin_conf/Server.xml`](ome/origin_conf/Server.xml) are deliberately opposite, and the difference is load-bearing.** Playback (`<Publishers><WebRTC>`) **forces the built-in TURN relay** (`<TcpRelayForce>true</TcpRelayForce>` — v0.21.0's rename of the deprecated `<TcpForce>`). This looks wasteful and it is tempting to "fix"; **don't, without testing Firefox.** Direct ICE was tried on v0.21.0 (`${PublicIP}` candidates + RFC 6544 TCP ICE on `10000/tcp`, `TcpRelayForce=false`) and Chrome and Safari worked while **Firefox never nominated a candidate**, looping `Added session`/`Removed session` at OvenPlayer's 8 s `connectionTimeout` forever. Offering the relay *alongside* direct candidates (`<DefaultTransport>all</DefaultTransport>`) does not rescue it either: behind Docker NAT, OME can only advertise the relay at `${PublicIP}` and `172.x`, and neither is reachable as `localhost`. Relay-forced is the only configuration verified to work in all three browsers.
+- **Ingest (`<Providers><WebRTC>`) must NOT force the relay — that breaks WHIP outright.** With it forced, OME withholds its real candidates: the SDP answer carries a single placeholder (`100.127.255.254` on a port nothing listens on) and the working path is offered *only* as `Link: <turn:…>; rel="ice-server"` response headers. OBS parses those headers and attempts direct ICE anyway ([obsproject/obs-studio#12790](https://github.com/obsproject/obs-studio/issues/12790), open), so every push died identically: HTTP `201` with a resource URL, then `PeerConnection state is now: Connecting` → `Failed` ~40 s later, no media, and a `DELETE … 404` on the way out. The handshake succeeding is what makes this read as a codec or firewall problem; it is neither. The Firefox finding above is about *playback* and does not transfer to ingest — reading it as blanket is what kept WHIP broken for a release.
+- **A WHIP encoder can only use candidates it can route to, and `*` does not include loopback.** `OME_ICE_ADDRESS` (derived in [`entrypoint.sh`](entrypoint.sh) from `PUBLIC_HOST`) feeds the ingest `<IceCandidate>`: `*` on a real host, `127.0.0.1` on a localhost stack. On Docker Desktop `*` enumerates `172.x` (unroutable from macOS) and the STUN-discovered public IP (needs router hairpin *and* a port-forward back), so OBS on the same Mac has nothing to connect to.
+- **A local WHIP push needs Caddy's internal CA trusted, or it dies before ICE.** `https://localhost` is served with Caddy's own CA; OBS is libcurl-based and rejects it — `Connect failed: SSL certificate problem: unable to get local issuer certificate` in the OBS log, and `curl https://localhost/` fails identically. Trust it once (`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain data/caddy-local-root.crt` on macOS) and the URL the admin panel shows works as-is. `docker-compose.dev.yml` also publishes OME's `3333` as a TLS-free fallback (`http://localhost:3333/live/<key>?direction=whip`) — that one needs `make dev`, since a bare `docker compose up -d` uses the base file only and publishes no `3333`.
 - **Adding a new ICE port means three edits**: `Server.xml`, the `EXPOSE`/`ports:` entries, and `FW_TCP`/`FW_UDP` in [`deploy.sh`](deploy.sh).
 - Debugging ICE: OME logs `nominated candidate` + `DTLS peer certificate verified` on success. A repeating `Added session`/`Removed session` pair with neither line in between is ICE connectivity failure, not codec or signalling — signalling clearly succeeded if a session was created at all.
+- **ffmpeg's `-f whip` muxer cannot test this server** — it offers `a=setup:passive`, and OME rejects that outright (`Offer SDP has invalid setup type - a=setup:passive`, HTTP 500) before ICE is ever reached. Not an OME bug and not the OBS failure mode; it just makes ffmpeg useless as a probe. Test with OBS, or POST a hand-written `a=setup:actpass` offer with curl and read the candidates out of the answer — that reproduces the relay-force bug in one command without an encoder.
 - `OME_HOST_IP` (feeding `<Distribution>`) is derived in [`entrypoint.sh`](entrypoint.sh) from `PUBLIC_HOST`, so its export must stay *below* where `PUBLIC_HOST` is resolved. It previously read a `DOMAIN` var nothing sets and silently resolved to `localhost`.
 
 **Codecs**
@@ -464,5 +599,5 @@ Non-obvious facts that aren't derivable from reading the code.
 - Privilege & secrets: Caddy/OME/LiveKit run as root (privileged ports / TURN); the backend (`user=app`) and Valkey (`user=valkey`) drop privileges. `supervisord.conf` removes the backend-only secrets (`JWT_SECRET`, `ADMIN_PASSWORD`, `LIVEKIT_API_KEY/SECRET`) from the third-party processes via `env -u` — add any new such secret to those four `-u` lists.
 - Persist Caddy's `caddy_data` volume (`/root/.local/share/caddy`): it holds the internal CA + Let's Encrypt certs. Losing it re-issues certs on every recreate (Let's Encrypt rate limits) / regenerates the local CA.
 - Keep the UDP RTC range narrow (50000-50100) — Docker writes one iptables rule per port; wide ranges make `compose up/down` take minutes.
-- **Docker Desktop (macOS) silently drops a UDP port publish.** With ~114 published UDP ports, one of them randomly fails to bind on the host per container start — `docker port` still lists the mapping and the container logs `listening on *:9998/SRT`, but nothing on the host holds the port and every packet is dropped before it reaches the container. Observed alternating between 9998 and 9999, which looks exactly like "SRT is broken" (Farbplay can't connect, ffplay hangs, OME logs nothing at all). Diagnose with `lsof -nP -iUDP:9998` — no `com.docker` line means the publish failed; `docker compose restart` re-rolls it. Only affects local dev on Docker Desktop, not Linux hosts.
+- **Docker Desktop (macOS) gets a stuck UDP port and no container can bind it.** `com.docker.backend` registers the forward (`exposer.Add` lists `UDP 0.0.0.0:9999 -> 172.18.0.2:9999`, `docker port` shows it) but never creates the host socket, and **logs no error anywhere**. Every packet is dropped before it reaches the container, so an SRT ingest just never connects and OME logs its listener line and then nothing at all — `The SRT client has connected` is emitted *before* the admission webhook, so its absence proves no packet arrived rather than a rejection. **The poison is per-port and Docker-Desktop-wide, not per-container**: with farbstrom stopped, a throwaway `docker run --rm -d -p 9997:9997/udp -p 9999:9999/udp alpine sleep 60` had 9997 bound and 9999 not. **`docker compose restart` does NOT clear it, and neither does `down` + `up`** — only restarting Docker Desktop does. Diagnose with **`netstat -an -p udp | grep '\.9999 '`** (owner-independent; `lsof` without `+c 0` truncates the name to `com.docke` and a grep for `com.docker` matches nothing, so a healthy stack reads as broken). Confirm the port is genuinely free by binding it yourself — it will succeed, while a working port gives `EADDRINUSE`. Measured on Docker Desktop 4.89.0; unrelated to OME's version and to how many ports are published (reproduced with 4 published UDP ports). Linux forwards via `docker-proxy`/iptables, a different mechanism — untested there.
 - Valkey is the BSD-3 fork of Redis 7.2; LiveKit talks to it as a plain RESP server, so the swap from upstream Redis is invisible.

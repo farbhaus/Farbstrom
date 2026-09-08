@@ -716,7 +716,11 @@ async function confirmReplace(): Promise<void> {
     void loadFiles();
     void loadStorageStats();
   } else {
-    toast('Replace failed');
+    // A 409 means the new contents already exist under another library entry
+    // (content_hash is unique) — the server names it, which is far more useful
+    // than "Replace failed".
+    const e = await res.json().catch(() => ({}));
+    toast(e.error || 'Replace failed');
   }
 }
 

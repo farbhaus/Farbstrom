@@ -343,6 +343,53 @@ pub fn spawn_room_ended_cleanup(state: Arc<AppState>) {
     });
 }
 
+/// Delete the given `session_files` rows and return the `stored_path`s whose
+/// blobs are now unreferenced and therefore safe to unlink.
+///
+/// Shared by the room-ended sweep and the weekly sweep, which differ only in
+/// how they select the orphans — the delete-then-recount-references dance was
+/// written out twice, and the recount is the part that must not drift: several
+/// rows can point at one blob (content-hash dedup), so a blob may only go once
+/// nothing references it.
+fn delete_rows_and_collect_orphan_blobs(
+    db: &rusqlite::Connection,
+    orphans: &[(String, String)],
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut safe_paths = Vec::with_capacity(orphans.len());
+    for (id, stored) in orphans {
+        db.execute(
+            "DELETE FROM session_files WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        let still_refs: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM session_files WHERE stored_path = ?1",
+                rusqlite::params![stored],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if still_refs == 0 {
+            safe_paths.push(stored.clone());
+        }
+    }
+    Ok(safe_paths)
+}
+
+/// Unlink blobs, counting what actually went. Missing files are not an error —
+/// a previous sweep or a manual delete may have taken them already.
+async fn remove_blobs(data_path: &str, stored_paths: &[String]) -> u64 {
+    let mut removed = 0u64;
+    for stored in stored_paths {
+        let full_path = format!("{}/files/{}", data_path, stored);
+        match tokio::fs::remove_file(&full_path).await {
+            Ok(_) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::debug!("[files] Failed to delete {}: {}", full_path, e),
+        }
+    }
+    removed
+}
+
 /// Drops this room's `room_files` assignments and deletes `session_files` rows
 /// that originated here AND aren't still assigned to another room via
 /// `room_files` (library protection). Blobs on disk are removed only after
@@ -393,39 +440,12 @@ pub async fn cleanup_room_files(
                 rows
             };
 
-            let mut safe_paths = Vec::with_capacity(orphans.len());
-            for (id, stored) in &orphans {
-                db.execute(
-                    "DELETE FROM session_files WHERE id = ?1",
-                    rusqlite::params![id],
-                )?;
-                let still_refs: i64 = db
-                    .query_row(
-                        "SELECT COUNT(*) FROM session_files WHERE stored_path = ?1",
-                        rusqlite::params![stored],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
-                if still_refs == 0 {
-                    safe_paths.push(stored.clone());
-                }
-            }
-            Ok(safe_paths)
+            delete_rows_and_collect_orphan_blobs(&db, &orphans)
         })
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })??;
 
-    let mut removed = 0u64;
-    for stored in &stored_paths {
-        let full_path = format!("{}/files/{}", data_path, stored);
-        match tokio::fs::remove_file(&full_path).await {
-            Ok(_) => removed += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::debug!("[files] Failed to delete {}: {}", full_path, e);
-            }
-        }
-    }
+    let removed = remove_blobs(&data_path, &stored_paths).await;
 
     if !stored_paths.is_empty() {
         tracing::info!(
@@ -491,25 +511,7 @@ async fn cleanup_files(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::
             if orphans.is_empty() {
                 return Ok(Vec::new());
             }
-
-            let mut safe_paths = Vec::with_capacity(orphans.len());
-            for (id, stored) in &orphans {
-                db.execute(
-                    "DELETE FROM session_files WHERE id = ?1",
-                    rusqlite::params![id],
-                )?;
-                let still_refs: i64 = db
-                    .query_row(
-                        "SELECT COUNT(*) FROM session_files WHERE stored_path = ?1",
-                        rusqlite::params![stored],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
-                if still_refs == 0 {
-                    safe_paths.push(stored.clone());
-                }
-            }
-            Ok(safe_paths)
+            delete_rows_and_collect_orphan_blobs(&db, &orphans)
         })
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })??;
@@ -520,15 +522,7 @@ async fn cleanup_files(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::
     }
 
     tracing::info!("[cleanup] Cleaning up {} files", stored_paths.len());
-    let mut deleted_count = 0u64;
-    for stored in &stored_paths {
-        let full_path = format!("{}/files/{}", data_path, stored);
-        match tokio::fs::remove_file(&full_path).await {
-            Ok(_) => deleted_count += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::debug!("[cleanup] Failed to delete {}: {}", full_path, e),
-        }
-    }
+    let deleted_count = remove_blobs(&data_path, &stored_paths).await;
 
     tracing::info!(
         "[cleanup] Deleted {} blobs from disk, {} DB rows removed",
