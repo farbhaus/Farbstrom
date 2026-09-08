@@ -90,16 +90,28 @@ pub fn token_version_get(conn: &rusqlite::Connection) -> u64 {
 pub async fn bump_token_version(state: &AppState) -> Result<u64, AppError> {
     let conn = state.db.get()?;
     let next = tokio::task::spawn_blocking(move || -> Result<u64, rusqlite::Error> {
-        let next = token_version_get(&conn).wrapping_add(1);
-        settings_set(&conn, KEY_TOKEN_VERSION, &next.to_string())?;
-        Ok(next)
+        // One statement, so concurrent bumps cannot lose an increment by both
+        // reading the same value before either writes. A read-then-write pair
+        // did exactly that: eight concurrent calls landed on generation 4.
+        // `RETURNING` hands back the value *this* call established.
+        conn.query_row(
+            "INSERT INTO settings (key, value) VALUES (?1, '1') \
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 \
+             RETURNING CAST(value AS INTEGER)",
+            params![KEY_TOKEN_VERSION],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|v| v.max(0) as u64)
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
+    // `fetch_max`, not `store`: the DB write and this update are separate steps,
+    // so a slower call finishing last must not walk the cache backwards below
+    // the row it would be read from on restart.
     state
         .admin_token_version
-        .store(next, std::sync::atomic::Ordering::SeqCst);
+        .fetch_max(next, std::sync::atomic::Ordering::SeqCst);
     Ok(next)
 }
 
