@@ -217,6 +217,7 @@ function initDelegatedClicks(): void {
       case 'delete-room':
       case 'reactivate-room':
       case 'enter-presenter':
+      case 'share-room':
       case 'rotate-host-key':
       case 'admit-all':
       case 'admit-one':

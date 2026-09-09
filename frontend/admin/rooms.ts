@@ -1,6 +1,7 @@
 import { apiFetch } from './auth.js';
 import { closeModal, confirmModal, openModal } from '../shared/components.js';
 import { copyToClipboard, esc, fmtDateTime, toast } from '../shared/utils.js';
+import { initShare, openShareModal } from './share.js';
 import type { EnterRoomResponse, Participant, Room, StreamKey } from './types.js';
 
 const VIEWER_BASE = `${location.origin}/watch`;
@@ -144,6 +145,7 @@ function renderRooms(): void {
                 ? `<button class="btn btn-sm" data-action="reactivate-room" data-id="${esc(r.id)}">Reactivate</button>`
                 : ''
             }
+            <button class="btn btn-sm" data-action="share-room" data-id="${esc(r.id)}" title="Email the guest link">Share room</button>
             <button class="btn btn-sm" data-action="edit-room" data-id="${esc(r.id)}">Edit</button>
             <button class="btn btn-sm btn-danger" data-action="delete-room" data-id="${esc(r.id)}">Delete</button>
           </div>
@@ -152,12 +154,12 @@ function renderRooms(): void {
         <div class="room-card-body">
           <div class="url-row">
             <span class="url-label">Viewer</span>
-            <input readonly class="url-input" value="${esc(viewerUrl)}">
+            <input readonly class="url-input" value="${esc(viewerUrl)}" title="Click to copy">
           </div>
-          <div class="url-row host-actions">
+          <div class="url-row url-actions">
             <span class="url-label">Host</span>
             <button class="btn btn-sm btn-primary" data-action="enter-presenter" data-id="${esc(r.id)}">Enter Room</button>
-            <button class="btn btn-sm" data-action="copy" data-value="${esc(hostUrl)}" title="Copy a host link to share with a colorist">Share with host</button>
+            <button class="btn btn-sm" data-action="copy" data-value="${esc(hostUrl)}" title="Copy a host link to share with a colorist">Copy host link</button>
             <button class="btn btn-sm" data-action="rotate-host-key" data-id="${esc(r.id)}" title="Invalidate the current host link">Rotate</button>
           </div>
         </div>
@@ -483,6 +485,8 @@ export function initRooms(): void {
   document.getElementById('room-modal-cancel')?.addEventListener('click', closeRoomModal);
   document.getElementById('room-modal-save')?.addEventListener('click', saveRoom);
 
+  initShare();
+
   document.getElementById('enter-modal-go')?.addEventListener('click', doEnterRoom);
   document
     .getElementById('enter-modal-cancel')
@@ -511,6 +515,11 @@ export function handleRoomAction(action: string, target: HTMLElement): void {
     case 'enter-presenter':
       openEnterModal(id);
       break;
+    case 'share-room': {
+      const room = rooms.find((x) => x.id === id);
+      if (room) openShareModal(room, `${VIEWER_BASE}/${room.slug}`);
+      break;
+    }
     case 'rotate-host-key':
       void rotateHostKey(id);
       break;

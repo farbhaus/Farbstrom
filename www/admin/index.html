@@ -195,6 +195,13 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 }
 .url-input:hover { border-color: var(--dim); }
 .url-input:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
+/* Read-only link display in the Share modal, so the dialog states exactly
+   which link it is about to send. */
+.share-link {
+    padding: 8px 12px; background: var(--surface2); border: var(--bw-hair) solid var(--border);
+    border-radius: var(--r-control); font-family: var(--ff-mono); font-size: var(--fs-sm);
+    color: var(--dim); word-break: break-all;
+}
 .url-divider { border: none; border-top: var(--bw-hair) solid var(--border); margin: 16px 0; }
 .url-group { border: var(--bw-hair) solid var(--border); border-radius: var(--r-control); overflow: hidden; }
 .url-group > summary {
@@ -473,6 +480,9 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     /* URL rows: stack label above input */
     .url-row { flex-direction: column; align-items: stretch; gap: 4px; }
     .url-label { width: auto; }
+    /* Button-only rows wrap instead of stacking — stretched full-width, three
+       buttons eat most of a phone screen. */
+    .url-row.url-actions { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
 
     /* Stream key cards */
     .key-card-header { flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-4); }
@@ -1174,6 +1184,39 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
         <div class="modal-footer">
             <button class="btn" id="enter-modal-cancel">Cancel</button>
             <button class="btn btn-primary" id="enter-modal-go">Enter</button>
+        </div>
+    </div>
+</div>
+
+<!-- Share a room's guest link by email (issue #182). Hands a plain-text invite
+     to the admin's own mail client; see frontend/admin/share.ts. -->
+<div class="modal-overlay" id="share-modal" style="display:none">
+    <div class="modal" style="width:420px">
+        <div class="modal-header">
+            <span class="modal-title">Share room</span>
+            <button class="btn btn-sm" id="share-modal-close">✕</button>
+        </div>
+        <div class="form-row">
+            <label>To</label>
+            <input type="email" multiple id="share-to" placeholder="name@studio.com, other@studio.com">
+        </div>
+        <div class="form-row">
+            <label>Link</label>
+            <div class="share-link" id="share-link"></div>
+        </div>
+        <!-- Hidden outright when the room has no password. Inline display
+             matches #clear-password-row above. -->
+        <div class="form-row checkbox" id="share-password-row" style="display:none">
+            <input type="checkbox" id="share-include-password">
+            <label for="share-include-password">Include the room password</label>
+        </div>
+        <div class="form-row" id="share-password-field" style="display:none">
+            <label>Room password</label>
+            <input type="text" id="share-password" autocomplete="off" placeholder="Type it — it is stored hashed, so it can't be filled in">
+        </div>
+        <div class="modal-footer">
+            <button class="btn" id="share-modal-cancel">Cancel</button>
+            <button class="btn btn-primary" id="share-modal-send">Open in mail app</button>
         </div>
     </div>
 </div>
