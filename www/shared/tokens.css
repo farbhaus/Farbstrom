@@ -43,6 +43,9 @@ html { touch-action: manipulation; }
 
     /* Semantic blue. Not brandable — used for informational badges only. */
     --info:     #5599dd;
+    /* Semantic warning amber. Not brandable — a rebrand of --accent must not
+       recolour warnings (the OME log panel's W lines). */
+    --warn:     #ffbd2e;
 
     /* Ingest/playback protocol identity colors (badges in admin + viewer).
        Deliberately outside the brand palette so protocols stay distinguishable

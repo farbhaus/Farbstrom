@@ -215,6 +215,22 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 .url-group > .url-row { padding: 10px 14px 0; }
 .url-group > .url-row:last-child { padding-bottom: 10px; }
 
+/* ---- Dashboard: OME log tail (#261) ---- */
+.ome-logs { margin-top: 32px; }
+.ome-logs-bar { padding: var(--sp-2-5) var(--sp-4) 0; margin-bottom: var(--sp-2-5); }
+.ome-logs-body {
+    max-height: 420px; overflow: auto; padding: 0 var(--sp-4) var(--sp-2-5);
+    font-family: var(--ff-mono); font-size: var(--fs-xs);
+}
+.ome-logs-body .empty { font-family: inherit; }
+.log-line { white-space: pre-wrap; word-break: break-word; color: var(--text); }
+.log-ts, .log-tag { color: var(--dim); }
+.log-lvl { font-weight: var(--fw-bold); color: var(--dim); }
+.log-lvl.lvl-W { color: var(--warn); }
+.log-lvl.lvl-E, .log-lvl.lvl-C { color: var(--danger); }
+.log-line.lvl-D { color: var(--dim); }
+.log-cont { padding-left: var(--sp-4); }
+
 /* ---- Stream key cards ---- */
 .key-card-header {
     display: flex; align-items: center; gap: 16px;
@@ -680,6 +696,21 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
         </div>
         <div class="ome-subheader" id="ome-subheader"></div>
         <div id="ome-list"><div class="empty">Loading…</div></div>
+
+        <!-- OvenMediaEngine log tail (issue #261), polled only while open. The
+             filter bar borrows .files-toolbar's control styling. -->
+        <details class="url-group ome-logs" id="ome-logs">
+            <summary>OME Logs</summary>
+            <div class="files-toolbar ome-logs-bar">
+                <select id="ome-logs-level" aria-label="Log level">
+                    <option value="all">All levels</option>
+                    <option value="warn">Warnings and errors</option>
+                    <option value="error">Errors only</option>
+                </select>
+                <button class="btn btn-sm" id="ome-logs-refresh">Refresh</button>
+            </div>
+            <div class="ome-logs-body" id="ome-logs-body"><div class="empty">Loading…</div></div>
+        </details>
     </div>
 
     <!-- Stream Keys tab -->

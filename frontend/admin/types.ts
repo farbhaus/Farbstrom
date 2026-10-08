@@ -140,3 +140,17 @@ export interface AuthMethods {
   totpEnabled: boolean;
   passkeyEnabled: boolean;
 }
+
+/** `GET /api/admin/ome-logs` (gh #261). `ts` is OME's own display string. */
+export interface OmeLogLine {
+  ts: string | null;
+  level: 'D' | 'I' | 'W' | 'E' | 'C' | null;
+  tag: string | null;
+  msg: string;
+}
+
+export interface OmeLogsResponse {
+  /** False when the log file is absent, e.g. a backend run outside the container. */
+  available: boolean;
+  lines: OmeLogLine[];
+}
