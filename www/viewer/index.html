@@ -50,6 +50,10 @@ html, body { overflow: hidden; }
 .join-error { color: var(--danger); font-size: var(--fs-sm); margin-top: 10px; min-height: 16px; }
 
 .waiting-box { display: flex; flex-direction: column; gap: var(--sp-2-5); align-items: flex-start; }
+/* The card's flex gap already separates the header from the label, so the
+   header's own margin is trimmed by it: logo-to-content spacing then matches
+   the join card's exactly (gh #256). */
+.waiting-box .screen-logo, .waiting-box .brand-wordmark { margin-bottom: calc(var(--sp-6) - var(--sp-2-5)); }
 .waiting-label { color: var(--dim); }
 .waiting-name { font-size: var(--fs-lg); font-weight: var(--fw-semi); }
 .waiting-msg { color: var(--dim); font-size: var(--fs-base); }
@@ -1480,6 +1484,8 @@ body.has-focus.strip-hidden #stage-strip {
 <!-- Waiting screen -->
 <div id="waiting-screen" class="screen hidden">
     <div class="panel-box panel-box-md waiting-box">
+        <img src="" alt="" class="screen-logo u-hidden">
+        <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="waiting-label">Waiting Room</div>
         <div class="waiting-name" id="waiting-name"></div>
         <div class="waiting-msg">Waiting for the host to admit you<span class="dot-anim"></span></div>
@@ -1489,6 +1495,8 @@ body.has-focus.strip-hidden #stage-strip {
 <!-- Scheduled-start screen (issue #200) -->
 <div id="scheduled-screen" class="screen hidden">
     <div class="panel-box panel-box-md waiting-box">
+        <img src="" alt="" class="screen-logo u-hidden">
+        <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="waiting-label">Scheduled</div>
         <div class="waiting-name" id="scheduled-name"></div>
         <div class="waiting-msg">This session starts on <span id="scheduled-when"></span></div>
@@ -1499,6 +1507,8 @@ body.has-focus.strip-hidden #stage-strip {
 <!-- Kicked screen -->
 <div id="kicked-screen" class="screen hidden">
     <div class="panel-box panel-box-md waiting-box">
+        <img src="" alt="" class="screen-logo u-hidden">
+        <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="waiting-label" style="color:var(--danger)">Removed</div>
         <div class="waiting-name">You have been removed from this session.</div>
         <div class="waiting-msg">Contact the host if you believe this was a mistake.</div>
@@ -1508,6 +1518,8 @@ body.has-focus.strip-hidden #stage-strip {
 <!-- Session-ended screen -->
 <div id="session-ended-screen" class="screen hidden">
     <div class="panel-box panel-box-md waiting-box">
+        <img src="" alt="" class="screen-logo u-hidden">
+        <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="waiting-label">Ended</div>
         <div class="waiting-name">This session has ended.</div>
         <div class="waiting-msg">Thanks for joining.</div>
@@ -1517,8 +1529,8 @@ body.has-focus.strip-hidden #stage-strip {
 <!-- Left screen -->
 <div id="left-screen" class="screen hidden">
     <div class="panel-box panel-box-md waiting-box">
-        <img src="" alt="Logo" class="screen-logo brand-logo u-hidden">
-        <div class="brand-wordmark-sm brand-fallback u-hidden">Farbstrom</div>
+        <img src="" alt="" class="screen-logo u-hidden">
+        <div class="brand-wordmark brand-fallback u-hidden">Farbstrom</div>
         <div class="waiting-name" id="left-room-name"></div>
         <div class="waiting-msg">You left the session.</div>
         <button class="join-btn u-mt-4" id="left-rejoin-btn">Rejoin</button>
