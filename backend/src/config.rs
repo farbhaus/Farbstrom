@@ -44,6 +44,10 @@ pub struct AppConfig {
     /// change. It is configurable purely so tests can point it at a fixture
     /// tree; without that, the static and SPA routes cannot be exercised at all.
     pub web_root: String,
+    /// OME's on-disk log, tailed by the dashboard's log panel (gh #261).
+    /// Defaults to the file sink in the image's `origin_conf/Logger.xml`;
+    /// configurable so tests can point it at a fixture.
+    pub ome_log_path: String,
 }
 
 /// Extract the host portion of a URL-ish origin (`https://host:port/path` →
@@ -122,6 +126,8 @@ impl AppConfig {
             public_origin,
             admin_password,
             web_root: env::var("WEB_ROOT").unwrap_or_else(|_| "/www".into()),
+            ome_log_path: env::var("OME_LOG_PATH")
+                .unwrap_or_else(|_| "/var/log/ovenmediaengine/ovenmediaengine.log".into()),
         }
     }
 }

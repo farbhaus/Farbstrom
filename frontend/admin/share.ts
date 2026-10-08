@@ -1,5 +1,6 @@
 // Room invite sharing (issue #182). Composes a plain-text invite for a room's
-// guest link and hands it to the admin's own mail client as a mailto: URL.
+// guest link and hands it to the admin's own mail client as a mailto: URL, or
+// copies it for pasting into a messaging app (issue #260).
 //
 // Plain text is not a shortcut: mailto: bodies are text/plain by RFC 6068, so
 // there is no way to carry HTML through one. A styled HTML invite would mean
@@ -85,7 +86,7 @@ export function buildInvite(r: Room, o: InviteOpts): { subject: string; body: st
   if (o.password) lines.push(`Password: ${o.password}`);
   lines.push(
     '',
-    'Please disable True Tone and Night Shift, and dim your surroundings before the session.',
+    'Please dim your surroundings and disable True Tone, Night Shift and automatic brightness.',
     '',
     'Set. Stream. Go!',
   );
@@ -139,8 +140,23 @@ export function openShareModal(r: Room, url: string): void {
   const pwField = el('share-password-field');
   if (pwField) pwField.style.display = 'none';
 
+  // Warm the cache now: clipboard writes must stay close to the click, and a
+  // network round-trip in between can outlast Safari's user-activation window.
+  void resolveBrand();
+
   openModal('share-modal');
   to?.focus();
+}
+
+// Undefined means the admin was told why and nothing should be sent.
+function invitePassword(): string | undefined {
+  const wantsPassword = el<HTMLInputElement>('share-include-password')?.checked === true;
+  const password = wantsPassword ? el<HTMLInputElement>('share-password')?.value.trim() || '' : '';
+  if (wantsPassword && !password) {
+    toast('Type the room password, or untick the box');
+    return undefined;
+  }
+  return password;
 }
 
 async function sendShare(): Promise<void> {
@@ -154,12 +170,8 @@ async function sendShare(): Promise<void> {
     return;
   }
 
-  const wantsPassword = el<HTMLInputElement>('share-include-password')?.checked === true;
-  const password = wantsPassword ? el<HTMLInputElement>('share-password')?.value.trim() || '' : '';
-  if (wantsPassword && !password) {
-    toast('Type the room password, or untick the box');
-    return;
-  }
+  const password = invitePassword();
+  if (password === undefined) return;
 
   const brand = await resolveBrand();
   const { subject, body } = buildInvite(r, { brand, url: shareUrl, password });
@@ -171,9 +183,36 @@ async function sendShare(): Promise<void> {
   window.location.href = buildMailto(to, subject, body);
 }
 
+// A messaging app has no subject field, so the subject leads the message. The
+// "To" field is ignored: whoever the admin pastes it to is the recipient.
+function inviteText(subject: string, body: string): string {
+  return `${subject}\n\n${body.replace(/\r\n/g, '\n')}`;
+}
+
+async function copyInvite(): Promise<void> {
+  const r = shareRoom;
+  if (!r) return;
+
+  const password = invitePassword();
+  if (password === undefined) return;
+
+  const brand = await resolveBrand();
+  const { subject, body } = buildInvite(r, { brand, url: shareUrl, password });
+
+  try {
+    await navigator.clipboard.writeText(inviteText(subject, body));
+  } catch {
+    toast('Could not copy the invite');
+    return;
+  }
+  closeModal('share-modal');
+  toast('Invite copied');
+}
+
 export function initShare(): void {
   wireModalClose('share-modal', ['share-modal-close', 'share-modal-cancel']);
   el('share-modal-send')?.addEventListener('click', () => void sendShare());
+  el('share-modal-copy')?.addEventListener('click', () => void copyInvite());
 
   el('share-include-password')?.addEventListener('change', (e) => {
     const on = (e.target as HTMLInputElement).checked;

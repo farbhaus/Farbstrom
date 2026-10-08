@@ -5,6 +5,7 @@ pub mod branding;
 pub mod files;
 pub mod metrics;
 pub mod ome;
+pub mod ome_logs;
 pub mod pages;
 pub mod rate_limit;
 pub mod rooms;
@@ -32,6 +33,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/api/branding", branding::public_router())
         .nest("/api/admin/branding", branding::admin_router())
         .nest("/api/admin/metrics", metrics::router())
+        .nest("/api/admin/ome-logs", ome_logs::router())
         .nest("/api/admin/files", admin_files::files_router())
         .nest("/api/admin/rooms", admin_files::room_assign_router())
         .nest("/api/admin/settings", admin_settings::router());

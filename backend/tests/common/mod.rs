@@ -23,6 +23,7 @@ pub fn test_config() -> AppConfig {
     let db_path = format!("/tmp/zstream-test-{}.db", id);
     let data_path = format!("/tmp/zstream-test-{}", id);
     let web_root = format!("{}/www", data_path);
+    let ome_log_path = format!("{}/ovenmediaengine.log", data_path);
     AppConfig {
         jwt_secret: "test-secret-that-is-at-least-thirty-two-characters-long".into(),
         ome_webhook_secret: "test-webhook-secret".into(),
@@ -47,6 +48,8 @@ pub fn test_config() -> AppConfig {
         // Per-test fixture tree, so the static mounts and the SPA handlers have
         // something real to serve. `seed_web_root` populates it.
         web_root,
+        // Absent until a test writes it, which is the "no log file" case.
+        ome_log_path,
     }
 }
 
