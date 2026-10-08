@@ -1188,8 +1188,8 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     </div>
 </div>
 
-<!-- Share a room's guest link by email (issue #182). Hands a plain-text invite
-     to the admin's own mail client; see frontend/admin/share.ts. -->
+<!-- Share a room's guest link by email (issue #182) or by copying the invite
+     for a messaging app (issue #260); see frontend/admin/share.ts. -->
 <div class="modal-overlay" id="share-modal" style="display:none">
     <div class="modal" style="width:420px">
         <div class="modal-header">
@@ -1216,6 +1216,7 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
         </div>
         <div class="modal-footer">
             <button class="btn" id="share-modal-cancel">Cancel</button>
+            <button class="btn" id="share-modal-copy">Copy invite</button>
             <button class="btn btn-primary" id="share-modal-send">Open in mail app</button>
         </div>
     </div>
