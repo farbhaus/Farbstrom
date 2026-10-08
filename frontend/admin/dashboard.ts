@@ -11,7 +11,7 @@ import {
   pctClass,
   toast,
 } from '../shared/utils.js';
-import type { MetricsResponse, OmeData } from './types.js';
+import type { MetricsResponse, OmeData, OmeLogLine, OmeLogsResponse } from './types.js';
 
 let metricsData: MetricsResponse | null = null;
 let omeData: OmeData | null = null;
@@ -50,7 +50,10 @@ export function startDashboardTicker(): void {
     if (getActiveTab() !== 'ome') return;
     void loadDashboard();
     // Refresh OME stream list every 3rd tick (~4.5s) — heavier query.
-    if (tick % 3 === 0) void loadOme();
+    if (tick % 3 === 0) {
+      void loadOme();
+      if (omeLogsOpen()) void loadOmeLogs();
+    }
     tick++;
   }, 1500);
 }
@@ -288,8 +291,129 @@ export function renderOmeIfReady(): void {
   if (omeData) renderOme();
 }
 
+// ---- OME log tail (gh #261) ----
+
+const LOGS_PREF_KEY = 'admin_ome_logs';
+type LogsPref = { open: boolean; level: string };
+
+function readLogsPref(): LogsPref {
+  try {
+    const p = JSON.parse(localStorage.getItem(LOGS_PREF_KEY) || '{}') as Partial<LogsPref>;
+    return { open: p.open === true, level: typeof p.level === 'string' ? p.level : 'all' };
+  } catch {
+    return { open: false, level: 'all' };
+  }
+}
+
+function saveLogsPref(): void {
+  const pref: LogsPref = { open: omeLogsOpen(), level: logsLevel() };
+  try {
+    localStorage.setItem(LOGS_PREF_KEY, JSON.stringify(pref));
+  } catch {
+    // Storage blocked — the panel just forgets its state next visit.
+  }
+}
+
+function omeLogsOpen(): boolean {
+  return (document.getElementById('ome-logs') as HTMLDetailsElement | null)?.open === true;
+}
+
+function logsLevel(): string {
+  return (document.getElementById('ome-logs-level') as HTMLSelectElement | null)?.value || 'all';
+}
+
+export async function loadOmeLogs(): Promise<void> {
+  let res: Response | null;
+  try {
+    res = await apiFetch(`/api/admin/ome-logs?level=${encodeURIComponent(logsLevel())}`);
+  } catch {
+    logsMessage('Could not load OME logs');
+    return;
+  }
+  if (!res) return; // 401: apiFetch is already signing out.
+  // A backend without this route answers with the SPA fallback — HTML under a
+  // 200 — so `ok` alone is not enough; the parse has to be allowed to fail.
+  let data: OmeLogsResponse | null = null;
+  if (res.ok) {
+    try {
+      data = (await res.json()) as OmeLogsResponse;
+    } catch {
+      data = null;
+    }
+  }
+  if (!data) {
+    logsMessage('Could not load OME logs');
+    return;
+  }
+  renderOmeLogs(data);
+}
+
+function logsMessage(text: string): void {
+  const empty = document.createElement('div');
+  empty.className = 'empty';
+  empty.textContent = text;
+  document.getElementById('ome-logs-body')?.replaceChildren(empty);
+}
+
+function span(cls: string, text: string): HTMLSpanElement {
+  const s = document.createElement('span');
+  s.className = cls;
+  s.textContent = text;
+  return s;
+}
+
+function logRow(l: OmeLogLine): HTMLDivElement {
+  const row = document.createElement('div');
+  // An unparsed line continues the entry above it (OME's HTTP dumps, mostly).
+  row.className = l.level ? `log-line lvl-${l.level}` : 'log-line log-cont';
+  // textContent throughout: lines carry client-supplied stream names and IPs.
+  if (l.ts) row.append(span('log-ts', l.ts), ' ');
+  if (l.level) row.append(span(`log-lvl lvl-${l.level}`, l.level), ' ');
+  if (l.tag) row.append(span('log-tag', l.tag), ' ');
+  row.append(l.msg);
+  return row;
+}
+
+function renderOmeLogs(data: OmeLogsResponse): void {
+  const body = document.getElementById('ome-logs-body');
+  if (!body) return;
+  // Follow the tail only if the admin hasn't scrolled up to read something.
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 8;
+
+  if (!data.available || data.lines.length === 0) {
+    logsMessage(data.available ? 'No matching log lines' : 'No OME log file');
+    return;
+  }
+  body.replaceChildren(...data.lines.map(logRow));
+  if (atBottom) body.scrollTop = body.scrollHeight;
+}
+
+function initOmeLogs(): void {
+  const details = document.getElementById('ome-logs') as HTMLDetailsElement | null;
+  const level = document.getElementById('ome-logs-level') as HTMLSelectElement | null;
+  if (!details || !level) return;
+
+  const pref = readLogsPref();
+  if ([...level.options].some((o) => o.value === pref.level)) level.value = pref.level;
+  details.open = pref.open;
+
+  details.addEventListener('toggle', () => {
+    saveLogsPref();
+    if (details.open) void loadOmeLogs();
+  });
+  level.addEventListener('change', () => {
+    saveLogsPref();
+    // A new filter is a new view: jump to its newest line.
+    const body = document.getElementById('ome-logs-body');
+    if (body) body.scrollTop = body.scrollHeight;
+    void loadOmeLogs();
+  });
+  document.getElementById('ome-logs-refresh')?.addEventListener('click', () => void loadOmeLogs());
+}
+
 export function initDashboard(): void {
   document.getElementById('ome-refresh-btn')?.addEventListener('click', () => void loadOme());
+  initOmeLogs();
   document
     .getElementById('stream-preview-close')
     ?.addEventListener('click', closeStreamPreview);
