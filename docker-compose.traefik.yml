@@ -68,8 +68,8 @@ services:
       # Caddy only ever writes here when it terminates TLS itself; kept so the
       # named volumes match the base file and a later switch to standalone TLS
       # reuses the same storage. Safe to drop in a pure Traefik setup.
-      - caddy_data:/root/.local/share/caddy
-      - caddy_config:/root/.config/caddy
+      - farbstrom_caddy_data:/root/.local/share/caddy
+      - farbstrom_caddy_config:/root/.config/caddy
       - /proc:/host/proc:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4001/healthz && bash -c '< /dev/tcp/127.0.0.1/80' || exit 1"]
@@ -87,5 +87,5 @@ networks:
     external: true
 
 volumes:
-  caddy_data:
-  caddy_config:
+  farbstrom_caddy_data:
+  farbstrom_caddy_config:
