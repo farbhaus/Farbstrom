@@ -1,0 +1,91 @@
+# Farbstrom behind Traefik — STANDALONE file (use this ONE, not the base file).
+#
+#   docker compose -f docker-compose.traefik.yml up -d
+#
+# This is for the common case where the host already runs Traefik as its TLS
+# edge, on a shared Docker network (`apps-internal` below — set that to whatever
+# your Traefik stack actually uses). Traefik terminates TLS and routes the web
+# traffic; the container's own Caddy runs in plain-HTTP mode (`SITE_ADDRESS=:80`)
+# and keeps doing ALL the path routing (`/live/*` → OME, `/livekit/*` → LiveKit,
+# everything else → backend). That is what lets us use the baked
+# farbhaus/farbstrom image unchanged — no host Caddy, no extra config.
+#
+# Required in .env (secrets come from the usual template; only these two are
+# Traefik-specific):
+#
+#   PUBLIC_HOST=stream.colourbyrogers.co.uk   # the browser-facing host Traefik serves
+#   # SITE_ADDRESS is forced to :80 by this file and must NOT be a hostname here.
+#
+# A standalone `.env` from `deploy.sh --behind-proxy <host>` already has
+# PUBLIC_HOST set — reuse it as-is.
+#
+# WHY some ports are still published: Traefik only proxies HTTP(S). SRT, RTMP,
+# WebRTC (incl. OME's TURN relay) and LiveKit's RTC media are their own TCP/UDP
+# ports and must be reachable on the host directly. Only 80/443 are owned by
+# Traefik and are therefore NOT published here.
+services:
+  farbstrom:
+    image: farbhaus/farbstrom:${FARBSTROM_TAG:-latest}
+    container_name: farbstrom
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Caddy in the container serves PLAIN HTTP on :80 — Traefik does TLS and
+      # owns 80/443 on the host. `:80` is a listen address, not a host, so
+      # PUBLIC_HOST carries the real browser-facing host; entrypoint.sh derives
+      # PUBLIC_ORIGIN (WebAuthn RP) and LIVEKIT_URL from it. Fails fast if
+      # PUBLIC_HOST is unset, rather than routing to an invalid origin.
+      - SITE_ADDRESS=:80
+      - PUBLIC_HOST=${PUBLIC_HOST:?set PUBLIC_HOST in .env, e.g. stream.colourbyrogers.co.uk}
+      # Internal/container-local — never reach the browser. Same as the base file.
+      - PORT=4001
+      - DB_PATH=/data/stream.db
+      - DATA_PATH=/data
+      - OME_API_URL=http://localhost:8081/v1
+      - LIVEKIT_INTERNAL_URL=http://localhost:7880
+      - PROC_PATH=/host/proc
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=apps-internal"
+      - "traefik.http.routers.cbr-stream.rule=Host(`stream.colourbyrogers.co.uk`)"
+      - "traefik.http.routers.cbr-stream.entrypoints=websecure"
+      - "traefik.http.routers.cbr-stream.tls.certresolver=myresolver"
+      # Container port 80 — this container's Caddy (plain HTTP). NOT 4001: the
+      # backend alone has no /live or /livekit routing; Caddy fronting it does.
+      - "traefik.http.services.cbr-stream.loadbalancer.server.port=80"
+    # Traefik cannot proxy these — they must be host-reachable. Keep in step with
+    # the base docker-compose.yml (minus 80/443, which Traefik owns).
+    ports:
+      - "1935:1935"                       # RTMP ingest
+      - "9999:9999/udp"                   # SRT ingest
+      - "9998:9998/udp"                   # SRT playback (Farbplay)
+      - "3478:3478"                       # OME TURN relay (WebRTC playback)
+      - "10000-10009:10000-10009/udp"     # OME WebRTC ICE (WHIP ingest)
+      - "7881:7881"                       # LiveKit RTC over TCP
+      - "50000-50100:50000-50100/udp"     # LiveKit RTC media
+    volumes:
+      - ./data:/data
+      # Caddy only ever writes here when it terminates TLS itself; kept so the
+      # named volumes match the base file and a later switch to standalone TLS
+      # reuses the same storage. Safe to drop in a pure Traefik setup.
+      - caddy_data:/root/.local/share/caddy
+      - caddy_config:/root/.config/caddy
+      - /proc:/host/proc:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4001/healthz && bash -c '< /dev/tcp/127.0.0.1/80' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - apps-internal
+
+networks:
+  # Traefik's network. `external: true` — it belongs to your Traefik stack and
+  # this file must not create or own it. Rename to match your setup.
+  apps-internal:
+    external: true
+
+volumes:
+  caddy_data:
+  caddy_config:

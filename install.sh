@@ -24,8 +24,10 @@ REF="${FARBSTROM_REF:-main}"
 DIR="${FARBSTROM_DIR:-/opt/farbstrom}"
 RAW="https://raw.githubusercontent.com/${REPO}/${REF}"
 
-# Only the files a deploy host needs — base compose, env template, deploy script.
-FILES=(docker-compose.yml .env.example deploy.sh)
+# Only the files a deploy host needs — base compose, Traefik compose, env
+# template, deploy script. docker-compose.traefik.yml is fetched for hosts that
+# front the stack with their own Traefik (see docs/DEPLOYMENT.md).
+FILES=(docker-compose.yml docker-compose.traefik.yml .env.example deploy.sh)
 
 SUDO=""
 [[ ${EUID:-$(id -u)} -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"

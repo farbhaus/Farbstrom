@@ -163,6 +163,58 @@ WEB_BIND=127.0.0.1                      # bind the web ports to loopback — Doc
 
 `PUBLIC_HOST` is required here: with `SITE_ADDRESS=:80` the container has no usable hostname, so the backend can't derive a valid `PUBLIC_ORIGIN` and panics without it. Then `docker compose -f docker-compose.yml up -d` and point your proxy at `127.0.0.1:8880`.
 
+### Behind Traefik
+
+Traefik is the same "external TLS proxy" case, provided with a ready-made compose
+file: [`docker-compose.traefik.yml`](../docker-compose.traefik.yml). Use that file
+**instead of** the base one — it runs the baked image with its Caddy in plain-HTTP
+mode and attaches the container to a shared Docker network.
+
+```bash
+docker compose -f docker-compose.traefik.yml up -d
+```
+
+Two things must be set (`.env`, or shell env):
+
+| Var | Value |
+|---|---|
+| `PUBLIC_HOST` | the browser-facing host Traefik serves, e.g. `stream.yourdomain.com` |
+| `SITE_ADDRESS` | **don't set it** — the compose file forces `:80` (plain HTTP) |
+
+Secrets are the usual required set — `deploy.sh --init-env --behind-proxy stream.yourdomain.com`
+writes a suitable `.env` (it sets `PUBLIC_HOST` for you), or `deploy.sh --behind-proxy`
+will also bring the base stack up if you'd rather not use the Traefik file.
+
+**The service port is `80`, not `4001`.** Traefik routes to the container's own
+Caddy, which owns the path routing (`/live/*` → OME, `/livekit/*` → LiveKit,
+everything else → backend); the backend alone has no `/live` or `/livekit`. So:
+
+```yaml
+labels:
+  - "traefik.enable=true"
+  - "traefik.docker.network=apps-internal"
+  - "traefik.http.routers.cbr-stream.rule=Host(`stream.colourbyrogers.co.uk`)"
+  - "traefik.http.routers.cbr-stream.entrypoints=websecure"
+  - "traefik.http.routers.cbr-stream.tls.certresolver=myresolver"
+  - "traefik.http.services.cbr-stream.loadbalancer.server.port=80"
+```
+
+Edit `apps-internal` and the router/service name (`cbr-stream`) in the compose file
+and the labels to match your Traefik stack. The network is declared `external: true`,
+so it must already exist (created by Traefik).
+
+The container's Caddy is served HTTPS-origin values regardless — `entrypoint.sh`
+derives `PUBLIC_ORIGIN=https://<PUBLIC_HOST>` and `LIVEKIT_URL=wss://<PUBLIC_HOST>/livekit`
+from `PUBLIC_HOST`, so WebAuthn/passkeys and the LiveKit WebSocket match the
+Traefik-served origin.
+
+**Traefik only proxies HTTP(S).** The ports it cannot carry stay published on the host
+by the compose file: SRT `9999/9998 udp`, RTMP `1935`, OME's TURN relay `3478` (WebRTC
+playback is relay-forced — see [Ingest protocols](#ingest-protocols)), OME ICE
+`10000-10009 udp`, and LiveKit RTC `7881` + `50000-50100 udp`. Only `80`/`443` are
+left to Traefik and are **not** published by the file. Open the rest on the host
+firewall (or VPS cloud firewall) exactly as for a standalone deploy.
+
 Firewall ports (the script opens these via ufw/firewalld when active): tcp `80 443 1935 3478 7881`, udp `443 9999 9998 10000-10009 50000-50100`. The 50000-50100/udp LiveKit range is deliberately narrow — wider ranges create thousands of iptables rules and make `docker compose up/down` take minutes.
 
 ## Ingest protocols
