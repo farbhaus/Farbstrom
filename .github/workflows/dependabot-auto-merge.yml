@@ -10,7 +10,11 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    # Only into dev, which requires CI to pass. main requires nothing, so
+    # `gh pr merge --auto` there merges on the spot, failing checks and all —
+    # that is how #269 reached main with a red audit when Dependabot
+    # retargeted it mid-rebase.
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.base.ref == 'dev'
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
