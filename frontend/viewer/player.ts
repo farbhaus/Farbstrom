@@ -11,6 +11,7 @@
 
 import { getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
+import { applySavedSpeaker } from './devices.js';
 import { countPlayerError, logDiag } from './diagnostics.js';
 import type { DisplayFileState, WsClientMessage } from './types.js';
 
@@ -410,6 +411,7 @@ function mountLivePlayer(streamKey: string, isLlhls: boolean): void {
     if (!player || mode !== 'live') return;
     if (e?.newstate === 'playing') {
       onPlayingChange();
+      routeStageAudio();
     } else if (e?.newstate === 'error') {
       // Retry silently. Offline overlay is driven by setRoomStatus /
       // room:pending — don't race it from here. A codec this browser can't
@@ -644,7 +646,17 @@ function bindCommonEvents(): void {
   if (!player) return;
   player.on('mute', () => syncPlayerControls());
   player.on('volumeChanged', () => syncPlayerControls());
-  player.on('stateChanged', () => syncPlayerControls());
+  player.on('stateChanged', (e) => {
+    syncPlayerControls();
+    if (e?.newstate === 'playing') routeStageAudio();
+  });
+}
+
+// OvenPlayer builds a fresh <video> on every mount, so the participant's chosen
+// speaker is re-applied each time playback starts (a no-op when it already is).
+function routeStageAudio(): void {
+  const video = document.querySelector<HTMLVideoElement>('#player video');
+  if (video) applySavedSpeaker(video);
 }
 
 function enablePlayerControls(on: boolean): void {

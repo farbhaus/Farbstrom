@@ -13,7 +13,7 @@
      drifted before. Bump it deliberately, and re-check that CSS when you do. -->
 <script src="https://cdn.jsdelivr.net/npm/ovenplayer@0.10.53/dist/ovenplayer.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7/dist/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.21/dist/livekit-client.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.23/dist/livekit-client.umd.min.js"></script>
 <link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/shared/components.css">
 <link rel="stylesheet" href="/shared/utils.css">
@@ -121,6 +121,15 @@ html, body { overflow: hidden; }
     text-transform: none; letter-spacing: normal; font-weight: var(--fw-normal);
 }
 .device-picker-check input { width: 16px; height: 16px; cursor: pointer; }
+.device-picker-inline { display: flex; gap: var(--sp-2); }
+.device-picker-inline select { flex: 1; min-width: 0; }
+/* Input level of the mic actually being published. Driven per frame from JS
+   (devices.ts), so the shared bar's width ease is switched off — it would lag
+   the voice by a third of a second. */
+.device-meter { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+.device-meter .progress { flex: 1; }
+.device-meter .progress-fill { width: 0; transition: none; }
+.device-meter-hint { font-size: var(--fs-xs); color: var(--dim); white-space: nowrap; }
 .device-privacy-note { margin-top: 16px; font-size: var(--fs-xs); line-height: var(--lh-body); color: var(--dim); text-align: left; }
 .device-privacy-note a { color: var(--accent); }
 
@@ -1570,10 +1579,17 @@ body.has-focus.strip-hidden #stage-strip {
         <div class="device-picker-row">
             <label>Microphone</label>
             <select id="device-mic"></select>
+            <div class="device-meter" aria-hidden="true">
+                <div class="progress progress-sm"><div class="progress-fill ok" id="device-mic-level"></div></div>
+                <span class="device-meter-hint" id="device-mic-hint"></span>
+            </div>
         </div>
-        <div class="device-picker-row">
+        <div class="device-picker-row" id="device-speaker-row">
             <label>Speaker</label>
-            <select id="device-speaker"></select>
+            <div class="device-picker-inline">
+                <select id="device-speaker"></select>
+                <button class="btn btn-sm" id="device-speaker-test" type="button">Test</button>
+            </div>
         </div>
         <div class="device-picker-row">
             <label class="device-picker-check">

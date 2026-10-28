@@ -13,6 +13,21 @@ import {
   setQuality,
   type Quality,
 } from './diagnostics.js';
+import {
+  applySpeaker,
+  canSelectSpeaker,
+  deviceNoun,
+  forgetRemoteAudio,
+  listDevices,
+  playTestTone,
+  rememberDevice,
+  restoreSavedInput,
+  savedDevice,
+  startMicMeter,
+  stopMicMeter,
+  trackRemoteAudio,
+  type InputKind,
+} from './devices.js';
 import { morphStage, sizeStage } from './layout.js';
 import { disablePointerMode } from './pointer.js';
 import { getParticipantId, getToken, PREF_KEY, slug } from './session.js';
@@ -261,6 +276,7 @@ export async function initLiveKit(): Promise<void> {
   if (livekitRoom) {
     await livekitRoom.disconnect();
     livekitRoom = null;
+    forgetRemoteAudio();
   }
 
   const res = await fetch(
@@ -270,11 +286,23 @@ export async function initLiveKit(): Promise<void> {
   if (!res.ok) throw new Error('Could not get LiveKit token');
   const { token: lkToken, url: lkUrl } = (await res.json()) as LivekitTokenResponse;
 
+  // Saved devices are requested as a bare (ideal) deviceId so an unplugged one
+  // falls back to the system default rather than failing the capture;
+  // restoreSavedInput (on LocalTrackPublished) re-finds a renamed id by label.
+  const savedMic = savedDevice('audioinput');
+  const savedCam = savedDevice('videoinput');
+  const savedSpeaker = savedDevice('audiooutput');
+
   // Screen-share defaults tuned for detail-heavy colour-grading review (GH #171).
   // UHD30 @ 16 Mbps VP9, maintain-resolution under congestion (drop framerate,
   // not sharpness), single non-simulcast layer so the SFU can't forward a low one.
   const room = new LivekitClient.Room({
-    audioCaptureDefaults: audioCaptureOpts(),
+    audioCaptureDefaults: { ...audioCaptureOpts(), ...(savedMic ? { deviceId: savedMic.id } : {}) },
+    ...(savedCam ? { videoCaptureDefaults: { deviceId: savedCam.id } } : {}),
+    // Only where LiveKit routes output itself; on Safari devices.ts does it.
+    ...(savedSpeaker && LivekitClient.supportsAudioOutputSelection()
+      ? { audioOutput: { deviceId: savedSpeaker.id } }
+      : {}),
     publishDefaults: {
       videoCodec: 'vp9',
       screenShareEncoding: { maxBitrate: 16_000_000, maxFramerate: 30 },
@@ -306,8 +334,13 @@ export async function initLiveKit(): Promise<void> {
       if (activeScreenShareId === p.identity) hideScreenShare();
       return;
     }
-    t.detach();
+    forgetRemoteAudio(t.detach());
     syncConferenceTiles();
+  });
+  room.on(LivekitClient.RoomEvent.LocalTrackPublished, (pub) => {
+    const p = pub as LkPublication;
+    if (p.source === LivekitClient.Track.Source.Microphone) void restoreSavedInput(room, 'audioinput');
+    else if (p.source === LivekitClient.Track.Source.Camera) void restoreSavedInput(room, 'videoinput');
   });
   room.on(LivekitClient.RoomEvent.LocalTrackUnpublished, (pub) => {
     const p = pub as LkPublication;
@@ -323,6 +356,23 @@ export async function initLiveKit(): Promise<void> {
   room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged, (speakers) => {
     markSpeaking(((speakers as LkSpeaker[] | undefined) ?? []).map((s) => s.identity));
   });
+
+  // ---- Device health ----
+  // The browser refused to autoplay remote audio (Safari does when the call was
+  // joined without a click — a saved cam/mic pref connects on page load). LiveKit
+  // only reports it; unblocking needs room.startAudio() inside a user gesture.
+  room.on(LivekitClient.RoomEvent.AudioPlaybackStatusChanged, () => {
+    if (!room.canPlaybackAudio) armAudioUnlock();
+  });
+  // A freshly captured mic that delivers nothing but digital zeros — the wrong
+  // input, or one muted in hardware. LiveKit checks once per capture.
+  room.on(LivekitClient.RoomEvent.LocalAudioSilenceDetected, () => {
+    logDiag('conference', 'warn', 'Your microphone is sending silence');
+    toast("Your microphone isn't picking up any sound — check it in Device Settings.", 6000);
+  });
+  // LiveKit switches device on its own when the OS default changes or the
+  // active one is unplugged; keep an open picker truthful.
+  room.on(LivekitClient.RoomEvent.ActiveDeviceChanged, () => void refreshDevicePicker());
 
   // ---- Connection diagnostics (gh #40) ----
   // LiveKit publishes every participant's quality to every participant, so this
@@ -393,6 +443,7 @@ export async function disconnectLiveKit(): Promise<void> {
       await livekitRoom.disconnect();
     } catch {}
     livekitRoom = null;
+    forgetRemoteAudio();
   }
   // Deliberate teardown, not a fault — go back to 'idle' rather than the
   // 'disconnected' the Disconnected handler sets, so the stats panel doesn't
@@ -605,9 +656,10 @@ export function syncConferenceTiles(): void {
 }
 
 function attachTrack(track: LkTrack, participant: LkRemoteParticipant): void {
-  // Audio (mic or screen share audio) — auto-attach to a new <audio> element.
+  // Audio (mic or screen share audio) — auto-attach to a new <audio> element,
+  // registered so a speaker choice can reach it where LiveKit won't route it.
   if (track.kind === LivekitClient.Track.Kind.Audio) {
-    track.attach();
+    trackRemoteAudio(track.attach());
     return;
   }
   // Screen share — route to center overlay.
@@ -918,66 +970,173 @@ export function showConfPrompt(): Promise<void> {
 
 // ---- Device picker ----
 
-function populateDeviceSelect(selectId: string, devices: MediaDeviceInfo[]): void {
-  const sel = document.getElementById(selectId) as HTMLSelectElement;
-  sel.innerHTML = '';
-  if (!devices.length) {
-    sel.innerHTML = '<option>No devices found</option>';
-    return;
-  }
-  devices.forEach((d, i) => {
-    const opt = document.createElement('option');
-    opt.value = d.deviceId;
-    opt.textContent = d.label || `Device ${i + 1}`;
-    sel.appendChild(opt);
-  });
+const pickerOpen = (): boolean =>
+  !document.getElementById('device-picker-overlay')?.classList.contains('hidden');
+
+function localMediaTrack(source: string): MediaStreamTrack | null {
+  return livekitRoom?.localParticipant.getTrackPublication(source)?.track?.mediaStreamTrack ?? null;
 }
 
-async function openDevicePicker(): Promise<void> {
-  const overlay = document.getElementById('device-picker-overlay') as HTMLElement;
-  overlay.classList.remove('hidden');
-  try {
-    // Request permission first to get labeled devices.
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-    stream.getTracks().forEach((t) => t.stop());
-  } catch (err) {
-    console.warn('[device picker] pre-prompt failed', err);
-    toast(deviceErrorMessage(err, 'cam'));
+// The device a dropdown should show: whatever the live track is actually
+// capturing from. A muted track may be holding a switch until it unmutes
+// (LiveKit defers it), so for those — and before any capture — the saved
+// choice is the truth.
+function selectedInput(kind: InputKind): string | undefined {
+  const source =
+    kind === 'audioinput' ? LivekitClient.Track.Source.Microphone : LivekitClient.Track.Source.Camera;
+  const pub = livekitRoom?.localParticipant.getTrackPublication(source);
+  const live = pub && !pub.isMuted ? pub.track?.mediaStreamTrack.getSettings().deviceId : undefined;
+  return live ?? savedDevice(kind)?.id;
+}
+
+function populateDeviceSelect(
+  selectId: string,
+  devices: MediaDeviceInfo[],
+  selectedId: string | undefined,
+  defaultLabel?: string,
+): void {
+  const sel = document.getElementById(selectId) as HTMLSelectElement;
+  sel.innerHTML = '';
+  // Without permission the browser lists placeholders with an empty id; they
+  // can't be selected, so they only tell us something exists.
+  const real = devices.filter((d) => d.deviceId !== '');
+  const entries = real.map((d, i): [string, string] => [d.deviceId, d.label || `Device ${i + 1}`]);
+  // Safari lists no "default" output, so the speaker list gets one; an empty
+  // sink id routes to the system output.
+  if (defaultLabel && !real.some((d) => d.deviceId === 'default')) entries.unshift(['', defaultLabel]);
+  if (!entries.length) {
+    const opt = document.createElement('option');
+    opt.textContent = devices.length ? 'Allow access to list devices' : 'No devices found';
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
   }
-  const devices = await navigator.mediaDevices.enumerateDevices();
+  sel.disabled = false;
+  for (const [id, label] of entries) {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+  if (selectedId !== undefined && entries.some(([id]) => id === selectedId)) sel.value = selectedId;
+}
+
+// `askPermission` only on an explicit open: a devicechange refresh must never
+// raise a browser prompt (Safari re-prompts on every request until allowed).
+async function refreshDevicePicker(askPermission = false): Promise<void> {
+  if (!pickerOpen()) return;
+  const mic = localMediaTrack(LivekitClient.Track.Source.Microphone);
+  const cam = localMediaTrack(LivekitClient.Track.Source.Camera);
+  const { devices, errors } = await listDevices({
+    audio: !askPermission || mic?.readyState === 'live',
+    video: !askPermission || cam?.readyState === 'live',
+  });
+  for (const { kind, err } of errors) {
+    console.warn('[device picker] permission request failed', err);
+    toast(deviceErrorMessage(err, kind === 'audio' ? 'mic' : 'cam'));
+  }
   populateDeviceSelect(
     'device-camera',
     devices.filter((d) => d.kind === 'videoinput'),
+    selectedInput('videoinput'),
   );
   populateDeviceSelect(
     'device-mic',
     devices.filter((d) => d.kind === 'audioinput'),
+    selectedInput('audioinput'),
   );
   populateDeviceSelect(
     'device-speaker',
     devices.filter((d) => d.kind === 'audiooutput'),
+    savedDevice('audiooutput')?.id ?? livekitRoom?.getActiveDevice('audiooutput') ?? '',
+    'System default',
   );
+}
 
-  if (livekitRoom) {
-    const camTrack = livekitRoom.localParticipant.getTrackPublication(
-      LivekitClient.Track.Source.Camera,
-    )?.track;
-    const micTrack = livekitRoom.localParticipant.getTrackPublication(
-      LivekitClient.Track.Source.Microphone,
-    )?.track;
-    if (camTrack?.mediaStreamTrack) {
-      (document.getElementById('device-camera') as HTMLSelectElement).value =
-        camTrack.mediaStreamTrack.getSettings().deviceId || '';
-    }
-    if (micTrack?.mediaStreamTrack) {
-      (document.getElementById('device-mic') as HTMLSelectElement).value =
-        micTrack.mediaStreamTrack.getSettings().deviceId || '';
-    }
-  }
-
+function openDevicePicker(): void {
+  document.getElementById('device-picker-overlay')?.classList.remove('hidden');
   (document.getElementById('device-noise') as HTMLInputElement).checked = noiseReductionOn();
   (document.getElementById('device-echo') as HTMLInputElement).checked = echoCancelOn();
   (document.getElementById('device-ptt') as HTMLInputElement).checked = pttOn();
+  // No setSinkId at all → there is nothing to choose; say nothing rather than
+  // offer a dropdown that can't work.
+  const speakerRow = document.getElementById('device-speaker-row');
+  if (speakerRow) speakerRow.style.display = canSelectSpeaker() ? '' : 'none';
+  // Started synchronously, inside the click, so Safari lets its AudioContext run.
+  startMicMeter(
+    () => localMediaTrack(LivekitClient.Track.Source.Microphone),
+    document.getElementById('device-mic-level') as HTMLElement,
+    document.getElementById('device-mic-hint') as HTMLElement,
+  );
+  void refreshDevicePicker(true);
+}
+
+function closeDevicePicker(): void {
+  document.getElementById('device-picker-overlay')?.classList.add('hidden');
+  stopMicMeter();
+}
+
+async function switchInput(kind: InputKind, sel: HTMLSelectElement): Promise<void> {
+  const id = sel.value;
+  const label = sel.selectedOptions[0]?.textContent ?? '';
+  if (!id) return;
+  // Not in the call yet: the choice is applied at the next capture.
+  if (!livekitRoom) {
+    rememberDevice(kind, id, label);
+    return;
+  }
+  const previous = selectedInput(kind);
+  try {
+    if (await livekitRoom.switchActiveDevice(kind, id)) {
+      rememberDevice(kind, id, label);
+    } else {
+      toast(`Couldn't switch to ${label} — the browser kept a different ${deviceNoun(kind)}.`, 5000);
+    }
+  } catch (err) {
+    console.error(`[device switch ${kind}]`, err);
+    toast(deviceErrorMessage(err, kind === 'audioinput' ? 'mic' : 'cam'));
+    // LiveKit stops the old track before capturing the new one, so a failed
+    // switch leaves nothing capturing at all. Go back to what worked.
+    if (previous && previous !== id) {
+      await livekitRoom.switchActiveDevice(kind, previous).catch(() => {});
+    }
+  }
+  updateSelfTile();
+  void refreshDevicePicker();
+}
+
+async function switchSpeaker(sel: HTMLSelectElement): Promise<void> {
+  const id = sel.value;
+  const label = sel.selectedOptions[0]?.textContent ?? '';
+  if (await applySpeaker(livekitRoom, id)) {
+    rememberDevice('audiooutput', id, label);
+  } else {
+    toast(`Couldn't switch the speaker to ${label} in this browser.`, 5000);
+  }
+}
+
+// ---- Blocked audio playback ----
+// Any click or key unblocks it: room.startAudio() has to run inside a user
+// gesture, and making the participant find one specific button would leave
+// them deaf until they did.
+let audioUnlockArmed = false;
+
+function armAudioUnlock(): void {
+  if (audioUnlockArmed) return;
+  audioUnlockArmed = true;
+  logDiag('conference', 'warn', 'Browser blocked conference audio — waiting for a click');
+  toast('Your browser blocked the room audio — click anywhere to hear the others.', 6000);
+  const unlock = (): void => {
+    document.removeEventListener('pointerdown', unlock, true);
+    document.removeEventListener('keydown', unlock, true);
+    audioUnlockArmed = false;
+    livekitRoom?.startAudio().catch((err: unknown) => {
+      console.warn('[startAudio]', err);
+      armAudioUnlock();
+    });
+  };
+  document.addEventListener('pointerdown', unlock, true);
+  document.addEventListener('keydown', unlock, true);
 }
 
 // ---- Presenter moderation ----
@@ -1111,57 +1270,46 @@ export function initConference(): void {
   document.getElementById('prompt-mic')?.addEventListener('click', () => void applyConfPref('mic'));
   document.getElementById('prompt-skip')?.addEventListener('click', () => void applyConfPref('none'));
 
-  document.getElementById('device-btn')?.addEventListener('click', () => void openDevicePicker());
-  document.getElementById('device-picker-close')?.addEventListener('click', () => {
-    document.getElementById('device-picker-overlay')?.classList.add('hidden');
-  });
+  document.getElementById('device-btn')?.addEventListener('click', openDevicePicker);
+  document.getElementById('device-picker-close')?.addEventListener('click', closeDevicePicker);
   document.getElementById('device-picker-overlay')?.addEventListener('click', (e) => {
-    const overlay = document.getElementById('device-picker-overlay');
-    if (e.target === overlay) overlay?.classList.add('hidden');
+    if (e.target === e.currentTarget) closeDevicePicker();
   });
-  document.getElementById('device-camera')?.addEventListener('change', async (e) => {
-    if (!livekitRoom) return;
-    try {
-      await livekitRoom.switchActiveDevice('videoinput', (e.target as HTMLSelectElement).value);
-      updateSelfTile();
-    } catch (err) {
-      console.error('[device switch cam]', err);
-    }
+  document.getElementById('device-camera')?.addEventListener('change', (e) => {
+    void switchInput('videoinput', e.target as HTMLSelectElement);
   });
-  document.getElementById('device-mic')?.addEventListener('change', async (e) => {
-    if (!livekitRoom) return;
-    try {
-      await livekitRoom.switchActiveDevice('audioinput', (e.target as HTMLSelectElement).value);
-      updateSelfTile();
-    } catch (err) {
-      console.error('[device switch mic]', err);
-    }
+  document.getElementById('device-mic')?.addEventListener('change', (e) => {
+    void switchInput('audioinput', e.target as HTMLSelectElement);
   });
-  document.getElementById('device-speaker')?.addEventListener('change', async (e) => {
-    if (!livekitRoom) return;
-    try {
-      await livekitRoom.switchActiveDevice('audiooutput', (e.target as HTMLSelectElement).value);
-    } catch (err) {
-      console.error('[device switch speaker]', err);
-    }
+  document.getElementById('device-speaker')?.addEventListener('change', (e) => {
+    void switchSpeaker(e.target as HTMLSelectElement);
   });
+  document.getElementById('device-speaker-test')?.addEventListener('click', () => {
+    const sel = document.getElementById('device-speaker') as HTMLSelectElement;
+    playTestTone(sel.value).catch((err: unknown) => {
+      console.error('[speaker test]', err);
+      toast("Couldn't play a test sound on that speaker.");
+    });
+  });
+  // Plugging or unplugging a device while the picker is open.
+  navigator.mediaDevices?.addEventListener('devicechange', () => void refreshDevicePicker());
 
-  // Audio-processing toggles. Persist the pref, then — if a mic track is live —
-  // cycle it so the new capture constraints take effect immediately.
+  // Audio-processing toggles. Constraints only change by re-capturing:
+  // setMicrophoneEnabled(true, opts) on an existing track just unmutes it and
+  // ignores opts, which is why these used to need a page refresh. A restart
+  // keeps the current device and the muted state. With no mic track yet there
+  // is nothing to do — the next capture reads audioCaptureOpts().
   const onAudioPrefChange = (key: string) => async (e: Event): Promise<void> => {
     localStorage.setItem(key, (e.target as HTMLInputElement).checked ? '1' : '0');
-    if (!livekitRoom || !viewerStore.get().micOn) return;
-    // Guard the brief mute during re-capture so syncLocalMuteState doesn't
-    // mistake it for a presenter force-mute and raise the breathing alert.
-    selfMuteInFlight = true;
+    const track = livekitRoom?.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone)
+      ?.track as LkLocalAudioTrack | null | undefined;
+    if (!track) return;
+    const deviceId = track.mediaStreamTrack.getSettings().deviceId;
     try {
-      await livekitRoom.localParticipant.setMicrophoneEnabled(false);
-      await livekitRoom.localParticipant.setMicrophoneEnabled(true, audioCaptureOpts());
+      await track.restartTrack({ ...audioCaptureOpts(), ...(deviceId ? { deviceId } : {}) });
     } catch (err) {
       console.error('[audio pref]', err);
       toast(deviceErrorMessage(err, 'mic'));
-    } finally {
-      selfMuteInFlight = false;
     }
   };
   document.getElementById('device-noise')?.addEventListener('change', (e) => void onAudioPrefChange(noiseKey())(e));
