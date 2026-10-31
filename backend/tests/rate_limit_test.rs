@@ -24,8 +24,8 @@ mod common;
 use common::*;
 use serde_json::json;
 
-/// `login_layer` is 5/minute with a burst of 2, and `passkey_layer` is a
-/// separate bucket with its own allowance.
+/// `login_layer` is 5/minute with a burst of 2, `passkey_layer` is a separate
+/// bucket with its own allowance, and the four public room buckets each hold 30.
 #[tokio::test(flavor = "multi_thread")]
 async fn login_is_limited_per_ip_and_passkeys_have_their_own_budget() {
     let state = test_state();
@@ -71,4 +71,47 @@ async fn login_is_limited_per_ip_and_passkeys_have_their_own_budget() {
         400,
         "the passkey bucket was drained by login traffic"
     );
+
+    // (4) The routes a whole room hits at once — the room socket, the waiting
+    //     room's event stream, the room's public info, uploads — each have a
+    //     bucket of 30 + 1/s that nothing had before. None needs a real room:
+    //     the limiter answers before the handler, so the handler's own refusal
+    //     (no upgrade headers, unknown participant, unknown room) is what a
+    //     request inside the allowance gets, and 429 is what the rest get.
+    //     Each bucket is its own, so the first flood must not touch the next.
+    let routes: [(&str, &str); 4] = [
+        ("GET", "/ws/room/rate-room"),
+        (
+            "GET",
+            "/api/public/rooms/rate-room/waiting/events/nobody?token=x",
+        ),
+        ("GET", "/api/public/rooms/rate-room/info"),
+        (
+            "POST",
+            "/api/public/rooms/rate-room/files?participantId=nobody&token=x",
+        ),
+    ];
+    for (method, path) in routes {
+        let mut statuses = Vec::new();
+        for _ in 0..45 {
+            let res = match method {
+                "POST" => server.post(path).await,
+                _ => server.get(path).await,
+            };
+            statuses.push(res.status_code().as_u16());
+        }
+        assert_ne!(
+            statuses[0], 429,
+            "{method} {path} was throttled on its first request — a shared bucket?"
+        );
+        assert!(
+            statuses.contains(&429),
+            "45 rapid {method} {path} from one IP were never limited: {statuses:?}"
+        );
+        let allowed = statuses.iter().filter(|&&s| s != 429).count();
+        assert!(
+            (30..=35).contains(&allowed),
+            "{method} {path}: {allowed} of 45 got through, expected the burst of 30"
+        );
+    }
 }

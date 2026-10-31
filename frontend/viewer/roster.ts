@@ -130,6 +130,7 @@ export function renderRoster(): void {
         <div class="roster-row" data-id="${esc(p.id)}">
           <span class="roster-name">${esc(p.name)}</span>
           <button class="btn-mini primary" data-action="roster-admit" data-id="${esc(p.id)}">Admit</button>
+          <button class="btn-mini danger" data-action="roster-kick" data-id="${esc(p.id)}">Deny</button>
         </div>`,
             )
             .join('');

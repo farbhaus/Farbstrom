@@ -21,20 +21,23 @@ services:
       - "9998:9998/udp"
       - "3478:3478"
       - "10000-10009:10000-10009/udp"
-      - "7880:7880"
+      # LiveKit's ICE/TCP fallback. Its HTTP port (7880) is deliberately NOT
+      # published: browsers reach signalling through Caddy at /livekit/rtc, and
+      # the RoomService API on that port is for the backend, inside the
+      # container. Published, it was open to the internet — Docker bypasses ufw.
       - "7881:7881"
       - "50000-50100:50000-50100/udp"
     volumes:
       - ./data:/data
       # Caddy's auto-HTTPS material (internal CA + Let's Encrypt certs). Persist
       # it so recreates don't re-issue certs (Let's Encrypt rate limits) or
-      # regenerate the local CA. (www/dist is baked into the image; the local
-      # override re-adds ./www for live editing.)
+      # regenerate the local CA. (www/dist is baked into the image; the dev
+      # overlay, docker-compose.dev.yml, re-adds ./www for live editing.)
       - caddy_data:/root/.local/share/caddy
       - caddy_config:/root/.config/caddy
       # Host /proc for the admin dashboard's resource metrics (PROC_PATH).
       - /proc:/host/proc:ro
-    # .env supplies secrets plus SITE_ADDRESS / DOMAIN (default: localhost).
+    # .env supplies secrets plus SITE_ADDRESS (default: localhost).
     # Browser-facing URLs (PUBLIC_ORIGIN, LIVEKIT_URL) are intentionally NOT set
     # here — entrypoint.sh derives them from SITE_ADDRESS so they always match
     # the Caddy-served origin. To deploy on a domain, set SITE_ADDRESS=your.domain

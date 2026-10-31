@@ -136,7 +136,7 @@ export function openShareModal(r: Room, url: string): void {
   // Inline display (not .u-hidden) matches #clear-password-row, and sidesteps
   // .form-row.checkbox outranking a single utility class.
   const pwRow = el('share-password-row');
-  if (pwRow) pwRow.style.display = r.password_hash ? '' : 'none';
+  if (pwRow) pwRow.style.display = r.has_password ? '' : 'none';
   const pwField = el('share-password-field');
   if (pwField) pwField.style.display = 'none';
 

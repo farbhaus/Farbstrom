@@ -3,7 +3,7 @@
 use axum_test::TestServer;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
 use sha1::Sha1;
 use std::sync::Arc;
@@ -90,7 +90,7 @@ pub fn test_app(state: Arc<AppState>) -> TestServer {
     // restart OME (gh #208), which doesn't exist in CI. The DB write still runs.
     std::env::set_var("STREAM_DISABLE_OME_RESTART", "1");
     let router = routes::build_router(state);
-    TestServer::new(router).unwrap()
+    TestServer::new(router)
 }
 
 /// An admin JWT stamped with this state's current token generation. Minting it
@@ -104,21 +104,98 @@ pub fn admin_token(state: &Arc<AppState>) -> String {
             .load(std::sync::atomic::Ordering::SeqCst),
         auth::ADMIN_TOKEN_TTL_SECS,
     )
-    .unwrap()
 }
 
+/// One room as the admin sees it, read from the room list (`GET /api/rooms`) —
+/// the only way the admin UI reads rooms. Panics if the room is not there.
+pub async fn admin_room(server: &TestServer, admin_token: &str, room_id: &str) -> Value {
+    let rooms: Vec<Value> = server
+        .get("/api/rooms")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {admin_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .await
+        .json();
+    rooms
+        .into_iter()
+        .find(|r| r["id"] == room_id)
+        .unwrap_or_else(|| panic!("room {room_id} is not in the admin room list"))
+}
+
+/// Returns `(id, key_token)`. The key also gets its own `playback_id` — the
+/// name OME publishes it under — deliberately different from the key_token, so
+/// a test can't pass by matching the wrong one. Read it with [`playback_id`].
 pub fn seed_stream_key(state: &Arc<AppState>, name: &str) -> (String, String) {
     let conn = state.db.get().unwrap();
     let id = uuid::Uuid::new_v4().to_string();
-    let key_token: String = (0..24)
-        .map(|_| format!("{:02x}", rand::random::<u8>()))
-        .collect();
+    let hex = || -> String {
+        (0..24)
+            .map(|_| format!("{:02x}", rand::random::<u8>()))
+            .collect()
+    };
+    let key_token = hex();
     conn.execute(
-        "INSERT INTO stream_keys (id, name, key_token) VALUES (?1, ?2, ?3)",
-        rusqlite::params![id, name, key_token],
+        "INSERT INTO stream_keys (id, name, key_token, playback_id) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, name, key_token, hex()],
     )
     .unwrap();
     (id, key_token)
+}
+
+/// The name OME publishes a seeded key's stream under.
+pub fn playback_id(state: &Arc<AppState>, key_id: &str) -> String {
+    state
+        .db
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT playback_id FROM stream_keys WHERE id = ?1",
+            rusqlite::params![key_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// A stand-in OME whose "currently broadcasting" list can be changed after the
+/// server is up — so a test can build its AppState first, seed a stream key,
+/// and only then declare its stream live. Entries are OME stream names, i.e.
+/// playback ids.
+pub type Broadcasting = Arc<std::sync::Mutex<Vec<String>>>;
+
+pub async fn fake_ome() -> (String, Broadcasting) {
+    let active: Broadcasting = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let handler_state = active.clone();
+    let app = axum::Router::new().route(
+        "/vhosts/default/apps/live/streams",
+        axum::routing::get(move || {
+            let active = handler_state.clone();
+            async move {
+                let names = active.lock().unwrap().clone();
+                axum::Json(serde_json::json!({
+                    "statusCode": 200,
+                    "message": "OK",
+                    "response": names,
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{}", addr), active)
+}
+
+/// AppState wired to a fake OME. Returns the handle for declaring streams live.
+pub async fn state_with_fake_ome() -> (Arc<AppState>, Broadcasting) {
+    let (url, active) = fake_ome().await;
+    let mut config = test_config();
+    config.ome_api_url = url;
+    (test_state_with_config(config), active)
 }
 
 pub fn seed_room(state: &Arc<AppState>, name: &str, slug: &str) -> String {
@@ -296,13 +373,10 @@ pub fn test_app_http_rate_limited(state: Arc<AppState>) -> TestServer {
 fn build_http_server(state: Arc<AppState>) -> TestServer {
     // `into_make_service_with_connect_info` is what populates `ConnectInfo`, and
     // axum-test refuses to mock it — hence the real transport.
-    TestServer::builder()
-        .http_transport()
-        .build(
-            stream_backend::app::build_app(state)
-                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .unwrap()
+    TestServer::builder().http_transport().build(
+        stream_backend::app::build_app(state)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -447,4 +521,136 @@ pub async fn assert_rejected(ws: &mut axum_test::TestWebSocket, expected_type: &
         "expected a {expected_type:?} frame, saw {types:?}"
     );
     assert_eq!(close, Some(1008), "expected close 1008, got {close:?}");
+}
+
+// ---------------------------------------------------------------------------
+// A WebSocket client that only does what it is told
+// ---------------------------------------------------------------------------
+
+/// What [`RawWs::next`] read off the wire.
+#[derive(Debug, PartialEq)]
+pub enum RawFrame {
+    Text(String),
+    Close(u16),
+}
+
+/// A minimal WebSocket client that never answers a Close frame.
+///
+/// axum-test's client (tungstenite) replies to a server Close on its own, which
+/// makes it a cooperative client by construction. The hub has to hold up against
+/// one that isn't — a kicked participant whose modified client simply keeps
+/// sending — so these tests speak the protocol by hand.
+pub struct RawWs {
+    stream: tokio::net::TcpStream,
+    buf: Vec<u8>,
+}
+
+impl RawWs {
+    pub async fn connect(server: &TestServer, slug: &str) -> RawWs {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let addr = server.server_address().expect("needs test_app_http");
+        let host = format!("{}:{}", addr.host_str().unwrap(), addr.port().unwrap());
+        let mut stream = tokio::net::TcpStream::connect(&host).await.unwrap();
+        let request = format!(
+            "GET /ws/room/{slug} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        let end = loop {
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+            let mut chunk = [0u8; 1024];
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "server closed during the handshake");
+            buf.extend_from_slice(&chunk[..n]);
+        };
+        assert!(
+            buf.starts_with(b"HTTP/1.1 101"),
+            "handshake refused: {}",
+            String::from_utf8_lossy(&buf[..end])
+        );
+        RawWs {
+            stream,
+            buf: buf[end..].to_vec(),
+        }
+    }
+
+    /// Connect and authenticate, returning once `auth:ok` has arrived.
+    pub async fn auth(server: &TestServer, slug: &str, participant_id: &str, token: &str) -> RawWs {
+        let mut ws = RawWs::connect(server, slug).await;
+        ws.send_json(&serde_json::json!({
+            "type": "auth", "participantId": participant_id, "token": token,
+        }))
+        .await;
+        match ws.next().await {
+            Some(RawFrame::Text(t)) if t.contains("auth:ok") => ws,
+            other => panic!("expected auth:ok, got {other:?}"),
+        }
+    }
+
+    /// Send a (masked) text frame. False once the server has hung up.
+    pub async fn send_json(&mut self, value: &Value) -> bool {
+        use tokio::io::AsyncWriteExt;
+        let payload = value.to_string().into_bytes();
+        let mask = [0x12u8, 0x34, 0x56, 0x78];
+        let mut frame = vec![0x81u8];
+        match payload.len() {
+            n if n < 126 => frame.push(0x80 | n as u8),
+            n if n < 65_536 => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(n as u16).to_be_bytes());
+            }
+            n => {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(&(n as u64).to_be_bytes());
+            }
+        }
+        frame.extend_from_slice(&mask);
+        frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        self.stream.write_all(&frame).await.is_ok()
+    }
+
+    /// The next frame, or `None` if nothing arrives within the frame timeout or
+    /// the connection is gone. A Close is reported, never answered.
+    pub async fn next(&mut self) -> Option<RawFrame> {
+        use tokio::io::AsyncReadExt;
+        loop {
+            if self.buf.len() >= 2 {
+                let opcode = self.buf[0] & 0x0f;
+                let (len, head) = match self.buf[1] & 0x7f {
+                    126 if self.buf.len() >= 4 => {
+                        (u16::from_be_bytes([self.buf[2], self.buf[3]]) as usize, 4)
+                    }
+                    127 if self.buf.len() >= 10 => (
+                        u64::from_be_bytes(self.buf[2..10].try_into().unwrap()) as usize,
+                        10,
+                    ),
+                    n @ 0..=125 => (n as usize, 2),
+                    _ => (usize::MAX, 0),
+                };
+                if len != usize::MAX && self.buf.len() >= head + len {
+                    let payload: Vec<u8> = self.buf.drain(..head + len).skip(head).collect();
+                    match opcode {
+                        1 => return Some(RawFrame::Text(String::from_utf8(payload).unwrap())),
+                        8 => {
+                            let code = payload
+                                .get(..2)
+                                .map(|b| u16::from_be_bytes([b[0], b[1]]))
+                                .unwrap_or(1005);
+                            return Some(RawFrame::Close(code));
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            let mut chunk = [0u8; 4096];
+            match tokio::time::timeout(FRAME_TIMEOUT, self.stream.read(&mut chunk)).await {
+                Ok(Ok(n)) if n > 0 => self.buf.extend_from_slice(&chunk[..n]),
+                _ => return None,
+            }
+        }
+    }
 }

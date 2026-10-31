@@ -238,6 +238,14 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
     margin-bottom: var(--sp-7);
 }
 .modal-title { font-size: var(--fs-base); }
+/* Body text of the shared confirm / notice / prompt dialogs (components.ts).
+   These were inline styles in the generated markup, out of the design lint's
+   sight — including a 14px that is not on the type scale. */
+.modal-message, .prompt-msg {
+    margin: var(--sp-1) 0 var(--sp-4);
+    font-size: var(--fs-base); line-height: var(--lh-body); color: var(--text);
+}
+.modal-message { white-space: pre-line; }
 .modal-footer {
     display: flex; justify-content: flex-end; gap: var(--sp-2);
     margin-top: var(--sp-6);

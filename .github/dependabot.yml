@@ -3,6 +3,10 @@ version: 2
 # file from the default branch (`main`), so a change here only takes effect
 # once it has been merged to `main`.
 updates:
+  # Majors are proposed too. They used to be ignored outright, which for 0.x
+  # crates — every 0.y bump counts as major — meant rusqlite, reqwest,
+  # tower-http, the RustCrypto set and more simply never arrived. Auto-merge
+  # still takes only patch and minor; a major waits for review.
   - package-ecosystem: "cargo"
     directory: "/backend"
     target-branch: "dev"
@@ -11,9 +15,18 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+
+  # TypeScript and the three player libraries vendored into www/dist/vendor.
+  # The players' bumps open PRs but are never auto-merged (see
+  # dependabot-auto-merge.yml): OvenPlayer's class names are load-bearing for
+  # the viewer's CSS, and each one changes what every viewer runs.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
 
   - package-ecosystem: "github-actions"
     directory: "/"

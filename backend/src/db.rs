@@ -258,7 +258,11 @@ fn migrate_blobs_to_flat_layout(conn: &rusqlite::Connection, data_path: &str) {
             Ok(bytes) => {
                 let mut hasher = Sha256::new();
                 hasher.update(&bytes);
-                format!("{:x}", hasher.finalize())
+                hasher
+                    .finalize()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
             }
             Err(e) => {
                 tracing::warn!("[migration] read failed for {}: {}", new_path, e);
@@ -293,6 +297,57 @@ fn migrate_blobs_to_flat_layout(conn: &rusqlite::Connection, data_path: &str) {
         [],
     );
     tracing::info!("[migration] blob layout flattened to {}", target_dir);
+}
+
+/// One-shot: bring display names stored before the join validated them into
+/// line with what it accepts now — controls, bidi overrides and zero-width
+/// characters stripped, trimmed, capped. Such a name rendered as a blank row in
+/// the admin's waiting list, or reordered the line around it; one with nothing
+/// visible left becomes "Guest". Chat history carries the sender's name as it
+/// was, so it is cleaned too. Gated by a settings sentinel: once per database.
+fn migrate_display_names(conn: &rusqlite::Connection) {
+    use crate::routes::rooms_public::clean_display_name;
+    const SENTINEL: &str = "display_names_cleaned";
+
+    let done: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [SENTINEL],
+            |row| row.get(0),
+        )
+        .ok();
+    if done.as_deref() == Some("1") {
+        return;
+    }
+
+    let mut changed = 0usize;
+    for table in ["participants", "chat_messages"] {
+        let rows: Vec<(String, String)> = conn
+            .prepare(&format!("SELECT id, name FROM {table}"))
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (id, name) in rows {
+            let clean = clean_display_name(&name).unwrap_or_else(|| "Guest".to_string());
+            if clean != name {
+                let _ = conn.execute(
+                    &format!("UPDATE {table} SET name = ?1 WHERE id = ?2"),
+                    rusqlite::params![clean, id],
+                );
+                changed += 1;
+            }
+        }
+    }
+
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, '1')",
+        [SENTINEL],
+    );
+    if changed > 0 {
+        tracing::info!(changed, "[migration] display names cleaned");
+    }
 }
 
 pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
@@ -346,6 +401,8 @@ pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
         .expect("PRAGMA table_info(rooms) query_map failed")
         .any(|name| name.as_deref() == Ok("stream_key_id"));
 
+    // Only a database from before `rooms.stream_key_id` lacks it, and those
+    // still have the old `stream_keys.room_id` link this backfills from.
     if !has_stream_key_id {
         conn.execute_batch(
             "ALTER TABLE rooms ADD COLUMN stream_key_id TEXT REFERENCES stream_keys(id) ON DELETE SET NULL;
@@ -439,6 +496,44 @@ pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
             .expect("Failed migration: add stream_keys.blocked");
     }
 
+    // Playback id: the name OME publishes a key's stream under, so viewers never
+    // see the ingest key. The backfill runs on every start rather than only
+    // after the ALTER, so no row can ever be left without one — the webhook
+    // cannot rename a stream whose key has none.
+    let has_playback_id: bool = conn
+        .prepare("PRAGMA table_info(stream_keys)")
+        .expect("PRAGMA table_info(stream_keys) failed (playback_id check)")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("PRAGMA table_info(stream_keys) query_map failed (playback_id check)")
+        .any(|name| name.as_deref() == Ok("playback_id"));
+    if !has_playback_id {
+        conn.execute_batch("ALTER TABLE stream_keys ADD COLUMN playback_id TEXT")
+            .expect("Failed migration: add stream_keys.playback_id");
+    }
+    conn.execute_batch(
+        "UPDATE stream_keys SET playback_id = lower(hex(randomblob(24))) WHERE playback_id IS NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_stream_keys_playback ON stream_keys(playback_id);",
+    )
+    .expect("Failed migration: backfill stream_keys.playback_id");
+
+    // Host-link presenters, told apart from the admin's own Enter Room session
+    // so rotating the link revokes only the former. Presenters that already
+    // exist are marked as host-link sessions: rotation then still revokes them,
+    // which is what it did before the column existed.
+    let has_via_host_link: bool = conn
+        .prepare("PRAGMA table_info(participants)")
+        .expect("PRAGMA table_info(participants) failed (via_host_link check)")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("PRAGMA table_info(participants) query_map failed (via_host_link check)")
+        .any(|name| name.as_deref() == Ok("via_host_link"));
+    if !has_via_host_link {
+        conn.execute_batch(
+            "ALTER TABLE participants ADD COLUMN via_host_link INTEGER NOT NULL DEFAULT 0;
+             UPDATE participants SET via_host_link = 1 WHERE role = 'presenter';",
+        )
+        .expect("Failed migration: add participants.via_host_link");
+    }
+
     migrate_session_files_library(&conn);
     repair_room_files_fk(&conn);
     migrate_session_files_room_id_setnull(&conn);
@@ -469,6 +564,7 @@ pub fn init_pool(db_path: &str, data_path: &str) -> DbPool {
     .expect("Failed to create session_files/room_files indexes");
 
     migrate_blobs_to_flat_layout(&conn, data_path);
+    migrate_display_names(&conn);
 
     pool
 }

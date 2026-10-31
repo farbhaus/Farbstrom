@@ -202,7 +202,10 @@ function renderRooms(): void {
                   (p) => `
               <div class="participant-row">
                 <span>${esc(p.name)}</span>
-                <button class="btn btn-sm" data-action="admit-one" data-room="${esc(r.id)}" data-pid="${esc(p.id)}">Admit</button>
+                <span class="participant-actions">
+                  <button class="btn btn-sm" data-action="admit-one" data-room="${esc(r.id)}" data-pid="${esc(p.id)}">Admit</button>
+                  <button class="btn btn-sm btn-danger" data-action="deny-one" data-room="${esc(r.id)}" data-pid="${esc(p.id)}">Deny</button>
+                </span>
               </div>`,
                 )
                 .join('')}
@@ -286,7 +289,7 @@ function openRoomModal(id: string | null): void {
     );
     if (skSelect) skSelect.value = r.stream_key_id || '';
     const clearRow = document.getElementById('clear-password-row');
-    if (clearRow) clearRow.style.display = r.password_hash ? '' : 'none';
+    if (clearRow) clearRow.style.display = r.has_password ? '' : 'none';
   } else {
     (document.getElementById('room-name') as HTMLInputElement).value = '';
     (document.getElementById('room-password') as HTMLInputElement).value = '';
@@ -399,7 +402,7 @@ async function doEnterRoom(): Promise<void> {
       participantId: data.participantId,
       token: data.token,
       deliveryMode: data.deliveryMode,
-      streamKey: data.streamKey,
+      playbackId: data.playbackId,
       role: 'presenter',
     }),
   );
@@ -471,6 +474,12 @@ export async function rotateHostKey(id: string): Promise<void> {
   }
 }
 
+async function denyOne(roomId: string, participantId: string): Promise<void> {
+  const res = await apiFetch(`/api/rooms/${roomId}/kick/${participantId}`, { method: 'POST' });
+  toast(res && res.ok ? 'Denied' : 'Deny failed');
+  loadRooms();
+}
+
 export async function unkickOne(roomId: string, participantId: string): Promise<void> {
   await apiFetch(`/api/rooms/${roomId}/unkick/${participantId}`, { method: 'POST' });
   toast('Participant unblocked');
@@ -536,6 +545,12 @@ export function handleRoomAction(action: string, target: HTMLElement): void {
       const room = target.getAttribute('data-room') || '';
       const pid = target.getAttribute('data-pid') || '';
       void unkickOne(room, pid);
+      break;
+    }
+    case 'deny-one': {
+      const room = target.getAttribute('data-room') || '';
+      const pid = target.getAttribute('data-pid') || '';
+      void denyOne(room, pid);
       break;
     }
     case 'toggle-participants': {

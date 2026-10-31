@@ -11,7 +11,7 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::json;
 use sha1::Sha1;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,7 +21,8 @@ use crate::error::AppError;
 type HmacSha1 = Hmac<Sha1>;
 
 /// `{vhost}/{app}` prefix every playback streamid carries. The stream name is
-/// the ingest stream key (`OutputStreamName=${OriginStreamName}` in Server.xml).
+/// the key's playback id, which OME publishes under — the admission webhook
+/// renames every ingest to it (`routes::webhook`).
 ///
 /// Nothing is appended after the stream name. OME's SRT streamid may be
 /// `{vhost}/{app}/{stream}` or `{vhost}/{app}/{stream}/{playlist}`, and this

@@ -11,8 +11,11 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use rusqlite::OptionalExtension;
@@ -37,9 +40,20 @@ pub struct WsParticipant {
     pub client: Option<String>,
     pub tx: mpsc::Sender<Message>,
     pub disconnect_timer: Option<tokio::task::JoinHandle<()>>,
+    /// The socket currently speaking for this participant. A participant has
+    /// one live socket at a time: a newer one supersedes the old, and anything
+    /// keyed to a connection (its disconnect timer) checks it is still current.
+    pub conn_id: u64,
+    /// Ends this connection's read loop from the server side. A kick, a host
+    /// revocation or the room ending queue a close frame and then cancel this,
+    /// so a client that ignores the close can't go on chatting, pointing or —
+    /// for a revoked presenter — steering everyone's view.
+    pub closer: CancellationToken,
 }
 
 static WS_ROOMS: LazyLock<WsRooms> = LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Snapshot of participant IDs with a live WebSocket connection in `slug`.
 /// Since Farbplay gained pointer collaboration it holds a WS too (gh #227), so
@@ -131,15 +145,28 @@ fn normalize_client(raw: Option<String>) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/ws/room/{slug}", get(ws_handler))
+    let handler = if crate::routes::rate_limit::enabled() {
+        get(ws_handler).layer(crate::routes::rate_limit::ws_layer())
+    } else {
+        get(ws_handler)
+    };
+    Router::new().route("/ws/room/{slug}", handler)
 }
+
+/// Largest frame a client may send. The biggest legitimate one is a chat
+/// message — 500 characters at the input's `maxlength`, so a few KiB even fully
+/// escaped. tungstenite's default is 64 MiB, which let one socket make the
+/// server buffer and parse that much per frame.
+const WS_MAX_MESSAGE: usize = 16 * 1024;
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(slug): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, slug, state))
+    ws.max_message_size(WS_MAX_MESSAGE)
+        .max_frame_size(WS_MAX_MESSAGE)
+        .on_upgrade(move |socket| handle_socket(socket, slug, state))
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +185,83 @@ async fn ws_handler(
 /// messages are state snapshots (roster, focus, display, pointer position), so
 /// the next broadcast supersedes whatever was dropped, and a client that is
 /// 256 messages behind has already lost the connection in every way that
-/// matters — the pinger closes it after 15 s of silence.
+/// matters. Nothing pings from this side: a dead peer is noticed when the TCP
+/// connection errors, or when the client reconnects and supersedes it.
 const WS_SEND_QUEUE: usize = 256;
+
+/// A token bucket: holds at most `burst`, refills at `per_sec`.
+struct Bucket {
+    tokens: f64,
+    burst: f64,
+    per_sec: f64,
+    last: std::time::Instant,
+}
+
+impl Bucket {
+    fn new(burst: u32, per_sec: u32) -> Self {
+        Self {
+            tokens: f64::from(burst),
+            burst: f64::from(burst),
+            per_sec: f64::from(per_sec),
+            last: std::time::Instant::now(),
+        }
+    }
+
+    fn take(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let refill = now.duration_since(self.last).as_secs_f64() * self.per_sec;
+        self.tokens = (self.tokens + refill).min(self.burst);
+        self.last = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// What one connection may send, per kind of message; anything over is dropped
+/// unread. A modified client used to be able to persist 2000 chat messages and
+/// fan ~2900 pointer frames out to the whole room in about four seconds.
+///
+/// The ceilings sit well above what the clients themselves send: the browser
+/// and Farbplay both throttle `pointer:move` to one per 33 ms (~30/s), ping
+/// every 5 s, and everything else is a person pressing something.
+/// `pointer:hide` has a bucket of its own because Farbplay never throttles it —
+/// a dropped hide strands that cursor on every other screen — and no stream of
+/// moves can be allowed to use up its allowance.
+struct Limits {
+    /// `chat:message` and `file:share` — the two that write to chat history.
+    chat: Bucket,
+    pointer: Bucket,
+    pointer_hide: Bucket,
+    /// `ping` and the presenter's `focus:set` / `display:*` controls.
+    control: Bucket,
+}
+
+impl Limits {
+    fn new() -> Self {
+        Self {
+            chat: Bucket::new(10, 2),
+            pointer: Bucket::new(60, 40),
+            pointer_hide: Bucket::new(20, 10),
+            control: Bucket::new(20, 10),
+        }
+    }
+
+    /// Whether one more message of `msg_type` may be handled now. Unknown types
+    /// are ignored by the handler anyway, so they cost nothing to let through.
+    fn allow(&mut self, msg_type: &str) -> bool {
+        match msg_type {
+            "chat:message" | "file:share" => self.chat.take(),
+            "pointer:move" => self.pointer.take(),
+            "pointer:hide" => self.pointer_hide.take(),
+            "ping" | "focus:set" | "display:set" | "display:transport" => self.control.take(),
+            _ => true,
+        }
+    }
+}
 
 /// Refuse a connection: queue an optional explanatory frame, then a close, and
 /// **wait for the forwarding task to actually put them on the wire**.
@@ -309,6 +411,8 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     }
 
     // Auth success - register participant
+    let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+    let closer = CancellationToken::new();
     {
         let mut rooms = WS_ROOMS.write().await;
         let room = rooms.entry(slug.clone()).or_default();
@@ -321,8 +425,22 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
             if let Some(timer) = existing.disconnect_timer.take() {
                 timer.abort();
             }
+            // Supersede the previous socket rather than leaving it running.
+            // After a dropped link the client reconnects long before the old
+            // TCP connection errors out (nothing pings it from this side), and
+            // when that stale socket finally ended, its disconnect timer used
+            // to remove the participant this new socket had just taken over —
+            // connected, but receiving nothing. A live old socket (a duplicated
+            // tab) gets a close it treats as a stale session.
+            let _ = existing.tx.try_send(Message::Close(Some(CloseFrame {
+                code: 1008,
+                reason: "Superseded".into(),
+            })));
+            existing.closer.cancel();
             existing.tx = tx.clone();
             existing.client = client.clone();
+            existing.conn_id = conn_id;
+            existing.closer = closer.clone();
         } else {
             room.insert(
                 pid.clone(),
@@ -333,6 +451,8 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
                     client: client.clone(),
                     tx: tx.clone(),
                     disconnect_timer: None,
+                    conn_id,
+                    closer: closer.clone(),
                 },
             );
         }
@@ -386,29 +506,49 @@ async fn handle_socket(socket: WebSocket, slug: String, state: Arc<AppState>) {
     let pid_clone = pid.clone();
     let name_clone = name.clone();
     let role_clone = role.clone();
+    let mut limits = Limits::new();
 
-    while let Some(Ok(msg)) = stream.next().await {
-        match msg {
-            Message::Text(text) => {
-                handle_text_message(
-                    &state,
-                    &slug_clone,
-                    &pid_clone,
-                    &name_clone,
-                    &role_clone,
-                    &tx,
-                    &text,
-                )
-                .await;
+    loop {
+        tokio::select! {
+            // Cancellation first, not in select!'s random order: `role_clone`
+            // is the role at auth time, so a frame already waiting when a
+            // presenter is revoked must not be handled as the presenter's.
+            biased;
+            _ = closer.cancelled() => {
+                // Kicked, revoked, superseded or the room ended: whoever
+                // cancelled has already queued the explanatory frame and the
+                // close, and taken this connection out of the room (or replaced
+                // it). Stop reading, let the queue drain the way
+                // `reject_socket` does, and skip the disconnect timer — there is
+                // nothing of ours left to remove.
+                info!("WS closed by server: participant={} slug={}", pid, slug);
+                drop(tx);
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send_task).await;
+                return;
             }
-            Message::Close(_) => break,
-            _ => {}
+            msg = stream.next() => match msg {
+                Some(Ok(Message::Text(text))) => {
+                    handle_text_message(
+                        &state,
+                        &slug_clone,
+                        &pid_clone,
+                        &name_clone,
+                        &role_clone,
+                        &tx,
+                        &mut limits,
+                        &text,
+                    )
+                    .await;
+                }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(_)) => {}
+            },
         }
     }
 
     // Disconnect: start grace period
     info!("WS disconnected: participant={} slug={}", pid, slug);
-    start_disconnect_timer(&WS_ROOMS, slug, pid).await;
+    start_disconnect_timer(&WS_ROOMS, slug, pid, conn_id).await;
 
     send_task.abort();
 }
@@ -435,6 +575,7 @@ async fn wait_for_auth(stream: &mut futures::stream::SplitStream<WebSocket>) -> 
 // Message handling
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_text_message(
     state: &Arc<AppState>,
     slug: &str,
@@ -442,6 +583,7 @@ async fn handle_text_message(
     name: &str,
     role: &str,
     tx: &mpsc::Sender<Message>,
+    limits: &mut Limits,
     text: &str,
 ) {
     let msg: Value = match serde_json::from_str(text) {
@@ -453,6 +595,10 @@ async fn handle_text_message(
         Some(t) => t,
         None => return,
     };
+
+    if !limits.allow(msg_type) {
+        return;
+    }
 
     match msg_type {
         // Application-level round-trip probe for the viewer's connection stats
@@ -876,7 +1022,18 @@ fn build_chat_history(
 // Disconnect timer
 // ---------------------------------------------------------------------------
 
-async fn start_disconnect_timer(rooms: &WsRooms, slug: String, participant_id: String) {
+/// Remove `participant_id` after a short grace period, unless it reconnects.
+///
+/// Keyed to `conn_id`: only the connection currently registered for the
+/// participant may start the timer, and the timer only removes the entry if
+/// that is still the connection behind it. Without the check, a socket that
+/// ended just as its replacement registered could remove the replacement.
+async fn start_disconnect_timer(
+    rooms: &WsRooms,
+    slug: String,
+    participant_id: String,
+    conn_id: u64,
+) {
     let rooms = rooms.clone();
     let slug_clone = slug.clone();
     let pid_clone = participant_id.clone();
@@ -888,6 +1045,9 @@ async fn start_disconnect_timer(rooms: &WsRooms, slug: String, participant_id: S
         let mut room_empty = false;
 
         if let Some(room) = rooms_guard.get_mut(&slug_clone) {
+            if room.get(&pid_clone).map(|p| p.conn_id) != Some(conn_id) {
+                return;
+            }
             room.remove(&pid_clone);
             room_empty = room.is_empty();
         }
@@ -912,12 +1072,15 @@ async fn start_disconnect_timer(rooms: &WsRooms, slug: String, participant_id: S
         }
     });
 
-    // Store the timer handle on the participant (if still in the map)
+    // Store the timer handle on the participant (if still in the map, and still
+    // this connection — a replacement must not inherit a timer meant for us).
     let mut rooms_guard = WS_ROOMS.write().await;
-    if let Some(room) = rooms_guard.get_mut(&slug) {
-        if let Some(p) = room.get_mut(&participant_id) {
-            p.disconnect_timer = Some(timer);
-        }
+    match rooms_guard
+        .get_mut(&slug)
+        .and_then(|room| room.get_mut(&participant_id))
+    {
+        Some(p) if p.conn_id == conn_id => p.disconnect_timer = Some(timer),
+        _ => timer.abort(),
     }
 }
 
@@ -1026,6 +1189,8 @@ async fn send_to_participant_and_close(
             if let Some(timer) = participant.disconnect_timer {
                 timer.abort();
             }
+            // Don't rely on the client honouring the close.
+            participant.closer.cancel();
         }
 
         if room.is_empty() {
@@ -1039,331 +1204,374 @@ async fn send_to_participant_and_close(
 // Event listeners
 // ---------------------------------------------------------------------------
 
+/// Run `handle` for every event on `rx` for as long as the channel lives.
+///
+/// A receiver that falls more than the channel's capacity (64) behind gets
+/// `RecvError::Lagged` once and then carries on from the oldest event still
+/// buffered. Every listener here used to be `while let Ok(..) = rx.recv()`,
+/// which treats that as the end: the listener stopped for good and nothing
+/// noticed. One waiting-room joiner opening 150 admission streams was enough to
+/// stop every presenter seeing new arrivals until the next restart.
+fn spawn_listener<T, F, Fut>(mut rx: broadcast::Receiver<T>, name: &'static str, mut handle: F)
+where
+    T: Clone + Send + 'static,
+    F: FnMut(T) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send,
+{
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => handle(event).await,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(listener = name, skipped, "event listener lagged");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
 pub fn spawn_event_listeners(state: Arc<AppState>) {
-    // room:live
-    {
-        let mut rx = state.events.room_live.subscribe();
-        tokio::spawn(async move {
-            while let Ok(slug) = rx.recv().await {
-                let msg = json!({"type": "room:live"}).to_string();
-                broadcast_to_room(&WS_ROOMS, &slug, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.room_live.subscribe(),
+        "room:live",
+        |slug: String| async move {
+            let msg = json!({"type": "room:live"}).to_string();
+            broadcast_to_room(&WS_ROOMS, &slug, &msg).await;
+        },
+    );
 
-    // room:pending
-    {
-        let mut rx = state.events.room_pending.subscribe();
-        tokio::spawn(async move {
-            while let Ok(slug) = rx.recv().await {
-                let msg = json!({"type": "room:pending"}).to_string();
-                broadcast_to_room(&WS_ROOMS, &slug, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.room_pending.subscribe(),
+        "room:pending",
+        |slug: String| async move {
+            let msg = json!({"type": "room:pending"}).to_string();
+            broadcast_to_room(&WS_ROOMS, &slug, &msg).await;
+        },
+    );
 
-    // room:ended
     {
         let state = state.clone();
-        let mut rx = state.events.room_ended.subscribe();
-        tokio::spawn(async move {
-            while let Ok(slug) = rx.recv().await {
-                let msg = json!({"type": "room:ended"}).to_string();
+        spawn_listener(
+            state.events.room_ended.subscribe(),
+            "room:ended",
+            move |slug: String| {
+                let state = state.clone();
+                async move {
+                    let msg = json!({"type": "room:ended"}).to_string();
 
-                // Clear transient per-room state.
-                WS_ROOM_FOCUS.write().await.remove(&slug);
-                WS_ROOM_DISPLAY.write().await.remove(&slug);
+                    // Clear transient per-room state.
+                    WS_ROOM_FOCUS.write().await.remove(&slug);
+                    WS_ROOM_DISPLAY.write().await.remove(&slug);
 
-                // Send ended message + Close frame to every participant, then remove room
-                {
-                    let mut rooms = WS_ROOMS.write().await;
-                    if let Some(room) = rooms.remove(&slug) {
-                        for (_pid, participant) in room {
-                            let _ = participant.tx.try_send(Message::Text(msg.clone().into()));
-                            let _ = participant.tx.try_send(Message::Close(Some(CloseFrame {
-                                code: 1001,
-                                reason: "Room ended".into(),
-                            })));
-                            if let Some(timer) = participant.disconnect_timer {
-                                timer.abort();
+                    // Send ended message + Close frame to every participant, then remove room
+                    {
+                        let mut rooms = WS_ROOMS.write().await;
+                        if let Some(room) = rooms.remove(&slug) {
+                            for (_pid, participant) in room {
+                                let _ = participant.tx.try_send(Message::Text(msg.clone().into()));
+                                let _ = participant.tx.try_send(Message::Close(Some(CloseFrame {
+                                    code: 1001,
+                                    reason: "Room ended".into(),
+                                })));
+                                if let Some(timer) = participant.disconnect_timer {
+                                    timer.abort();
+                                }
+                                participant.closer.cancel();
                             }
                         }
                     }
-                }
 
-                // Delete LiveKit room (best-effort, may already be done by caller)
-                let livekit =
-                    crate::livekit::LiveKitClient::new(&state.config, state.http_client.clone());
-                let _ = livekit.delete_room(&slug).await;
+                    // Delete LiveKit room (best-effort, may already be done by caller)
+                    let livekit = crate::livekit::LiveKitClient::new(
+                        &state.config,
+                        state.http_client.clone(),
+                    );
+                    if let Err(e) = livekit.delete_room(&slug).await {
+                        tracing::warn!(room_slug = %slug, error = %e, "LiveKit delete_room failed");
+                    }
 
-                // Delete chat messages for this room
-                if let Ok(conn) = state.db.get() {
-                    let _ = conn.execute(
+                    // Delete chat messages for this room
+                    if let Ok(conn) = state.db.get() {
+                        let _ = conn.execute(
                         "DELETE FROM chat_messages WHERE room_id = (SELECT id FROM rooms WHERE slug = ?1)",
                         rusqlite::params![slug],
                     );
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
-    // stream:assigned
-    {
-        let mut rx = state.events.stream_key_assigned.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let msg = json!({
-                    "type": "stream:assigned",
-                    "streamKey": event.stream_key,
-                })
-                .to_string();
-                broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.stream_key_assigned.subscribe(),
+        "stream:assigned",
+        |event: crate::events::StreamKeyAssignedEvent| async move {
+            let msg = json!({
+                "type": "stream:assigned",
+                "playbackId": event.playback_id,
+            })
+            .to_string();
+            broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
+        },
+    );
 
-    // stream:removed
-    {
-        let mut rx = state.events.stream_key_removed.subscribe();
-        tokio::spawn(async move {
-            while let Ok(slug) = rx.recv().await {
-                let msg = json!({"type": "stream:removed"}).to_string();
-                broadcast_to_room(&WS_ROOMS, &slug, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.stream_key_removed.subscribe(),
+        "stream:removed",
+        |slug: String| async move {
+            let msg = json!({"type": "stream:removed"}).to_string();
+            broadcast_to_room(&WS_ROOMS, &slug, &msg).await;
+        },
+    );
 
-    // delivery:changed
-    {
-        let mut rx = state.events.delivery_mode_changed.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let msg = json!({
-                    "type": "delivery:changed",
-                    "deliveryMode": event.mode,
-                })
-                .to_string();
-                broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.delivery_mode_changed.subscribe(),
+        "delivery:changed",
+        |event: crate::events::DeliveryModeChangedEvent| async move {
+            let msg = json!({
+                "type": "delivery:changed",
+                "deliveryMode": event.mode,
+            })
+            .to_string();
+            broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
+        },
+    );
 
-    // file:shared
-    {
-        let mut rx = state.events.file_shared.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let msg = json!({
-                    "type": "file:shared",
-                    "id": event.id,
-                    "participantId": event.participant_id,
-                    "uploaderName": event.uploader_name,
-                    "role": event.role,
-                    "name": event.name,
-                    "size": event.size,
-                    "mime": event.mime,
-                    "ts": event.ts,
-                })
-                .to_string();
-                broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.file_shared.subscribe(),
+        "file:shared",
+        |event: FileSharedEvent| async move {
+            let msg = json!({
+                "type": "file:shared",
+                "id": event.id,
+                "participantId": event.participant_id,
+                "uploaderName": event.uploader_name,
+                "role": event.role,
+                "name": event.name,
+                "size": event.size,
+                "mime": event.mime,
+                "ts": event.ts,
+            })
+            .to_string();
+            broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
+        },
+    );
 
-    // file:removed
-    {
-        let mut rx = state.events.file_unshared.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let msg = json!({
-                    "type": "file:removed",
-                    "id": event.id,
-                })
-                .to_string();
-                broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.file_unshared.subscribe(),
+        "file:removed",
+        |event: crate::events::FileUnsharedEvent| async move {
+            let msg = json!({
+                "type": "file:removed",
+                "id": event.id,
+            })
+            .to_string();
+            broadcast_to_room(&WS_ROOMS, &event.slug, &msg).await;
+        },
+    );
 
-    // participant:kicked
-    {
-        let mut rx = state.events.participant_kicked.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let msg = json!({"type": "kicked"}).to_string();
-                send_to_participant_and_close(&WS_ROOMS, &event.slug, &event.participant_id, &msg)
-                    .await;
+    spawn_listener(
+        state.events.participant_kicked.subscribe(),
+        "participant:kicked",
+        |event: crate::events::KickedEvent| async move {
+            let msg = json!({"type": "kicked"}).to_string();
+            send_to_participant_and_close(&WS_ROOMS, &event.slug, &event.participant_id, &msg)
+                .await;
 
-                // Broadcast updated participants after removal
-                broadcast_participants(&WS_ROOMS, &event.slug).await;
-            }
-        });
-    }
+            // Broadcast updated participants after removal
+            broadcast_participants(&WS_ROOMS, &event.slug).await;
+        },
+    );
 
     // conference:unmute — presenter asked a participant to unmute. LiveKit
     // can't force-unmute (privacy), so push the request to the target's own
     // client, which prompts and re-enables the mic on consent.
-    {
-        let mut rx = state.events.conference_unmute.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let msg = json!({"type": "conference:unmute"}).to_string();
-                send_to_participant(&WS_ROOMS, &event.slug, &event.participant_id, &msg).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.conference_unmute.subscribe(),
+        "conference:unmute",
+        |event: crate::events::ConferenceUnmuteEvent| async move {
+            let msg = json!({"type": "conference:unmute"}).to_string();
+            send_to_participant(&WS_ROOMS, &event.slug, &event.participant_id, &msg).await;
+        },
+    );
 
     // host:revoked — presenter_key rotation force-rejoins existing hosts.
-    {
-        let mut rx = state.events.host_revoked.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let msg = json!({"type": "host:revoked"}).to_string();
-                send_to_participant_and_close(&WS_ROOMS, &event.slug, &event.participant_id, &msg)
-                    .await;
-                broadcast_participants(&WS_ROOMS, &event.slug).await;
-            }
-        });
-    }
+    spawn_listener(
+        state.events.host_revoked.subscribe(),
+        "host:revoked",
+        |event: crate::events::HostRevokedEvent| async move {
+            let msg = json!({"type": "host:revoked"}).to_string();
+            send_to_participant_and_close(&WS_ROOMS, &event.slug, &event.participant_id, &msg)
+                .await;
+            broadcast_participants(&WS_ROOMS, &event.slug).await;
+        },
+    );
 
     // moderation:update — push current waiting + kicked lists to presenters.
     // Diff'd server-side against the previous waiting list per room so each
     // presenter can toast on new arrivals without remembering its own state.
+    //
+    // Its own loop rather than `spawn_listener`: when it lags, the events it
+    // missed may have been some room's only change. Each update is a full
+    // snapshot, so it refreshes every room with someone connected instead.
     {
         let state = state.clone();
         let mut rx = state.events.moderation_changed.subscribe();
         // last_waiting_ids: tracks the waiting-list snapshot per room so we
         // can compute which names are *newly* waiting.
-        let last_waiting: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>> =
-            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let last_waiting: tokio::sync::Mutex<HashMap<String, Vec<String>>> =
+            tokio::sync::Mutex::new(HashMap::new());
         tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let slug = event.slug.clone();
-                let conn = match state.db.get() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("moderation:update db get failed: {e}");
-                        continue;
+            loop {
+                match rx.recv().await {
+                    Ok(event) => push_moderation_update(&state, &event.slug, &last_waiting).await,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "moderation:update listener lagged; refreshing every room"
+                        );
+                        let slugs: Vec<String> = WS_ROOMS.read().await.keys().cloned().collect();
+                        for slug in slugs {
+                            push_moderation_update(&state, &slug, &last_waiting).await;
+                        }
                     }
-                };
-                let slug_clone = slug.clone();
-                type ModRows = (
-                    Vec<(String, String)>,
-                    Vec<(String, String)>,
-                    Vec<(String, String)>,
-                );
-                let rows_res = tokio::task::spawn_blocking(move || -> rusqlite::Result<ModRows> {
-                    let mut waiting = Vec::new();
-                    let mut stmt = conn.prepare(
-                        "SELECT p.id, p.name FROM participants p \
-                         JOIN rooms r ON r.id = p.room_id \
-                         WHERE r.slug = ?1 AND p.is_admitted = 0 AND p.is_kicked = 0 \
-                         ORDER BY p.joined_at ASC",
-                    )?;
-                    for row in stmt.query_map([&slug_clone], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })? {
-                        waiting.push(row?);
-                    }
-                    let mut kicked = Vec::new();
-                    let mut stmt = conn.prepare(
-                        "SELECT p.id, p.name FROM participants p \
-                         JOIN rooms r ON r.id = p.room_id \
-                         WHERE r.slug = ?1 AND p.is_kicked = 1 \
-                         ORDER BY p.joined_at ASC",
-                    )?;
-                    for row in stmt.query_map([&slug_clone], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })? {
-                        kicked.push(row?);
-                    }
-                    // Admitted, non-kicked participants. The frontend renders the
-                    // ones that aren't in the live WS presence roster — Farbplay
-                    // builds predating the pointer feature, which open no WS at
-                    // all — so the host can see and kick them. Current Farbplay
-                    // builds are marked on the WS roster instead (`client`,
-                    // gh #227); browser viewers are deduped client-side.
-                    let mut admitted = Vec::new();
-                    let mut stmt = conn.prepare(
-                        "SELECT p.id, p.name FROM participants p \
-                         JOIN rooms r ON r.id = p.room_id \
-                         WHERE r.slug = ?1 AND p.is_admitted = 1 AND p.is_kicked = 0 \
-                         ORDER BY p.joined_at ASC",
-                    )?;
-                    for row in stmt.query_map([&slug_clone], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })? {
-                        admitted.push(row?);
-                    }
-                    Ok((waiting, kicked, admitted))
-                })
-                .await;
-                let (waiting, kicked, mut admitted) = match rows_res {
-                    Ok(Ok(v)) => v,
-                    Ok(Err(e)) => {
-                        tracing::error!("moderation:update query failed: {e}");
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::error!("moderation:update join failed: {e}");
-                        continue;
-                    }
-                };
-
-                // Scope the admitted list to participants with a live SSE
-                // connection — i.e. currently-connected native SRT (Farbplay)
-                // viewers. Without this, every admitted row ever created leaks in
-                // (participant rows persist after disconnect), so the host would
-                // see every past viewer. Browser viewers signal presence over WS
-                // instead and are deduped client-side.
-                let present = crate::presence::present_ids(&slug);
-                admitted.retain(|(id, _)| present.contains(id));
-
-                // Diff against previous snapshot to find new arrivals.
-                let waiting_ids: Vec<String> = waiting.iter().map(|(id, _)| id.clone()).collect();
-                let new_waiting_names: Vec<&str> = {
-                    let mut map = last_waiting.lock().await;
-                    let prev = map.get(&slug).cloned().unwrap_or_default();
-                    map.insert(slug.clone(), waiting_ids.clone());
-                    waiting
-                        .iter()
-                        .filter(|(id, _)| !prev.contains(id))
-                        .map(|(_, name)| name.as_str())
-                        .collect()
-                };
-
-                let to_json = |v: &[(String, String)]| {
-                    v.iter()
-                        .map(|(id, name)| json!({"id": id, "name": name}))
-                        .collect::<Vec<_>>()
-                };
-                let admitted_json = to_json(&admitted);
-
-                // Presenters get the full moderation view (waiting + kicked +
-                // the connected Farbplay/SRT viewer list + new-arrival toasts).
-                let presenter_msg = json!({
-                    "type": "moderation:update",
-                    "waiting": to_json(&waiting),
-                    "kicked": to_json(&kicked),
-                    "admitted": admitted_json,
-                    "newWaiting": new_waiting_names,
-                })
-                .to_string();
-                send_to_presenters_in_room(&WS_ROOMS, &slug, &presenter_msg).await;
-
-                // Everyone else gets only the Farbplay (SRT) viewer list so it
-                // shows in every participant's roster + count. Waiting and kicked
-                // stay presenter-only so viewers never see those names.
-                let viewer_msg = json!({
-                    "type": "moderation:update",
-                    "waiting": [],
-                    "kicked": [],
-                    "admitted": admitted_json,
-                    "newWaiting": [],
-                })
-                .to_string();
-                send_to_non_presenters_in_room(&WS_ROOMS, &slug, &viewer_msg).await;
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
     }
+}
+
+/// Push the current waiting / kicked / Farbplay lists for `slug`: the full view
+/// to presenters, only the Farbplay viewer list to everyone else.
+async fn push_moderation_update(
+    state: &Arc<AppState>,
+    slug: &str,
+    last_waiting: &tokio::sync::Mutex<HashMap<String, Vec<String>>>,
+) {
+    let conn = match state.db.get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("moderation:update db get failed: {e}");
+            return;
+        }
+    };
+    let slug_clone = slug.to_string();
+    type ModRows = (
+        Vec<(String, String)>,
+        Vec<(String, String)>,
+        Vec<(String, String)>,
+    );
+    let rows_res = tokio::task::spawn_blocking(move || -> rusqlite::Result<ModRows> {
+        let mut waiting = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name FROM participants p \
+             JOIN rooms r ON r.id = p.room_id \
+             WHERE r.slug = ?1 AND p.is_admitted = 0 AND p.is_kicked = 0 \
+             ORDER BY p.joined_at ASC",
+        )?;
+        for row in stmt.query_map([&slug_clone], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            waiting.push(row?);
+        }
+        let mut kicked = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name FROM participants p \
+             JOIN rooms r ON r.id = p.room_id \
+             WHERE r.slug = ?1 AND p.is_kicked = 1 \
+             ORDER BY p.joined_at ASC",
+        )?;
+        for row in stmt.query_map([&slug_clone], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            kicked.push(row?);
+        }
+        // Admitted, non-kicked participants. The frontend renders the
+        // ones that aren't in the live WS presence roster — Farbplay
+        // builds predating the pointer feature, which open no WS at
+        // all — so the host can see and kick them. Current Farbplay
+        // builds are marked on the WS roster instead (`client`,
+        // gh #227); browser viewers are deduped client-side.
+        let mut admitted = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name FROM participants p \
+             JOIN rooms r ON r.id = p.room_id \
+             WHERE r.slug = ?1 AND p.is_admitted = 1 AND p.is_kicked = 0 \
+             ORDER BY p.joined_at ASC",
+        )?;
+        for row in stmt.query_map([&slug_clone], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            admitted.push(row?);
+        }
+        Ok((waiting, kicked, admitted))
+    })
+    .await;
+    let (waiting, kicked, mut admitted) = match rows_res {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::error!("moderation:update query failed: {e}");
+            return;
+        }
+        Err(e) => {
+            tracing::error!("moderation:update join failed: {e}");
+            return;
+        }
+    };
+
+    // Scope the admitted list to participants with a live SSE
+    // connection — i.e. currently-connected native SRT (Farbplay)
+    // viewers. Without this, every admitted row ever created leaks in
+    // (participant rows persist after disconnect), so the host would
+    // see every past viewer. Browser viewers signal presence over WS
+    // instead and are deduped client-side.
+    let present = crate::presence::present_ids(slug);
+    admitted.retain(|(id, _)| present.contains(id));
+
+    // Diff against previous snapshot to find new arrivals.
+    let waiting_ids: Vec<String> = waiting.iter().map(|(id, _)| id.clone()).collect();
+    let new_waiting_names: Vec<&str> = {
+        let mut map = last_waiting.lock().await;
+        let prev = map.get(slug).cloned().unwrap_or_default();
+        map.insert(slug.to_string(), waiting_ids.clone());
+        waiting
+            .iter()
+            .filter(|(id, _)| !prev.contains(id))
+            .map(|(_, name)| name.as_str())
+            .collect()
+    };
+
+    let to_json = |v: &[(String, String)]| {
+        v.iter()
+            .map(|(id, name)| json!({"id": id, "name": name}))
+            .collect::<Vec<_>>()
+    };
+    let admitted_json = to_json(&admitted);
+
+    // Presenters get the full moderation view (waiting + kicked +
+    // the connected Farbplay/SRT viewer list + new-arrival toasts).
+    let presenter_msg = json!({
+        "type": "moderation:update",
+        "waiting": to_json(&waiting),
+        "kicked": to_json(&kicked),
+        "admitted": admitted_json,
+        "newWaiting": new_waiting_names,
+    })
+    .to_string();
+    send_to_presenters_in_room(&WS_ROOMS, slug, &presenter_msg).await;
+
+    // Everyone else gets only the Farbplay (SRT) viewer list so it
+    // shows in every participant's roster + count. Waiting and kicked
+    // stay presenter-only so viewers never see those names.
+    let viewer_msg = json!({
+        "type": "moderation:update",
+        "waiting": [],
+        "kicked": [],
+        "admitted": admitted_json,
+        "newWaiting": [],
+    })
+    .to_string();
+    send_to_non_presenters_in_room(&WS_ROOMS, slug, &viewer_msg).await;
 }

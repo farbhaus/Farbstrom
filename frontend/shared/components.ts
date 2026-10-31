@@ -162,8 +162,7 @@ function openDialog<T>(opts: DialogOpts<T>): Promise<T> {
 }
 
 /** Body paragraph shared by confirm and notice. */
-const MESSAGE_P =
-  '<p class="modal-message" style="margin:4px 0 18px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-line"></p>';
+const MESSAGE_P = '<p class="modal-message"></p>';
 
 function setMessage(modal: HTMLElement, text: string | undefined, html: string | undefined): void {
   const el = modal.querySelector('.modal-message') as HTMLElement;
@@ -224,7 +223,7 @@ export function promptModal(opts: PromptOpts): Promise<string | null> {
   return openDialog<string | null>({
     title: opts.title,
     bodyHtml:
-      `<p class="prompt-msg" style="margin:4px 0 14px;font-size:14px;line-height:1.5;color:var(--text)"></p>` +
+      `<p class="prompt-msg"></p>` +
       `<div class="form-row"><label></label><input type="${opts.inputType ?? 'text'}"></div>`,
     footerHtml:
       `<button class="btn" data-act="cancel">Cancel</button>` +

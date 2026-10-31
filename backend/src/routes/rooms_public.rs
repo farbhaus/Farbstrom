@@ -65,6 +65,41 @@ async fn room_info(
     Ok(Json(room))
 }
 
+/// Longest display name kept, in characters — what the admin's "Enter Room"
+/// has always capped the host name at.
+pub(crate) const MAX_NAME_CHARS: usize = 50;
+
+/// Characters removed from a display name outright: controls, bidi embeddings,
+/// overrides and isolates (which reverse or reorder the rest of a line wherever
+/// the name is shown), and zero-width spaces.
+fn is_stripped(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}' | '\u{2060}' | '\u{FEFF}'
+        )
+}
+
+/// Joiners and direction marks stay — names in Persian, Hindi and emoji
+/// sequences need them — but a name made of nothing else still reads as blank.
+fn is_visible(c: char) -> bool {
+    !c.is_whitespace() && !matches!(c, '\u{200C}'..='\u{200F}' | '\u{00AD}')
+}
+
+/// Normalise a self-chosen display name, or `None` if nothing visible is left.
+///
+/// The name goes to everyone in the room — roster, chat, every pointer frame —
+/// and into the host's moderation lists. The public join used to take it as
+/// sent: blank and whitespace-only names showed up as empty rows with an Admit
+/// button, and a 1.5 MB one pushed the admin's Admit button 13 million pixels
+/// off-screen.
+pub(crate) fn clean_display_name(raw: &str) -> Option<String> {
+    let kept: String = raw.chars().filter(|c| !is_stripped(*c)).collect();
+    let capped: String = kept.trim().chars().take(MAX_NAME_CHARS).collect();
+    let name = capped.trim_end();
+    name.chars().any(is_visible).then(|| name.to_string())
+}
+
 #[derive(Deserialize)]
 struct JoinBody {
     name: Option<String>,
@@ -81,6 +116,8 @@ async fn join_room(
 ) -> Result<Json<Value>, AppError> {
     let name = body
         .name
+        .as_deref()
+        .and_then(clean_display_name)
         .ok_or_else(|| AppError::BadRequest("Name is required".into()))?;
 
     let conn = state.db.get()?;
@@ -90,7 +127,7 @@ async fn join_room(
             "SELECT r.id, r.name, r.slug, r.password_hash, r.presenter_key, \
              r.delivery_mode, r.waiting_room, r.status, \
              (r.expires_at IS NOT NULL AND r.expires_at <= CURRENT_TIMESTAMP) AS is_expired, \
-             sk.key_token, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
+             sk.playback_id, r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
              r.starts_at \
              FROM rooms r \
              LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
@@ -108,7 +145,7 @@ async fn join_room(
                     row.get::<_, i32>(6)?,             // waiting_room
                     row.get::<_, String>(7)?,          // status
                     row.get::<_, i32>(8)?,             // is_expired
-                    row.get::<_, Option<String>>(9)?,  // stream key_token
+                    row.get::<_, Option<String>>(9)?,  // stream playback_id
                     row.get::<_, i32>(10)?,            // noise_reduction
                     row.get::<_, i32>(11)?,            // echo_cancellation
                     row.get::<_, i32>(12)?,            // push_to_talk
@@ -134,7 +171,7 @@ async fn join_room(
         waiting_room,
         status,
         is_expired,
-        stream_key,
+        playback_id,
         noise_reduction,
         echo_cancellation,
         push_to_talk,
@@ -249,11 +286,14 @@ async fn join_room(
     let tok = token.clone();
     let p_name = name.clone();
     let p_role = role.to_string();
+    // The only way the public join grants `presenter` is a valid host link, so
+    // that is what marks the session as one rotating the link revokes.
+    let via_host_link = role == "presenter";
     tokio::task::spawn_blocking(move || {
         conn.execute(
-            "INSERT INTO participants (id, room_id, name, role, is_admitted, token) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![pid, rid, p_name, p_role, is_admitted, tok],
+            "INSERT INTO participants (id, room_id, name, role, is_admitted, token, via_host_link) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![pid, rid, p_name, p_role, is_admitted, tok, via_host_link],
         )?;
         Ok::<_, rusqlite::Error>(())
     })
@@ -278,7 +318,10 @@ async fn join_room(
         "noise_reduction_default": noise_reduction != 0,
         "echo_cancellation_default": echo_cancellation != 0,
         "push_to_talk_default": push_to_talk != 0,
-        "stream_key": stream_key,
+        // The name OME publishes the room's stream under — never the ingest key.
+        // Playback itself is admission-gated (`crate::playback`), so holding this
+        // grants nothing on its own.
+        "playback_id": playback_id,
         "room_name": room_name,
         "status": status,
         "starts_at": starts_at,
@@ -329,18 +372,21 @@ async fn participant_status(
         let did_admit = admit_if_started(&conn, &participant_id)?;
         let mut stmt = conn.prepare(
             "SELECT p.is_admitted, p.is_kicked, r.status, \
-             (r.starts_at IS NOT NULL AND r.starts_at <= CURRENT_TIMESTAMP) AS started \
+             (r.starts_at IS NOT NULL AND r.starts_at <= CURRENT_TIMESTAMP) AS started, \
+             sk.playback_id \
              FROM participants p \
              JOIN rooms r ON r.id = p.room_id \
+             LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
              WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3",
         )?;
-        let (is_admitted, is_kicked, room_status, started) = stmt
+        let (is_admitted, is_kicked, room_status, started, playback_id) = stmt
             .query_row(rusqlite::params![participant_id, token, slug], |row| {
                 Ok((
                     row.get::<_, i32>(0)?,
                     row.get::<_, i32>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, i32>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })
             .map_err(|e| match e {
@@ -349,12 +395,19 @@ async fn participant_status(
                 }
                 _ => AppError::Internal(e.to_string()),
             })?;
-        Ok::<_, AppError>((did_admit, is_admitted, is_kicked, room_status, started))
+        Ok::<_, AppError>((
+            did_admit,
+            is_admitted,
+            is_kicked,
+            room_status,
+            started,
+            playback_id,
+        ))
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let (did_admit, is_admitted, is_kicked, room_status, started) = result;
+    let (did_admit, is_admitted, is_kicked, room_status, started, playback_id) = result;
     if did_admit {
         let _ = state
             .events
@@ -367,6 +420,10 @@ async fn participant_status(
         "kicked": is_kicked == 1,
         "room_status": room_status,
         "started": started == 1,
+        // The room's stream as it is now, so a resumed session never plays
+        // whatever it saved (an old key, or one since swapped). Only for someone
+        // who may actually play it.
+        "playback_id": if is_admitted == 1 && is_kicked == 0 { playback_id } else { None },
     })))
 }
 
@@ -983,19 +1040,20 @@ async fn conf_unkick(
 }
 
 pub fn router() -> Router<Arc<AppState>> {
-    let join_handler = if rate_limit::enabled() {
-        post(join_room).layer(rate_limit::join_layer())
+    let (info_handler, join_handler, events_handler) = if rate_limit::enabled() {
+        (
+            get(room_info).layer(rate_limit::room_info_layer()),
+            post(join_room).layer(rate_limit::join_layer()),
+            get(waiting_events).layer(rate_limit::waiting_events_layer()),
+        )
     } else {
-        post(join_room)
+        (get(room_info), post(join_room), get(waiting_events))
     };
     Router::new()
-        .route("/{slug}/info", get(room_info))
+        .route("/{slug}/info", info_handler)
         .route("/{slug}/join", join_handler)
         .route("/{slug}/status/{participantId}", get(participant_status))
-        .route(
-            "/{slug}/waiting/events/{participantId}",
-            get(waiting_events),
-        )
+        .route("/{slug}/waiting/events/{participantId}", events_handler)
         .route("/{slug}/livekit-token", get(livekit_token))
         .route("/{slug}/conference/kick", post(kick_participant))
         .route("/{slug}/conference/mute", post(mute_participant))
@@ -1004,4 +1062,49 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{slug}/conference/admit/{targetId}", post(conf_admit))
         .route("/{slug}/conference/admit-all", post(conf_admit_all))
         .route("/{slug}/conference/unkick/{targetId}", post(conf_unkick))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_display_name;
+
+    #[test]
+    fn names_are_trimmed_capped_and_stripped_of_invisibles() {
+        assert_eq!(clean_display_name("  Ana  ").as_deref(), Some("Ana"));
+        assert_eq!(
+            clean_display_name("Host\u{202E} (admin)").as_deref(),
+            Some("Host (admin)")
+        );
+        assert_eq!(clean_display_name("a\u{0}b\nc").as_deref(), Some("abc"));
+        assert_eq!(
+            clean_display_name(&"x".repeat(200))
+                .unwrap()
+                .chars()
+                .count(),
+            50
+        );
+        // Kept: a ZWNJ inside a Persian name, a ZWJ inside an emoji sequence.
+        assert_eq!(
+            clean_display_name("می\u{200C}خواهم").as_deref(),
+            Some("می\u{200C}خواهم")
+        );
+        assert_eq!(
+            clean_display_name("👩\u{200D}🎨 Lu").as_deref(),
+            Some("👩\u{200D}🎨 Lu")
+        );
+    }
+
+    #[test]
+    fn nothing_visible_is_no_name() {
+        for blank in [
+            "",
+            "   ",
+            "\t\n",
+            "\u{202E}\u{200B}",
+            "\u{200D}\u{200E}",
+            " \u{FEFF} ",
+        ] {
+            assert_eq!(clean_display_name(blank), None, "{blank:?}");
+        }
+    }
 }

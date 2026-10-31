@@ -26,7 +26,7 @@ export interface ViewerState {
   // Session
   role: Role;
   deliveryMode: DeliveryMode;
-  streamKey: string | null;
+  playbackId: string | null;
   // Per-room admin defaults for participant audio processing. Seed the NR/ER
   // toggles unless the participant has overridden them for this room.
   noiseDefault: boolean;
@@ -60,7 +60,7 @@ export const viewerStore = createStore<ViewerState>({
   focusOverride: false,
   role: 'viewer',
   deliveryMode: 'webrtc',
-  streamKey: null,
+  playbackId: null,
   noiseDefault: true,
   echoDefault: true,
   pttDefault: false,

@@ -71,7 +71,7 @@ export async function loadSettings(): Promise<void> {
         </div>`,
           )
           .join('')
-      : '<span style="font-size:13px;color:var(--dim)">No passkeys registered.</span>';
+      : '<span class="empty-note">No passkeys registered.</span>';
   }
 }
 
@@ -139,7 +139,7 @@ async function confirmTotp(): Promise<void> {
   if (box) {
     box.style.display = '';
     box.innerHTML =
-      '<div class="room-card-meta">Save these one-time recovery codes somewhere safe — they are shown only once:</div><pre style="font-size:13px;line-height:1.7">' +
+      '<div class="room-card-meta">Save these one-time recovery codes somewhere safe — they are shown only once:</div><pre class="recovery-codes">' +
       (d.recoveryCodes as string[]).map(esc).join('\n') +
       '</pre>';
   }

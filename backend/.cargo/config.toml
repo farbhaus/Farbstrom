@@ -3,8 +3,9 @@
 # This only takes effect when building for x86_64-unknown-linux-gnu (the
 # default host triple on x86_64 Linux dev machines). macOS and Windows
 # devs are unaffected — their target triples don't match this section,
-# so they fall back to the default linker. The Docker release build uses
-# x86_64-unknown-linux-musl (alpine builder) and is also unaffected.
+# so they fall back to the default linker. The Docker image build is
+# unaffected too: it compiles x86_64-unknown-linux-gnu, but copies only
+# Cargo.toml, Cargo.lock and src/ — this file never reaches the builder.
 #
 # Requires `mold` and `clang` to be installed locally:
 #   Debian/Ubuntu: apt install mold clang

@@ -18,12 +18,20 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
+      # Not the player libraries, at any level: an OvenPlayer patch can rename
+      # the classes the viewer's CSS hides its chrome by, and all three change
+      # what every viewer runs. Their PRs wait for a by-hand playback check.
       - name: Enable auto-merge for patch and minor updates only
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        if: >-
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch'
+            || steps.metadata.outputs.update-type == 'version-update:semver-minor')
+          && !contains(steps.metadata.outputs.dependency-names, 'ovenplayer')
+          && !contains(steps.metadata.outputs.dependency-names, 'livekit-client')
+          && !contains(steps.metadata.outputs.dependency-names, 'hls.js')
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

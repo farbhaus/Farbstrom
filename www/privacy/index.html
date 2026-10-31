@@ -53,7 +53,8 @@ body {
     <ul>
         <li><strong>Session</strong> — a short-lived access token and your participant ID for the
             room you are in, so you stay connected across a page refresh, plus a note if you were
-            removed from a room. Cleared when you close the browser tab.</li>
+            removed from a room, and — if the room has one — the room password you typed, so a
+            refresh does not ask for it again. Cleared when you close the browser tab.</li>
         <li><strong>Administrator sign-in</strong> — for the admin interface only, a sign-in
             token kept between visits rather than cleared when the tab closes. It lasts seven
             days, or ninety if “trust this browser” was ticked at sign-in. An administrator can
@@ -68,9 +69,8 @@ body {
         <li><strong>Tool preferences</strong> — settings that belong to you rather than to a room:
             the scopes window (which scope, its zoom and sampling, and where you parked it), and
             whether you have already been shown the first-run room tour.</li>
-        <li><strong>Convenience</strong> — your display name and, if the room has one, the room
-            password, so you don’t have to re-type them. You control this and can clear it at
-            any time.</li>
+        <li><strong>Convenience</strong> — your display name, so you don’t have to re-type it.
+            You control this and can clear it at any time.</li>
     </ul>
 
     <h2>Cookies</h2>
@@ -117,11 +117,6 @@ body {
     </p>
 </div>
 
-<script type="module">
-  import { applyBranding } from '/dist/shared/branding.js';
-  // Theme the page (colors, favicon) and fill the wordmark with the brand name.
-  // Skip the background image — this is a text-heavy legal page.
-  void applyBranding({ setTitle: false, skipBg: true });
-</script>
+<script type="module" src="/dist/privacy/main.js"></script>
 </body>
 </html>

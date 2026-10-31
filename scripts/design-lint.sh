@@ -65,6 +65,18 @@ report "no hex/rgba colors outside tokens.css" \
     "$(grep -rnoE '#[0-9a-fA-F]{6}\b|rgba?\([0-9 ,.]+\)' "${ALL[@]}" \
         | grep -v 'svg+xml' | grep -v '%23' || true)"
 
+# --- 1a. The same, in markup the TypeScript builds --------------------------
+#
+# The checks above read stylesheets only, and templates in frontend/ put
+# style="" attributes into the markup they generate — which is how a 14px (not
+# on the type scale) sat in the shared dialogs' body text out of sight. Colors
+# are left out here: canvas code (the scopes) legitimately draws in hex.
+TS_SOURCES=()
+while IFS= read -r f; do TS_SOURCES+=("$f"); done \
+    < <(find frontend -name '*.ts' -not -path '*/node_modules/*' | sort)
+report "no hardcoded type, radius or z-index in TS-built markup" \
+    "$(grep -nE '(font-size|font-weight|letter-spacing|border-radius|z-index): ?[0-9]' "${TS_SOURCES[@]}" || true)"
+
 # --- 1b. Nothing may blur the picture in the viewer -------------------------
 #
 # A backdrop-filter over the stream composites the video through an intermediate

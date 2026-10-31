@@ -188,9 +188,12 @@
             </Host>
 
             <!--
-                Admission Webhook — OME calls our backend to validate every
-                ingest connection (stream key check) and optionally viewer connections.
-                Backend responds with accept/deny JSON.
+                Admission Webhook — OME asks the backend before every ingest
+                (stream key check; the reply renames the stream to the key's
+                playback id via new_url) and before every browser playback
+                session (participant or admin-preview credentials in the query
+                string). Backend responds with accept/deny JSON. See
+                backend/src/routes/webhook.rs and backend/src/playback.rs.
             -->
             <AdmissionWebhooks>
                 <!-- Single-container: the backend runs on localhost, not a
@@ -202,8 +205,9 @@
                 <Enables>
                     <!-- Validate all ingest connections (stream key auth) -->
                     <Providers>rtmp,srt,webrtc</Providers>
-                    <!-- Phase 2: enable webrtc,llhls here for viewer waiting room -->
-                    <Publishers></Publishers>
+                    <!-- Validate browser playback. SRT playback is gated by
+                         SignedPolicy below instead. -->
+                    <Publishers>webrtc,llhls</Publishers>
                 </Enables>
             </AdmissionWebhooks>
 
@@ -215,9 +219,8 @@
                 forged tokens.
 
                 Scoped to <Publishers>srt only: browser playback (LLHLS/WebRTC)
-                and all ingest (Providers, gated by the admission webhook above)
-                are unaffected. SecretKey must match OME_SIGNED_POLICY_SECRET in
-                the backend env.
+                and all ingest are gated by the admission webhook above instead.
+                SecretKey must match OME_SIGNED_POLICY_SECRET in the backend env.
             -->
             <SignedPolicy>
                 <PolicyQueryKeyName>policy</PolicyQueryKeyName>

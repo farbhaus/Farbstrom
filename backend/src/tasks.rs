@@ -24,14 +24,14 @@ pub fn spawn_ome_poller(state: Arc<AppState>) {
     });
 }
 
-/// The stream keys OME currently reports as broadcasting.
+/// The streams OME currently reports as broadcasting.
 ///
-/// The OME stream name *is* the ingest key token
-/// (`OutputStreamName=${OriginStreamName}`), so the response is a flat array of
-/// key tokens. A non-2xx yields an empty set rather than an error: callers treat
-/// "OME said nothing" the same as "nothing is live", and the poller re-checks in
-/// 30 s.
-pub async fn fetch_active_stream_keys(
+/// OME publishes each stream under its key's `playback_id` — the admission
+/// webhook renames every ingest to it — so the response is a flat array of
+/// playback ids, never ingest keys. A non-2xx yields an empty set rather than
+/// an error: callers treat "OME said nothing" the same as "nothing is live",
+/// and the poller re-checks in 30 s.
+pub async fn fetch_active_streams(
     state: &Arc<AppState>,
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     let token = base64::engine::general_purpose::STANDARD.encode(&state.config.ome_api_token);
@@ -72,10 +72,13 @@ pub async fn fetch_active_stream_keys(
 pub async fn reconcile_and_announce(
     state: &Arc<AppState>,
 ) -> Result<RoomTransitions, Box<dyn std::error::Error>> {
-    let active_keys = fetch_active_stream_keys(state).await?;
+    let active_streams = fetch_active_streams(state).await?;
 
+    // rusqlite blocks, so this goes on the blocking pool like every HTTP
+    // handler's queries do — the pollers share the runtime with requests.
     let db = state.db.get()?;
-    let transitions = reconcile_rooms(&db, &active_keys)?;
+    let transitions =
+        tokio::task::spawn_blocking(move || reconcile_rooms(&db, &active_streams)).await??;
 
     for slug in &transitions.went_live {
         let _ = state.events.room_live.send(slug.clone());
@@ -99,8 +102,8 @@ pub struct RoomTransitions {
     pub went_pending: Vec<String>,
 }
 
-/// Reconcile room status against the set of stream keys OME reports as
-/// broadcasting.
+/// Reconcile room status against the set of streams (playback ids) OME reports
+/// as broadcasting.
 ///
 /// Bidirectional on purpose. The admission webhook is the only other path to
 /// 'live', and it fires exactly once, when a publisher *starts* — so attaching
@@ -120,14 +123,14 @@ pub struct RoomTransitions {
 /// Split out from the HTTP fetch so it is testable without a live OME.
 pub fn reconcile_rooms(
     conn: &rusqlite::Connection,
-    active_keys: &std::collections::HashSet<String>,
+    active_streams: &std::collections::HashSet<String>,
 ) -> Result<RoomTransitions, rusqlite::Error> {
     let mut transitions = RoomTransitions::default();
 
     // Demote: live rooms whose key stopped broadcasting.
     let live_rooms: Vec<(String, String, String)> = conn
         .prepare(
-            "SELECT r.id, r.slug, sk.key_token \
+            "SELECT r.id, r.slug, sk.playback_id \
              FROM rooms r \
              JOIN stream_keys sk ON sk.id = r.stream_key_id \
              WHERE r.status = 'live'",
@@ -136,8 +139,8 @@ pub fn reconcile_rooms(
         .filter_map(|r| r.ok())
         .collect();
 
-    for (id, slug, key_token) in live_rooms {
-        if !active_keys.contains(&key_token) {
+    for (id, slug, playback_id) in live_rooms {
+        if !active_streams.contains(&playback_id) {
             conn.execute(
                 "UPDATE rooms SET status = 'pending' WHERE id = ?1",
                 rusqlite::params![id],
@@ -150,7 +153,7 @@ pub fn reconcile_rooms(
     // Promote: pending rooms whose key is already broadcasting.
     let pending_rooms: Vec<(String, String, String)> = conn
         .prepare(
-            "SELECT r.id, r.slug, sk.key_token \
+            "SELECT r.id, r.slug, sk.playback_id \
              FROM rooms r \
              JOIN stream_keys sk ON sk.id = r.stream_key_id \
              WHERE r.status = 'pending' AND sk.blocked = 0",
@@ -159,8 +162,8 @@ pub fn reconcile_rooms(
         .filter_map(|r| r.ok())
         .collect();
 
-    for (id, slug, key_token) in pending_rooms {
-        if active_keys.contains(&key_token) {
+    for (id, slug, playback_id) in pending_rooms {
+        if active_streams.contains(&playback_id) {
             conn.execute(
                 "UPDATE rooms SET status = 'live' WHERE id = ?1",
                 rusqlite::params![id],
@@ -191,17 +194,19 @@ pub fn spawn_expiry_poller(state: Arc<AppState>) {
 }
 
 pub async fn poll_expiry(state: &Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
-    let expired_rooms: Vec<(String, String)> = {
-        let db = state.db.get()?;
-        let mut stmt = db.prepare(
-            "SELECT id, slug FROM rooms \
-             WHERE expires_at IS NOT NULL \
-             AND expires_at < CURRENT_TIMESTAMP \
-             AND status != 'ended'",
-        )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
+    let db = state.db.get()?;
+    let expired_rooms: Vec<(String, String)> =
+        tokio::task::spawn_blocking(move || -> rusqlite::Result<_> {
+            let mut stmt = db.prepare(
+                "SELECT id, slug FROM rooms \
+                 WHERE expires_at IS NOT NULL \
+                 AND expires_at < CURRENT_TIMESTAMP \
+                 AND status != 'ended'",
+            )?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        })
+        .await??;
 
     if expired_rooms.is_empty() {
         return Ok(());
@@ -211,17 +216,21 @@ pub async fn poll_expiry(state: &Arc<AppState>) -> Result<(), Box<dyn std::error
 
     for (id, slug) in expired_rooms {
         let db = state.db.get()?;
-        db.execute(
-            "UPDATE rooms SET status = 'ended', ended_at = CURRENT_TIMESTAMP WHERE id = ?1",
-            rusqlite::params![id],
-        )?;
+        let id_db = id.clone();
+        tokio::task::spawn_blocking(move || {
+            db.execute(
+                "UPDATE rooms SET status = 'ended', ended_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                rusqlite::params![id_db],
+            )
+        })
+        .await??;
 
         let _ = state.events.room_ended.send(slug.clone());
         tracing::info!("[poller] Room {} expired -> ended", id);
 
         // Delete LiveKit room (best-effort)
         if let Err(e) = livekit.delete_room(&slug).await {
-            tracing::debug!("[poller] LiveKit deleteRoom error for {}: {}", slug, e);
+            tracing::warn!("[poller] LiveKit deleteRoom error for {}: {}", slug, e);
         }
     }
 
@@ -266,37 +275,40 @@ pub async fn poll_starts(state: &Arc<AppState>) -> Result<(), Box<dyn std::error
     // release. The EXISTS branch also catches rooms the webhook already flipped
     // to 'live'. Once a room's holds are cleared it stops matching, so this
     // stays bounded and idempotent.
-    let started_rooms: Vec<(String, String, String)> = {
-        let db = state.db.get()?;
-        let mut stmt = db.prepare(
-            "SELECT r.id, r.slug, r.status FROM rooms r \
-             WHERE r.starts_at IS NOT NULL \
-             AND r.starts_at <= CURRENT_TIMESTAMP \
-             AND r.status != 'ended' \
-             AND ( \
-                 r.status = 'scheduled' \
-                 OR (r.waiting_room = 0 AND EXISTS ( \
-                     SELECT 1 FROM participants p \
-                     WHERE p.room_id = r.id \
-                     AND p.is_admitted = 0 AND p.is_kicked = 0)) \
-             )",
-        )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
+    let db = state.db.get()?;
+    let started_rooms: Vec<(String, String, String)> =
+        tokio::task::spawn_blocking(move || -> rusqlite::Result<_> {
+            let mut stmt = db.prepare(
+                "SELECT r.id, r.slug, r.status FROM rooms r \
+                 WHERE r.starts_at IS NOT NULL \
+                 AND r.starts_at <= CURRENT_TIMESTAMP \
+                 AND r.status != 'ended' \
+                 AND ( \
+                     r.status = 'scheduled' \
+                     OR (r.waiting_room = 0 AND EXISTS ( \
+                         SELECT 1 FROM participants p \
+                         WHERE p.room_id = r.id \
+                         AND p.is_admitted = 0 AND p.is_kicked = 0)) \
+                 )",
+            )?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        })
+        .await??;
 
     if started_rooms.is_empty() {
         return Ok(());
     }
 
     for (id, slug, status) in started_rooms {
-        {
-            let db = state.db.get()?;
+        let db = state.db.get()?;
+        let id_db = id.clone();
+        tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
             // Time-based flip only: leave a webhook-set 'live' status alone.
             if status == "scheduled" {
                 db.execute(
                     "UPDATE rooms SET status = 'pending' WHERE id = ?1 AND status = 'scheduled'",
-                    rusqlite::params![id],
+                    rusqlite::params![id_db],
                 )?;
             }
             // Release holds only when the waiting room is off; the subquery gate
@@ -305,9 +317,11 @@ pub async fn poll_starts(state: &Arc<AppState>) -> Result<(), Box<dyn std::error
                 "UPDATE participants SET is_admitted = 1 \
                  WHERE room_id = ?1 AND is_kicked = 0 \
                  AND (SELECT waiting_room FROM rooms WHERE id = ?1) = 0",
-                rusqlite::params![id],
+                rusqlite::params![id_db],
             )?;
-        }
+            Ok(())
+        })
+        .await??;
 
         // Refresh connected presenters' moderation view (waiting -> admitted).
         let _ = state

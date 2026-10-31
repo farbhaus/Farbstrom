@@ -7,13 +7,14 @@
 <link rel="icon" type="image/svg+xml" href="/shared/favicon.svg">
 <link rel="icon" type="image/png" href="/shared/favicon.png">
 <link rel="apple-touch-icon" href="/shared/favicon.png">
-<!-- OvenPlayer is pinned EXACTLY, unlike the two below: its DOM class names are
-     load-bearing for the chrome-hiding CSS in this page's <style> block
-     (.op-ui, .op-spinner-container, .op-bigbutton-container) and they have
-     drifted before. Bump it deliberately, and re-check that CSS when you do. -->
-<script src="https://cdn.jsdelivr.net/npm/ovenplayer@0.10.53/dist/ovenplayer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7/dist/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.23/dist/livekit-client.umd.min.js"></script>
+<!-- All three are pinned exactly (frontend/package.json) and served from this
+     origin. OvenPlayer most of all: its DOM class names are load-bearing for
+     the chrome-hiding CSS in this page's <style> block (.op-ui,
+     .op-spinner-container, .op-bigbutton-container) and they have drifted
+     before. Bump it deliberately, and re-check that CSS when you do. -->
+<script src="/dist/vendor/ovenplayer.js"></script>
+<script src="/dist/vendor/hls.min.js"></script>
+<script src="/dist/vendor/livekit-client.umd.js"></script>
 <link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/shared/components.css">
 <link rel="stylesheet" href="/shared/utils.css">
@@ -414,8 +415,8 @@ body.stage-morphing .tile.is-morphing {
    .op-ui (control bar, loading spinner, big centre play button, captions,
    message boxes) }. Hiding .op-ui drops every overlay while keeping the
    video. The explicit spinner/big-button hides guard against either being
-   injected outside .op-ui in a future CDN build. (Class names are pinned to
-   OvenPlayer "latest" and have drifted before.) */
+   injected outside .op-ui in a future build. (These class names have drifted
+   between OvenPlayer releases before — the version is pinned for that reason.) */
 #player .op-ui,
 #player .op-spinner-container,
 #player .op-bigbutton-container { display: none !important; }
@@ -735,8 +736,10 @@ body.has-focus #stage-strip {
 }
 body.has-focus #stage-strip::-webkit-scrollbar { display: none; }
 /* An empty call panel is just a grey stub floating on the picture — which is
-   exactly what a solo participant would see. Nothing in it, nothing drawn. */
-body.has-focus #stage-strip:not(:has(.tile)) { display: none; }
+   exactly what a solo participant would see. Nothing in it, nothing drawn.
+   "Empty" means no *visible* tile: focus mode parks every unfocused tile here,
+   including the hidden share tile, which used to keep the stub showing. */
+body.has-focus #stage-strip:not(:has(.tile:not(.hidden))) { display: none; }
 /* The pinned tile's own chrome is now against the window edges, where the
    floating chips and the toolbar already live — and it sits in the tile's
    stacking context, well below them, so it would simply disappear underneath.
@@ -1477,7 +1480,7 @@ body.has-focus.strip-hidden #stage-strip {
         <form id="join-form">
             <div class="form-row">
                 <label>Your Name</label>
-                <input type="text" id="name-input" placeholder="Your name" autocomplete="name" required>
+                <input type="text" id="name-input" placeholder="Your name" autocomplete="name" maxlength="50" required>
             </div>
             <div class="form-row" id="password-row" style="display:none">
                 <label>Room Password</label>
@@ -1741,7 +1744,7 @@ body.has-focus.strip-hidden #stage-strip {
                 </div>
                 <div class="tile-name" id="tile-share-name">Screen</div>
             </div>
-            <div class="tile" id="self-tile" style="display:none">
+            <div class="tile hidden" id="self-tile" style="display:none">
                 <div class="tile-inner">
                     <video id="self-preview" autoplay muted playsinline></video>
                 </div>

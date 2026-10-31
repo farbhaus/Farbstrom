@@ -14,10 +14,10 @@ use tokio_util::io::ReaderStream;
 
 use tracing::info;
 
-use crate::error::AppError;
-use crate::events::{FileSharedEvent, FileUnsharedEvent};
+use crate::error::{multipart_error, AppError};
+use crate::events::FileUnsharedEvent;
 use crate::state::AppState;
-use crate::uploads::stream_field_to_temp;
+use crate::uploads::{drain, stream_field_to_temp};
 
 /// Upload size ceiling, shared by the participant and admin-library upload
 /// routes. `uploads::stream_field_to_temp` formats its rejection message from
@@ -69,19 +69,16 @@ struct UploadQuery {
     #[serde(rename = "participantId")]
     participant_id: Option<String>,
     token: Option<String>,
-    /// When true, the file is stored as a draft (is_shared=0) — no
-    /// `file:shared` WS event, no room_files mirror — until the
-    /// participant explicitly shares it via the WS `file:share` message.
-    #[serde(default)]
-    defer: bool,
 }
 
 struct ParticipantInfo {
     id: String,
-    name: String,
     role: String,
     room_id: String,
     slug: String,
+    /// Not ended and not past its expiry. Reads stay allowed in a room that is
+    /// over; only uploads check this.
+    room_open: bool,
 }
 
 fn validate_participant(
@@ -92,7 +89,9 @@ fn validate_participant(
 ) -> Result<ParticipantInfo, AppError> {
     let row = conn
         .query_row(
-            "SELECT p.id, p.name, p.role, r.id AS room_id, r.slug \
+            "SELECT p.id, p.role, r.id AS room_id, r.slug, \
+             (r.status != 'ended' \
+              AND (r.expires_at IS NULL OR r.expires_at > CURRENT_TIMESTAMP)) AS room_open \
              FROM participants p \
              JOIN rooms r ON r.id = p.room_id \
              WHERE p.id = ?1 AND p.token = ?2 AND r.slug = ?3 \
@@ -101,10 +100,10 @@ fn validate_participant(
             |row| {
                 Ok(ParticipantInfo {
                     id: row.get(0)?,
-                    name: row.get(1)?,
-                    role: row.get(2)?,
-                    room_id: row.get(3)?,
-                    slug: row.get(4)?,
+                    role: row.get(1)?,
+                    room_id: row.get(2)?,
+                    slug: row.get(3)?,
+                    room_open: row.get(4)?,
                 })
             },
         )
@@ -142,13 +141,46 @@ pub fn extract_extension(name: &str) -> String {
     format!(".{}", ext)
 }
 
+/// Total a room's participants may keep uploaded (drafts included), on top of
+/// the per-file [`MAX_FILE_SIZE`]. Rooms are the admin's to create, so this and
+/// the free-space floor in `uploads` together bound what guests can put on the
+/// disk; there used to be no limit on the number of uploads at all.
+pub const ROOM_UPLOAD_QUOTA: u64 = 20 * 1024 * 1024 * 1024;
+
+fn room_uploaded_bytes(
+    conn: &r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>,
+    room_id: &str,
+) -> Result<u64, AppError> {
+    let n: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM session_files WHERE room_id = ?1",
+        params![room_id],
+        |row| row.get(0),
+    )?;
+    Ok(n.max(0) as u64)
+}
+
+fn quota_exceeded() -> AppError {
+    AppError::PayloadTooLarge(format!(
+        "This room's uploads are full ({} GB)",
+        ROOM_UPLOAD_QUOTA / 1_073_741_824
+    ))
+}
+
+/// A participant upload. Always a draft (`is_shared = 0`): it stays invisible —
+/// no `file:shared`, no library mirror — until the uploader sends it with the
+/// WS `file:share` message, which is the only way the viewer has ever uploaded.
+///
+/// There used to be a second, immediate-share mode that de-duplicated by
+/// content hash, handing the uploader the *existing* row for identical bytes —
+/// so a guest in room B who uploaded the same file as someone in room A got
+/// room A's filename and uploader name back, and the file joined room B's list.
+/// No client used that mode; it went rather than being made safe.
 async fn upload_file(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     Query(query): Query<UploadQuery>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
-    let defer = query.defer;
     let pid = query
         .participant_id
         .as_deref()
@@ -160,177 +192,95 @@ async fn upload_file(
         .ok_or(AppError::Unauthorized("Unauthorized".into()))?
         .to_string();
 
-    // Validate participant
+    // Validate participant, and check the room's quota before reading a byte.
     let conn = state.db.get()?;
     let slug_clone = slug.clone();
     let pid_clone = pid.clone();
     let token_clone = token.clone();
-    let participant = tokio::task::spawn_blocking(move || {
-        validate_participant(&conn, &pid_clone, &token_clone, &slug_clone)
+    let (participant, used) = tokio::task::spawn_blocking(move || {
+        let participant = validate_participant(&conn, &pid_clone, &token_clone, &slug_clone)?;
+        let used = room_uploaded_bytes(&conn, &participant.room_id)?;
+        Ok::<_, AppError>((participant, used))
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
+    if !participant.room_open {
+        drain(&mut multipart).await;
+        return Err(AppError::Gone("Room has ended".into()));
+    }
+    if used >= ROOM_UPLOAD_QUOTA {
+        drain(&mut multipart).await;
+        return Err(quota_exceeded());
+    }
 
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
-    {
-        if field.name() == Some("file") {
-            let original_name = field.file_name().unwrap_or("upload").to_string();
-            let mime_raw = field
-                .content_type()
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            let mime = sanitize_mime(&mime_raw);
-
-            // Stream the field body to disk in chunks (bounded memory)
-            // instead of materialising it as a single Vec. The helper
-            // computes Sha256 + size as it goes and deletes its temp
-            // file on any error path.
-            let files_dir = format!("{}/files", state.config.data_path);
-            let uploaded =
-                stream_field_to_temp(&mut field, &files_dir, MAX_FILE_SIZE as u64).await?;
-            let size = uploaded.size;
-            let content_hash = uploaded.sha256_hex.clone();
-            let temp_path = format!("{}/{}", files_dir, uploaded.temp_name);
-
-            // Dedup applies only to non-deferred uploads. Drafts always get
-            // a fresh row (and content_hash = NULL) so we don't entangle
-            // them with already-shared files; the file:share handler later
-            // re-computes the hash for dedup against future uploads.
-            let existing: Option<String> = if defer {
-                None
-            } else {
-                let conn = state.db.get()?;
-                let hash_lookup = content_hash.clone();
-                tokio::task::spawn_blocking(move || {
-                    conn.query_row(
-                        "SELECT id FROM session_files WHERE content_hash = ?1 LIMIT 1",
-                        params![hash_lookup],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(|e| AppError::Internal(e.to_string()))
-                })
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))??
-            };
-
-            // Two units, deliberately named: the wire carries milliseconds (see
-            // `crate::time`), while the `created_at` insert below uses SQLite's
-            // `unixepoch` modifier, which is defined in seconds.
-            let ts_ms = crate::time::now_ms();
-            let ts_secs = (ts_ms / 1000) as i64;
-
-            let (file_id, effective_name) = if let Some(id) = existing {
-                // Dedup hit — discard the temp we just wrote; the
-                // original blob on disk is still good.
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                info!(
-                    room_slug = %participant.slug,
-                    actor_id = %participant.id,
-                    file_id = %id,
-                    action = "upload_dedup",
-                    "participant upload hit existing blob",
-                );
-                (id, original_name.clone())
-            } else {
-                let new_id = uuid::Uuid::new_v4().to_string();
-                let ext = extract_extension(&original_name);
-                let stored_name = format!("{}{}", new_id, ext);
-
-                tokio::fs::rename(&temp_path, format!("{}/{}", files_dir, stored_name))
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-
-                let conn = state.db.get()?;
-                let new_id_clone = new_id.clone();
-                let original_name_clone = original_name.clone();
-                let stored_name_clone = stored_name.clone();
-                let mime_clone = mime.clone();
-                let room_id = participant.room_id.clone();
-                let pid_db = participant.id.clone();
-                // Drafts skip the hash so they don't trip the UNIQUE index
-                // against shared rows of the same content.
-                let hash_clone: Option<String> = if defer {
-                    None
-                } else {
-                    Some(content_hash.clone())
-                };
-                let is_shared_val: i64 = if defer { 0 } else { 1 };
-                tokio::task::spawn_blocking(move || {
-                    conn.execute(
-                        "INSERT INTO session_files (id, room_id, uploader_id, original_name, stored_path, mime_type, size_bytes, content_hash, is_shared, created_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime(?10, 'unixepoch'))",
-                        params![
-                            new_id_clone,
-                            room_id,
-                            pid_db,
-                            original_name_clone,
-                            stored_name_clone,
-                            mime_clone,
-                            size as i64,
-                            hash_clone,
-                            is_shared_val,
-                            ts_secs,
-                        ],
-                    )
-                })
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))??;
-
-                (new_id, original_name.clone())
-            };
-
-            // For drafts: skip the library mirror and the live broadcast.
-            // Both run later when the participant fires the file:share WS
-            // message (see ws.rs handler).
-            if !defer {
-                // Best-effort mirror into room_files so the admin library
-                // surfaces the same file with its room chip.
-                let conn = state.db.get()?;
-                let file_id_mirror = file_id.clone();
-                let room_id_mirror = participant.room_id.clone();
-                let mirror_res = tokio::task::spawn_blocking(move || {
-                    conn.execute(
-                        "INSERT OR IGNORE INTO room_files (room_id, file_id) VALUES (?1, ?2)",
-                        params![room_id_mirror, file_id_mirror],
-                    )
-                })
-                .await;
-                if let Ok(Err(e)) = mirror_res {
-                    tracing::warn!("room_files mirror failed for {}: {}", file_id, e);
-                }
-
-                let _ = state.events.file_shared.send(FileSharedEvent {
-                    slug: participant.slug.clone(),
-                    id: file_id.clone(),
-                    participant_id: participant.id.clone(),
-                    uploader_name: participant.name.clone(),
-                    role: participant.role.clone(),
-                    name: effective_name.clone(),
-                    size,
-                    mime: mime.clone(),
-                    ts: ts_ms,
-                });
-            }
-
-            info!(
-                room_slug = %participant.slug,
-                actor_id = %participant.id,
-                file_id = %file_id,
-                size,
-                action = if defer { "upload_complete_deferred" } else { "upload_complete" },
-                "file upload complete",
-            );
-
-            return Ok(Json(json!({
-                "id": file_id,
-                "name": effective_name,
-                "size": size,
-            })));
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
+        if field.name() != Some("file") {
+            continue;
         }
+        let original_name = field.file_name().unwrap_or("upload").to_string();
+        let mime_raw = field
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let mime = sanitize_mime(&mime_raw);
+
+        // Stream the field body to disk in chunks (bounded memory) instead of
+        // materialising it as a single Vec. The helper computes Sha256 + size
+        // as it goes and deletes its temp file on any error path.
+        let files_dir = format!("{}/files", state.config.data_path);
+        let uploaded = stream_field_to_temp(&mut field, &files_dir, MAX_FILE_SIZE as u64).await?;
+        let size = uploaded.size;
+        let temp_path = format!("{}/{}", files_dir, uploaded.temp_name);
+
+        // Re-checked with the real size, now that it is known.
+        if used.saturating_add(size) > ROOM_UPLOAD_QUOTA {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(quota_exceeded());
+        }
+
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let stored_name = format!("{}{}", file_id, extract_extension(&original_name));
+        tokio::fs::rename(&temp_path, format!("{}/{}", files_dir, stored_name))
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        // `created_at` goes in as seconds through SQLite's `unixepoch` modifier;
+        // the wire carries milliseconds (see `crate::time`).
+        let ts_secs = (crate::time::now_ms() / 1000) as i64;
+        let conn = state.db.get()?;
+        let (id_db, room_id, pid_db, name_db, stored_db, mime_db) = (
+            file_id.clone(),
+            participant.room_id.clone(),
+            participant.id.clone(),
+            original_name.clone(),
+            stored_name,
+            mime,
+        );
+        // No content hash: drafts never take part in de-duplication.
+        tokio::task::spawn_blocking(move || {
+            conn.execute(
+                "INSERT INTO session_files (id, room_id, uploader_id, original_name, stored_path, mime_type, size_bytes, content_hash, is_shared, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0, datetime(?8, 'unixepoch'))",
+                params![id_db, room_id, pid_db, name_db, stored_db, mime_db, size as i64, ts_secs],
+            )
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??;
+
+        info!(
+            room_slug = %participant.slug,
+            actor_id = %participant.id,
+            file_id = %file_id,
+            size,
+            action = "upload_complete",
+            "file upload complete",
+        );
+
+        return Ok(Json(json!({
+            "id": file_id,
+            "name": original_name,
+            "size": size,
+        })));
     }
 
     Err(AppError::BadRequest("No file".into()))
@@ -593,9 +543,9 @@ async fn delete_room_file(
             return Ok(DeleteOutcome::NotFound);
         }
 
-        // Content-hash dedup means one `session_files` row can serve several
-        // rooms: a second uploader of identical bytes gets the *existing* row id
-        // back rather than a new row. So "this file originated in my room" does
+        // One `session_files` row can serve several rooms: the admin library
+        // assigns any shared file — this room's uploads included — to other
+        // rooms through `room_files`. So "this file originated in my room" does
         // not imply "only my room has it" — hard-deleting on `direct_here` alone
         // removed the file, and its blob, out from under every other room
         // holding it. Only take the row when no other room still does.
@@ -680,8 +630,13 @@ async fn delete_room_file(
 }
 
 pub fn router() -> Router<Arc<AppState>> {
+    let upload_handler = if crate::routes::rate_limit::enabled() {
+        post(upload_file).layer(crate::routes::rate_limit::upload_layer())
+    } else {
+        post(upload_file)
+    };
     Router::new()
-        .route("/{slug}/files", post(upload_file).get(list_files))
+        .route("/{slug}/files", upload_handler.get(list_files))
         .route("/{slug}/files/{fileId}/download", get(download_file))
         .route(
             "/{slug}/files/{fileId}",

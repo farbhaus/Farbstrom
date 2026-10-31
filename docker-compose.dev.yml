@@ -17,15 +17,20 @@
 # bare `docker compose …` pick up both for the rest of your shell session.
 services:
   farbstrom:
+    # A local name for the local build. Without it the build was tagged with the
+    # base file's farbhaus/farbstrom:latest — so on a machine that also deploys,
+    # a later plain `docker compose up -d` ran this source build as "the
+    # published image".
+    image: farbstrom:dev
     build:
       context: .
       # Honor the component pins from .env for local source builds. (Defaults
       # live in the Dockerfile and are what CI bakes into the published image.)
       args:
         OME_VERSION: ${OME_TAG:-v0.21.0}
-        LIVEKIT_VERSION: ${LIVEKIT_TAG:-v1.13.5}
-        CADDY_VERSION: ${CADDY_TAG:-2.11.4}
-        VALKEY_VERSION: ${VALKEY_TAG:-9.1.1}
+        LIVEKIT_VERSION: ${LIVEKIT_TAG:-v1.13.11}
+        CADDY_VERSION: ${CADDY_TAG:-2.11.7}
+        VALKEY_VERSION: ${VALKEY_TAG:-9.1.3}
     volumes:
       # Live frontend assets over the copy baked into the image. Requires
       # www/dist to exist on the host — `make dev` builds it (frontend-build);

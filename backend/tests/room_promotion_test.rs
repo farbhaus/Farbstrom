@@ -2,45 +2,8 @@ mod common;
 
 use axum::http::header;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
 
-/// A stand-in OME whose "currently broadcasting" list can be changed after the
-/// server is up — so a test can build its AppState first, seed a stream key,
-/// and only then declare that key live.
-type Broadcasting = Arc<Mutex<Vec<String>>>;
-
-async fn fake_ome() -> (String, Broadcasting) {
-    let active: Broadcasting = Arc::new(Mutex::new(Vec::new()));
-    let handler_state = active.clone();
-    let app = axum::Router::new().route(
-        "/vhosts/default/apps/live/streams",
-        axum::routing::get(move || {
-            let active = handler_state.clone();
-            async move {
-                let names = active.lock().unwrap().clone();
-                axum::Json(json!({
-                    "statusCode": 200,
-                    "message": "OK",
-                    "response": names,
-                }))
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    (format!("http://{}", addr), active)
-}
-
-/// AppState wired to a fake OME. Returns the handle for declaring keys live.
-async fn state_with_fake_ome() -> (Arc<stream_backend::state::AppState>, Broadcasting) {
-    let (url, active) = fake_ome().await;
-    let mut config = common::test_config();
-    config.ome_api_url = url;
-    (common::test_state_with_config(config), active)
-}
+use common::state_with_fake_ome;
 
 fn auth(token: &str) -> (header::HeaderName, axum::http::HeaderValue) {
     (
@@ -58,9 +21,12 @@ fn auth(token: &str) -> (header::HeaderName, axum::http::HeaderValue) {
 async fn attaching_an_already_broadcasting_key_promotes_immediately() {
     let (state, broadcasting) = state_with_fake_ome().await;
     let server = common::test_app(state.clone());
-    let (sk_id, key_token) = common::seed_stream_key(&state, "Live Key");
+    let (sk_id, _key_token) = common::seed_stream_key(&state, "Live Key");
     let room_id = common::seed_room_full(&state, "Room", "promote-attach", "pending", false, None);
-    broadcasting.lock().unwrap().push(key_token);
+    broadcasting
+        .lock()
+        .unwrap()
+        .push(common::playback_id(&state, &sk_id));
 
     let (n, v) = auth(&common::admin_token(&state));
     let res = server
@@ -81,8 +47,11 @@ async fn attaching_an_already_broadcasting_key_promotes_immediately() {
 async fn creating_a_room_with_an_already_broadcasting_key_starts_live() {
     let (state, broadcasting) = state_with_fake_ome().await;
     let server = common::test_app(state.clone());
-    let (sk_id, key_token) = common::seed_stream_key(&state, "Live Key");
-    broadcasting.lock().unwrap().push(key_token);
+    let (sk_id, _key_token) = common::seed_stream_key(&state, "Live Key");
+    broadcasting
+        .lock()
+        .unwrap()
+        .push(common::playback_id(&state, &sk_id));
 
     let (n, v) = auth(&common::admin_token(&state));
     let res = server
@@ -101,7 +70,7 @@ async fn swapping_to_another_broadcasting_key_promotes_immediately() {
     let (state, broadcasting) = state_with_fake_ome().await;
     let server = common::test_app(state.clone());
     let (old_id, _old_token) = common::seed_stream_key(&state, "Idle");
-    let (new_id, new_token) = common::seed_stream_key(&state, "Live");
+    let (new_id, _new_token) = common::seed_stream_key(&state, "Live");
     let room_id = common::seed_room_full(
         &state,
         "Room",
@@ -110,7 +79,10 @@ async fn swapping_to_another_broadcasting_key_promotes_immediately() {
         false,
         Some(&old_id),
     );
-    broadcasting.lock().unwrap().push(new_token);
+    broadcasting
+        .lock()
+        .unwrap()
+        .push(common::playback_id(&state, &new_id));
 
     let (n, v) = auth(&common::admin_token(&state));
     let res = server
@@ -129,7 +101,7 @@ async fn swapping_to_another_broadcasting_key_promotes_immediately() {
 async fn attaching_a_blocked_key_does_not_promote() {
     let (state, broadcasting) = state_with_fake_ome().await;
     let server = common::test_app(state.clone());
-    let (sk_id, key_token) = common::seed_stream_key(&state, "Kicked Key");
+    let (sk_id, _key_token) = common::seed_stream_key(&state, "Kicked Key");
     let room_id = common::seed_room_full(&state, "Room", "promote-blocked", "pending", false, None);
     state
         .db
@@ -140,7 +112,10 @@ async fn attaching_a_blocked_key_does_not_promote() {
             rusqlite::params![sk_id],
         )
         .unwrap();
-    broadcasting.lock().unwrap().push(key_token);
+    broadcasting
+        .lock()
+        .unwrap()
+        .push(common::playback_id(&state, &sk_id));
 
     let (n, v) = auth(&common::admin_token(&state));
     let res = server
@@ -208,6 +183,7 @@ async fn swapping_the_stream_key_notifies_viewers() {
     let server = common::test_app(state.clone());
     let (old_id, _old_token) = common::seed_stream_key(&state, "Old");
     let (new_id, new_token) = common::seed_stream_key(&state, "New");
+    let new_playback_id = common::playback_id(&state, &new_id);
     let room_id =
         common::seed_room_full(&state, "Room", "swap-room", "pending", false, Some(&old_id));
 
@@ -223,7 +199,14 @@ async fn swapping_the_stream_key_notifies_viewers() {
 
     let evt = rx.try_recv().expect("a swap must emit stream_key_assigned");
     assert_eq!(evt.slug, "swap-room");
-    assert_eq!(evt.stream_key, new_token, "must carry the NEW key token");
+    assert_eq!(
+        evt.playback_id, new_playback_id,
+        "must carry the NEW key's playback id"
+    );
+    assert_ne!(
+        evt.playback_id, new_token,
+        "this reaches every viewer — never the ingest key"
+    );
 }
 
 /// Re-saving the same key is a no-op save from the admin form; it must not make

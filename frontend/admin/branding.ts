@@ -123,6 +123,10 @@ const ASSET_TYPE_ERR: Record<BrandAsset, string> = {
   favicon: 'Favicon must be a PNG or ICO',
 };
 
+// The server's limit (`BRANDING_MAX_BYTES` in routes/branding.rs), checked here
+// first so an oversized image fails before it is sent rather than after.
+const MAX_ASSET_BYTES = 10 * 1024 * 1024;
+
 async function uploadBrandingAsset(asset: BrandAsset): Promise<void> {
   const input = getInput(`${asset}-file-input`);
   const file = input.files?.[0];
@@ -130,6 +134,11 @@ async function uploadBrandingAsset(asset: BrandAsset): Promise<void> {
   if (!assetTypeOk(asset, file.type)) {
     input.value = '';
     toast(ASSET_TYPE_ERR[asset]);
+    return;
+  }
+  if (file.size > MAX_ASSET_BYTES) {
+    input.value = '';
+    toast('Image too large (max 10 MB)');
     return;
   }
   const fd = new FormData();
@@ -144,7 +153,8 @@ async function uploadBrandingAsset(asset: BrandAsset): Promise<void> {
     toast(`${ASSET_LABEL[asset]} updated`);
     void loadBranding();
   } else {
-    toast('Upload failed');
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    toast(data.error || 'Upload failed');
   }
 }
 

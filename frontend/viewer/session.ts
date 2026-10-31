@@ -12,13 +12,20 @@ const query = new URLSearchParams(location.search);
 // from the address bar immediately after capture.
 const hash = new URLSearchParams(location.hash.replace(/^#/, ''));
 
-export const autoPassword = query.get('p') || '';
+// A room password can ride in the link too: `#p=` keeps it out of the request
+// entirely, while `?p=` reaches the server (whose request log redacts it).
+// Either way it comes out of the address bar — and so out of history — as soon
+// as it has been read.
+export const autoPassword = hash.get('p') || query.get('p') || '';
 export const autoName = query.get('n') || '';
 export const presenterKey = hash.get('pk') || '';
 export const isPresenter = hash.get('role') === 'presenter' && presenterKey.length > 0;
 
-if (location.hash) {
-  history.replaceState(null, '', location.pathname + location.search);
+if (location.hash || query.has('p')) {
+  const kept = new URLSearchParams(location.search);
+  kept.delete('p');
+  const search = kept.toString();
+  history.replaceState(null, '', location.pathname + (search ? `?${search}` : ''));
 }
 
 // Mutable session identity, populated on join() or session resume.
@@ -42,10 +49,33 @@ export function getToken(): string {
 // can hold sessions for multiple rooms without collision.
 export const PREF_KEY = `conf_pref_${slug}`;
 export const NAME_KEY = `viewer_name_${slug}`;
-export const PASS_KEY = `viewer_pass_${slug}`;
+const PASS_KEY = `viewer_pass_${slug}`;
 export const SESSION_KEY = `viewer_session_${slug}`;
 export const KICKED_KEY = `viewer_kicked_${slug}`;
 const PRESESSION_KEY = `_presession_${slug}`;
+
+// The room password a joiner typed is kept for this tab only, so a refresh —
+// or the automatic rejoin once a kick is lifted — can fill it back in, and
+// closing the tab forgets it. It used to sit in localStorage: shared by every
+// tab, and kept indefinitely. Those copies are moved (this room's) or dropped
+// (every other room's) on the first room page load since.
+try {
+  const legacy = localStorage.getItem(PASS_KEY);
+  if (legacy && !sessionStorage.getItem(PASS_KEY)) sessionStorage.setItem(PASS_KEY, legacy);
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const key = localStorage.key(i);
+    if (key?.startsWith('viewer_pass_')) localStorage.removeItem(key);
+  }
+} catch {}
+
+export function savedPassword(): string {
+  return sessionStorage.getItem(PASS_KEY) || '';
+}
+
+export function savePassword(password: string): void {
+  if (password) sessionStorage.setItem(PASS_KEY, password);
+  else sessionStorage.removeItem(PASS_KEY);
+}
 
 export function loadSavedSession(): SavedSession | null {
   try {
@@ -59,22 +89,18 @@ export function saveSession(s: SavedSession): void {
   sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
 }
 
-export function updateSavedStreamKey(newKey: string | null): void {
+export function updateSavedPlaybackId(newKey: string | null): void {
   const raw = sessionStorage.getItem(SESSION_KEY);
   if (!raw) return;
   try {
     const s = JSON.parse(raw) as SavedSession;
-    s.streamKey = newKey;
+    s.playbackId = newKey;
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
   } catch {}
 }
 
 export function clearSession(): void {
   sessionStorage.removeItem(SESSION_KEY);
-}
-
-export function isKicked(): boolean {
-  return !!sessionStorage.getItem(KICKED_KEY);
 }
 
 export function markKicked(): void {
@@ -99,7 +125,7 @@ export function consumePresession(): void {
       participantId: ps.participantId,
       token: ps.token,
       deliveryMode: ps.deliveryMode || 'webrtc',
-      streamKey: ps.streamKey || null,
+      playbackId: ps.playbackId || null,
       role: ps.role || 'presenter',
     });
   } catch {}

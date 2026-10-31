@@ -17,9 +17,13 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
+    // `RUST_LOG` when set, `info` otherwise. This used to *add* an `info`
+    // directive on top of `RUST_LOG`, and a bare level directive replaces the
+    // one before it — so `RUST_LOG=debug` quietly logged at info.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     // Load .env file (optional, for local dev)
@@ -60,7 +64,14 @@ async fn main() {
 
     // Create shared state
     let events = events::EventChannels::new();
-    let http_client = reqwest::Client::new();
+    // Every outbound call is to OME's or LiveKit's API on localhost. With no
+    // timeout, a wedged upstream held the handler — and whoever was waiting on
+    // it, the admission webhook's recheck included — forever.
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to build the HTTP client");
     let webauthn = Arc::new(stream_backend::credentials::build_webauthn(
         &config.public_origin,
     ));

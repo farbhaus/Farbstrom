@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    routing::get,
+    routing::{delete, get},
     Json, Router,
 };
 use base64::Engine;
@@ -69,20 +69,12 @@ async fn get_status(
         })
         .unwrap_or_default();
 
-    let conf_names: Vec<&String> = names.iter().filter(|n| n.starts_with("conf-")).collect();
-    let main_names: Vec<String> = names
-        .iter()
-        .filter(|n| !n.starts_with("conf-"))
-        .cloned()
-        .collect();
-    let conf_count = conf_names.len();
-
-    // Fetch per-stream detail from OME for each main stream
+    // Fetch per-stream detail from OME for each stream
     let client = &state.http_client;
     let ome_url = &state.config.ome_api_url;
     let ome_token = &state.config.ome_api_token;
     let mut stream_details: Vec<(String, Option<Value>)> = Vec::new();
-    for name in &main_names {
+    for name in &names {
         let detail_path = format!("/vhosts/default/apps/live/streams/{}", name);
         let detail = match ome_request(
             client,
@@ -108,7 +100,7 @@ async fn get_status(
                 "SELECT sk.name as key_name, r.name as room_name, r.id as room_id, r.slug \
                  FROM stream_keys sk \
                  LEFT JOIN rooms r ON r.stream_key_id = sk.id \
-                 WHERE sk.key_token = ?1",
+                 WHERE sk.playback_id = ?1",
             )?;
             let row = stmt
                 .query_row(rusqlite::params![stream_name], |row| {
@@ -138,29 +130,11 @@ async fn get_status(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    Ok(Json(
-        serde_json::json!({ "streams": enriched, "conf_count": conf_count }),
-    ))
+    Ok(Json(serde_json::json!({ "streams": enriched })))
 }
 
-async fn list_streams(
-    _auth: AdminAuth,
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Value>, AppError> {
-    let data = ome_request(
-        &state.http_client,
-        &state.config.ome_api_url,
-        &state.config.ome_api_token,
-        reqwest::Method::GET,
-        "/vhosts/default/apps/live/streams",
-    )
-    .await?;
-
-    Ok(Json(data))
-}
-
-/// OME stream names are our own key tokens (24 hex bytes) or the `conf-<uuid>`
-/// conference streams, so they are always ASCII alphanumeric plus `-`.
+/// OME stream names are our own playback ids (24 random bytes, hex), so a real
+/// one is always ASCII alphanumeric.
 ///
 /// The value is a path segment that gets spliced into the upstream OME API URL,
 /// and axum has already percent-decoded it — so without this check a crafted
@@ -175,47 +149,25 @@ fn valid_stream_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-async fn get_stream(
-    _auth: AdminAuth,
-    State(state): State<Arc<AppState>>,
-    Path(stream_key): Path<String>,
-) -> Result<Json<Value>, AppError> {
-    if !valid_stream_name(&stream_key) {
-        return Err(AppError::BadRequest("Invalid stream name".into()));
-    }
-    let path = format!("/vhosts/default/apps/live/streams/{}", stream_key);
-    let data = ome_request(
-        &state.http_client,
-        &state.config.ome_api_url,
-        &state.config.ome_api_token,
-        reqwest::Method::GET,
-        &path,
-    )
-    .await?;
-
-    Ok(Json(data))
-}
-
 async fn delete_stream(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
-    Path(stream_key): Path<String>,
+    Path(stream_name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    if !valid_stream_name(&stream_key) {
+    if !valid_stream_name(&stream_name) {
         return Err(AppError::BadRequest("Invalid stream name".into()));
     }
 
     // Block the key BEFORE disconnecting so the encoder can't win the race by
-    // reconnecting between the OME DELETE and the block landing. The OME stream
-    // name is the ingest key token, so it matches key_token directly. Conference
-    // streams (conf-*) have no key row — the UPDATE is a harmless no-op.
+    // reconnecting between the OME DELETE and the block landing. OME publishes
+    // under the key's playback id, so that is what the stream name matches.
     {
         let conn = state.db.get()?;
-        let key = stream_key.clone();
+        let name = stream_name.clone();
         tokio::task::spawn_blocking(move || {
             conn.execute(
-                "UPDATE stream_keys SET blocked = 1 WHERE key_token = ?1",
-                rusqlite::params![key],
+                "UPDATE stream_keys SET blocked = 1 WHERE playback_id = ?1",
+                rusqlite::params![name],
             )
         })
         .await
@@ -223,7 +175,7 @@ async fn delete_stream(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
-    let path = format!("/vhosts/default/apps/live/streams/{}", stream_key);
+    let path = format!("/vhosts/default/apps/live/streams/{}", stream_name);
     let data = ome_request(
         &state.http_client,
         &state.config.ome_api_url,
@@ -236,12 +188,21 @@ async fn delete_stream(
     Ok(Json(data))
 }
 
+/// A short-lived token that lets this admin's browser play any stream — the
+/// dashboard preview and the Stream Keys tab's playback URLs (`?apt=`). OME
+/// asks the admission webhook before every browser playback session; see
+/// [`crate::playback`].
+async fn playback_token(_auth: AdminAuth, State(state): State<Arc<AppState>>) -> Json<Value> {
+    let now_secs = crate::time::now_ms() / 1000;
+    Json(serde_json::json!({
+        "token": crate::playback::mint_admin_token(&state.config.jwt_secret, now_secs),
+        "ttlSeconds": crate::playback::ADMIN_TOKEN_TTL_SECS,
+    }))
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/status", get(get_status))
-        .route("/streams", get(list_streams))
-        .route(
-            "/streams/{streamKey}",
-            get(get_stream).delete(delete_stream),
-        )
+        .route("/playback-token", get(playback_token))
+        .route("/streams/{streamName}", delete(delete_stream))
 }

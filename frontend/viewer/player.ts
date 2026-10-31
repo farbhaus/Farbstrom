@@ -185,11 +185,12 @@ export function initPlayer(): void {
 // a player exists, so a key swap left the old key mounted.
 //
 // Skips the remount when playback is already healthy, so a duplicate room:live
-// can't cause a visible blip for someone happily watching.
-export function remountLivePlayer(): void {
+// can't cause a visible blip for someone happily watching — unless `force`:
+// a new delivery mode means a different transport, healthy or not.
+export function remountLivePlayer(force = false): void {
   if (viewerStore.get().displayFile) return;
   try {
-    if (player && player.getState() === 'playing') return;
+    if (!force && player && player.getState() === 'playing') return;
   } catch {
     // getState can throw on a half-torn-down instance; fall through and remount.
   }
@@ -308,7 +309,7 @@ const PROBE_TIMEOUT_MS = 30000;
 
 function initLivePlayer(): void {
   if (player) return;
-  const { deliveryMode, streamKey } = viewerStore.get();
+  const { deliveryMode, playbackId } = viewerStore.get();
   // App-only delivery: the broadcast is watched in the native Farbplay app over
   // SRT (H.265). Don't mount a browser player — the room is conference/chat only
   // here. The "watch in Farbplay" placeholder is shown by refreshStatusOverlay.
@@ -317,7 +318,7 @@ function initLivePlayer(): void {
     enablePlayerControls(false);
     return;
   }
-  if (!streamKey) {
+  if (!playbackId) {
     mode = null;
     enablePlayerControls(false);
     return;
@@ -329,7 +330,7 @@ function initLivePlayer(): void {
   onPlaybackBlocked(null);
   // Don't mount yet — wait until OME has actually packaged the stream. See
   // waitForStreamThenMount.
-  waitForStreamThenMount(streamKey, deliveryMode === 'llhls');
+  waitForStreamThenMount(playbackId, deliveryMode === 'llhls');
 }
 
 // The room flips to 'live' the moment OME *admits* the ingest, but the stream
@@ -343,11 +344,18 @@ function initLivePlayer(): void {
 // codec. First frame now tracks OME's actual readiness instead of a retry
 // timer, and the codec verdict is available at mount time rather than after a
 // mount-then-tear-down flash.
-function waitForStreamThenMount(streamKey: string, isLlhls: boolean): void {
+// Browser playback is admission-gated: OME asks the backend before starting
+// every WebRTC or LL-HLS session, and the backend wants this participant's own
+// credentials — the same pair the file endpoints take (`backend/src/playback.rs`).
+function playbackQuery(): string {
+  return `participantId=${encodeURIComponent(getParticipantId())}&token=${encodeURIComponent(getToken())}`;
+}
+
+function waitForStreamThenMount(playbackId: string, isLlhls: boolean): void {
   const generation = ++probeGeneration;
   const host = location.host;
   const proto = location.protocol === 'https:' ? 'https' : 'http';
-  const url = `${proto}://${host}/live/${streamKey}/llhls.m3u8`;
+  const url = `${proto}://${host}/live/${playbackId}/llhls.m3u8?${playbackQuery()}`;
   const deadline = Date.now() + PROBE_TIMEOUT_MS;
 
   const attempt = async (): Promise<void> => {
@@ -362,7 +370,7 @@ function waitForStreamThenMount(streamKey: string, isLlhls: boolean): void {
         // Never showed up. Mount anyway rather than leaving a permanently dead
         // tile — LL-HLS could be disabled, or this could be a stream shape the
         // playlist doesn't describe. The player's own retry takes it from here.
-        mountLivePlayer(streamKey, isLlhls);
+        mountLivePlayer(playbackId, isLlhls);
       }
       return;
     }
@@ -374,20 +382,20 @@ function waitForStreamThenMount(streamKey: string, isLlhls: boolean): void {
       onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
       return;
     }
-    mountLivePlayer(streamKey, isLlhls);
+    mountLivePlayer(playbackId, isLlhls);
   };
 
   void attempt();
 }
 
-function mountLivePlayer(streamKey: string, isLlhls: boolean): void {
+function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
   if (player || mode !== 'live') return;
   const host = location.host;
   const proto = location.protocol === 'https:' ? 'https' : 'http';
   const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
   const sources = isLlhls
-    ? [{ type: 'll-hls', file: `${proto}://${host}/live/${streamKey}/llhls.m3u8` }]
-    : [{ type: 'webrtc', file: `${wsproto}://${host}/live/${streamKey}` }];
+    ? [{ type: 'll-hls', file: `${proto}://${host}/live/${playbackId}/llhls.m3u8?${playbackQuery()}` }]
+    : [{ type: 'webrtc', file: `${wsproto}://${host}/live/${playbackId}?${playbackQuery()}` }];
 
   player = OvenPlayer.create('player', {
     autoStart: true,
@@ -525,12 +533,12 @@ function handleFileError(): void {
 // The unified stage tile (#tile-stream) is visible whenever there's
 // something to show: a live stream key OR a presenter-displayed file.
 function updateStageVisibility(): void {
-  const { streamKey, displayFile, deliveryMode } = viewerStore.get();
+  const { playbackId, displayFile, deliveryMode } = viewerStore.get();
   const tile = document.getElementById('tile-stream');
   if (!tile) return;
   // App-only (SRT) rooms have no browser broadcast — the tile only appears for
   // a presenter-displayed file.
-  const hasBrowserBroadcast = !!streamKey && deliveryMode !== 'srt';
+  const hasBrowserBroadcast = !!playbackId && deliveryMode !== 'srt';
   if (hasBrowserBroadcast || displayFile) tile.classList.remove('hidden');
   else tile.classList.add('hidden');
 }

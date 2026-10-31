@@ -12,11 +12,13 @@ export function getToken(): string {
 
 export function setToken(value: string): void {
   token = value;
+  fileLink = null;
   localStorage.setItem(TOKEN_KEY, value);
 }
 
 export function clearToken(): void {
   token = '';
+  fileLink = null;
   localStorage.removeItem(TOKEN_KEY);
 }
 
@@ -43,10 +45,50 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
   return res;
 }
 
+/// Library previews and downloads are `<img>` / `<video>` / download-link URLs,
+/// which cannot carry the session header — so they carry `?ft=`, a token that
+/// opens library files and nothing else, lasts ten minutes, and dies with a
+/// session revocation. Those URLs used to carry the session token itself.
+/// Cached, and renewed while it still has a couple of minutes left; reset by
+/// any new session token, since that can mean a new generation.
+let fileLink: { token: string; expiresAt: number } | null = null;
+
+export async function fileLinkToken(): Promise<string> {
+  if (fileLink && fileLink.expiresAt - Date.now() > 120_000) return fileLink.token;
+  const res = await apiFetch('/api/admin/files/link-token');
+  if (!res || !res.ok) return '';
+  const data = (await res.json().catch(() => null)) as { token?: string; ttlSeconds?: number } | null;
+  if (!data?.token) return '';
+  fileLink = { token: data.token, expiresAt: Date.now() + (data.ttlSeconds ?? 0) * 1000 };
+  return data.token;
+}
+
+/// A short-lived token that lets this browser play any stream, passed as
+/// `?apt=`. Browser playback is admission-gated — OME asks the backend before
+/// every WebRTC or LL-HLS session — and this is the admin's way through. It is
+/// checked when a session starts, so five minutes is plenty.
+export async function fetchPreviewToken(): Promise<string | null> {
+  const res = await apiFetch('/api/ome/playback-token');
+  if (!res || !res.ok) return null;
+  const data = (await res.json().catch(() => null)) as { token?: string } | null;
+  return data?.token ?? null;
+}
+
 export interface LoginResult {
   ok: boolean;
   error?: string;
   totpRequired?: boolean;
+}
+
+/// The sign-in endpoints are rate limited per IP, and the limiter answers 429
+/// in plain text — which the JSON read below turned into a bare "Sign in
+/// failed", so a correct password typed after two typos read as wrong.
+function rateLimited(res: Response): string | null {
+  if (res.status !== 429) return null;
+  const wait = parseInt(res.headers.get('retry-after') || '', 10);
+  return Number.isFinite(wait) && wait > 0
+    ? `Too many attempts — locked for ${wait} s`
+    : 'Too many attempts';
 }
 
 /// `trust` asks the server for a 90-day session instead of the 7-day default —
@@ -68,6 +110,8 @@ export async function login(
   } catch {
     return { ok: false, error: 'Cannot reach server — is the backend running?' };
   }
+  const limited = rateLimited(res);
+  if (limited) return { ok: false, error: limited };
   const data = await res.json().catch(() => ({}));
   if (!res.ok) return { ok: false, error: data.error || 'Sign in failed' };
   // Password OK but a 2FA code is still needed (HTTP 200, no token).
@@ -103,6 +147,8 @@ export async function passkeyLogin(
     return { ok: false, error: 'Cannot reach server' };
   }
   if (!res.ok) {
+    const limited = rateLimited(res);
+    if (limited) return { ok: false, error: limited };
     const e = await res.json().catch(() => ({}));
     return { ok: false, error: e.error || 'No passkeys available' };
   }
@@ -118,6 +164,8 @@ export async function passkeyLogin(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, credential, trust }),
   });
+  const limitedFinish = rateLimited(fin);
+  if (limitedFinish) return { ok: false, error: limitedFinish };
   const data = await fin.json().catch(() => ({}));
   if (!fin.ok) return { ok: false, error: data.error || 'Passkey rejected' };
   setToken(data.token);
