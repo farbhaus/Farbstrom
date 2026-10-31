@@ -46,7 +46,12 @@ import {
   loadKeys,
   setOnChange as setKeysOnChange,
 } from './stream-keys.js';
-import { initSettings, loadSettings } from './settings.js';
+import {
+  initSettings,
+  loadSettings,
+  loadStudioZone,
+  setOnTimezoneChange,
+} from './settings.js';
 import { copyToClipboard } from '../shared/utils.js';
 import type { TabId } from './types.js';
 
@@ -57,7 +62,14 @@ function getActiveTab(): TabId {
 }
 
 async function loadAll(): Promise<void> {
-  await Promise.all([loadRooms(), loadKeys(), loadOme(), loadBranding(), loadDashboard()]);
+  // Rooms render their times on the studio's clock, so they wait for it.
+  await Promise.all([
+    loadStudioZone().then(loadRooms),
+    loadKeys(),
+    loadOme(),
+    loadBranding(),
+    loadDashboard(),
+  ]);
   // After keys load, push them to rooms.ts so the room modal's <select> is populated.
   setStreamKeys(getStreamKeys());
 }
@@ -244,6 +256,7 @@ function init(): void {
 
   setRoomsOnChange(() => void loadAll());
   setKeysOnChange(() => void loadAll());
+  setOnTimezoneChange(() => void loadRooms());
 
   initLoginForm();
   initTabs();

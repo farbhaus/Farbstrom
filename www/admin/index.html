@@ -1023,6 +1023,19 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
                 </div>
             </div>
         </div>
+
+        <!-- Studio timezone (gh #263). Saved on change. -->
+        <div class="room-card u-mt-3">
+            <div class="room-card-header">
+                <div class="room-card-info">
+                    <div class="room-card-name">Timezone</div>
+                    <div class="room-card-meta">Room start and expiry times are entered in this zone, and invites and the waiting screen name it. Guests in another zone also see their own time.</div>
+                </div>
+            </div>
+            <div class="room-card-body u-p-card-tight">
+                <div class="form-row"><select id="set-tz" aria-label="Timezone"></select></div>
+            </div>
+        </div>
     </div>
 
 </div>
@@ -1059,12 +1072,10 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
             <div class="form-row">
                 <label>Starts</label>
                 <input type="datetime-local" id="room-starts">
-                <small style="color:var(--dim);font-size:var(--fs-xs);margin-top:var(--sp-1)">Optional — holds joiners until this time, then auto-admits</small>
             </div>
             <div class="form-row">
                 <label>Expires</label>
                 <input type="datetime-local" id="room-expires">
-                <small style="color:var(--dim);font-size:var(--fs-xs);margin-top:var(--sp-1)">Your local time</small>
             </div>
             <div class="form-row">
                 <label>Stream Key</label>

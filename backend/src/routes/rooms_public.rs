@@ -32,7 +32,8 @@ async fn room_info(
             "SELECT id, name, slug, delivery_mode, waiting_room, noise_reduction, echo_cancellation, push_to_talk, \
              CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END as has_password, \
              CASE WHEN stream_key_id IS NOT NULL THEN 1 ELSE 0 END as has_stream_key, \
-             status, starts_at \
+             status, starts_at, \
+             (SELECT value FROM settings WHERE key = ?2) AS timezone \
              FROM rooms WHERE slug = ?1",
         )?;
         let cols = &[
@@ -48,9 +49,15 @@ async fn room_info(
             "has_stream_key",
             "status",
             "starts_at",
+            // The studio timezone (gh #263), so the scheduled screen can name
+            // the zone the start time was set in. Null when unset.
+            "timezone",
         ];
         let row = stmt
-            .query_row(rusqlite::params![slug], |row| row_to_json(row, cols))
+            .query_row(
+                rusqlite::params![slug, super::admin_settings::KEY_TIMEZONE],
+                |row| row_to_json(row, cols),
+            )
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => {
                     AppError::NotFound("Room not found".into())

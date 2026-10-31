@@ -1,6 +1,8 @@
 import { apiFetch } from './auth.js';
 import { closeModal, confirmModal, openModal } from '../shared/components.js';
-import { copyToClipboard, esc, fmtDateTime, toast } from '../shared/utils.js';
+import { copyToClipboard, esc, fmtDateTime, parseDbDate, toast } from '../shared/utils.js';
+import { utcToWall, wallToUtc } from '../shared/timezone.js';
+import { studioZone } from './settings.js';
 import { initShare, openShareModal } from './share.js';
 import type { EnterRoomResponse, Participant, Room, StreamKey } from './types.js';
 
@@ -104,8 +106,8 @@ function renderRooms(): void {
     .map((r) => {
       const viewerUrl = `${VIEWER_BASE}/${r.slug}`;
       const hostUrl = `${VIEWER_BASE}/${r.slug}#role=presenter&pk=${r.presenter_key}`;
-      const starts = fmtDateTime(r.starts_at);
-      const expires = fmtDateTime(r.expires_at);
+      const starts = fmtDateTime(r.starts_at, studioZone());
+      const expires = fmtDateTime(r.expires_at, studioZone());
       const keyLabel = r.stream_key_name || '—';
 
       const metaParts = [`/${r.slug}`];
@@ -241,17 +243,17 @@ function renderRooms(): void {
 // ---- Room modal ----
 
 // starts_at / expires_at are stored as UTC "YYYY-MM-DD HH:MM:SS" (no zone
-// marker). Convert both ways for the datetime-local input, which speaks local
-// wall-clock time.
+// marker). Convert both ways for the datetime-local input, which speaks
+// wall-clock time — on the studio's clock (gh #263), which is this browser's
+// unless Settings names another.
 function isoToLocalInput(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso.replace(' ', 'T') + 'Z');
-  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
+  const d = parseDbDate(iso);
+  return d ? utcToWall(d, studioZone()) : '';
 }
 
 function localInputToIso(v: string): string | null {
-  return v ? new Date(v).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '') : null;
+  const d = wallToUtc(v, studioZone());
+  return d ? d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '') : null;
 }
 
 function openRoomModal(id: string | null): void {

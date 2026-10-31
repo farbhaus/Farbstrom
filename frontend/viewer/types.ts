@@ -25,6 +25,8 @@ export interface RoomInfo {
   name: string;
   status: RoomStatus;
   starts_at: string | null;
+  /** The studio's IANA timezone (gh #263); null when the admin has set none. */
+  timezone: string | null;
   delivery_mode: DeliveryMode;
   has_password: boolean;
   has_stream_key: boolean;

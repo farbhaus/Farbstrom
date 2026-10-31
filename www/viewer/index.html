@@ -58,7 +58,8 @@ html, body { overflow: hidden; }
 .waiting-label { color: var(--dim); }
 .waiting-name { font-size: var(--fs-lg); font-weight: var(--fw-semi); }
 .waiting-msg { color: var(--dim); font-size: var(--fs-base); }
-.waiting-msg #scheduled-when { color: var(--text); font-weight: var(--fw-semi); }
+.waiting-msg #scheduled-when,
+.waiting-msg #scheduled-local-when { color: var(--text); font-weight: var(--fw-semi); }
 .scheduled-countdown { margin-top: 6px; font-size: var(--fs-xl); font-weight: var(--fw-bold); color: var(--accent); font-variant-numeric: tabular-nums; }
 .dot-anim::after { content: ''; animation: dots 1.5s steps(4, end) infinite; }
 @keyframes dots { 0%,25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
@@ -1512,6 +1513,7 @@ body.has-focus.strip-hidden #stage-strip {
         <div class="waiting-label">Scheduled</div>
         <div class="waiting-name" id="scheduled-name"></div>
         <div class="waiting-msg">This session starts on <span id="scheduled-when"></span></div>
+        <div class="waiting-msg u-hidden" id="scheduled-local">Your time: <span id="scheduled-local-when"></span></div>
         <div class="scheduled-countdown" id="scheduled-countdown"></div>
     </div>
 </div>

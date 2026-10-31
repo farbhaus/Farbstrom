@@ -705,3 +705,108 @@ async fn a_recovery_code_is_spent_exactly_once_under_concurrency() {
     .unwrap();
     assert_eq!(left.len(), 7);
 }
+
+// ---- studio timezone (gh #263) ---------------------------------------------
+
+#[tokio::test]
+async fn timezone_requires_auth() {
+    let state = common::test_state();
+    let server = common::test_app(state);
+    let get = server.get("/api/admin/settings/timezone").await;
+    assert_eq!(get.status_code(), 401);
+    let post = server
+        .post("/api/admin/settings/timezone")
+        .json(&serde_json::json!({"timezone": "Europe/Lisbon"}))
+        .await;
+    assert_eq!(post.status_code(), 401);
+}
+
+/// The setting reaches the one public place that needs it — the room info the
+/// viewer's scheduled screen renders from — and clearing it takes it back out.
+#[tokio::test]
+async fn timezone_round_trips_and_reaches_room_info() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let slug = common::unique_slug("tz");
+    common::seed_room(&state, "TZ Room", &slug);
+    let server = common::test_app(state);
+    let info = format!("/api/public/rooms/{slug}/info");
+
+    let unset = server.get(&info).await.json::<Value>();
+    assert!(
+        unset["timezone"].is_null(),
+        "unset zone must be null: {unset}"
+    );
+
+    let res = server
+        .post("/api/admin/settings/timezone")
+        .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({"timezone": "America/Argentina/Buenos_Aires"}))
+        .await;
+    assert_eq!(res.status_code(), 200);
+
+    let got = server
+        .get("/api/admin/settings/timezone")
+        .add_header(header::AUTHORIZATION, auth_val(&token))
+        .await
+        .json::<Value>();
+    assert_eq!(got["timezone"], "America/Argentina/Buenos_Aires");
+    let room = server.get(&info).await.json::<Value>();
+    assert_eq!(room["timezone"], "America/Argentina/Buenos_Aires");
+
+    // Both null and "" clear it — "" is what the picker's "Not set" sends.
+    for clear in [Value::Null, Value::String(String::new())] {
+        server
+            .post("/api/admin/settings/timezone")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+            .json(&serde_json::json!({"timezone": "Europe/Lisbon"}))
+            .await;
+        let res = server
+            .post("/api/admin/settings/timezone")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+            .json(&serde_json::json!({"timezone": clear}))
+            .await;
+        assert_eq!(res.status_code(), 200);
+        let room = server.get(&info).await.json::<Value>();
+        assert!(room["timezone"].is_null(), "{clear} did not clear: {room}");
+    }
+}
+
+#[tokio::test]
+async fn timezone_rejects_malformed_names() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state);
+
+    for bad in [
+        "Europe/Lis bon",
+        "../etc/passwd",
+        "/Europe/Lisbon",
+        "Europe/Lisbon<script>",
+        &"A".repeat(65),
+    ] {
+        let res = server
+            .post("/api/admin/settings/timezone")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+            .json(&serde_json::json!({"timezone": bad}))
+            .await;
+        assert_eq!(res.status_code(), 400, "accepted {bad:?}");
+    }
+    // Refusals leave nothing behind.
+    let got = server
+        .get("/api/admin/settings/timezone")
+        .add_header(header::AUTHORIZATION, auth_val(&token))
+        .await
+        .json::<Value>();
+    assert!(got["timezone"].is_null());
+
+    // Accepted shapes, including the ones with digits, signs and no region.
+    for good in ["UTC", "Etc/GMT+5", "Etc/GMT-14", "America/Port-au-Prince"] {
+        let res = server
+            .post("/api/admin/settings/timezone")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+            .json(&serde_json::json!({"timezone": good}))
+            .await;
+        assert_eq!(res.status_code(), 200, "refused {good:?}");
+    }
+}

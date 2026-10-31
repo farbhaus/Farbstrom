@@ -10,6 +10,8 @@
 
 import { closeModal, openModal, wireModalClose } from '../shared/components.js';
 import { parseDbDate, toast } from '../shared/utils.js';
+import { zoneLabel } from '../shared/timezone.js';
+import { studioZone } from './settings.js';
 import type { BrandingResponse, Room } from './types.js';
 
 let shareRoom: Room | null = null;
@@ -38,20 +40,22 @@ async function resolveBrand(): Promise<string> {
   return brandName || 'Farbstrom';
 }
 
-// The recipient is usually not in the sender's timezone, so the invite spells
-// it out. fmtDateTime() is left alone: it renders bare local time, which is
-// right everywhere else in admin and wrong the moment it leaves this machine.
+// The recipient is usually not in the sender's timezone, so the invite names
+// it: "12 Oct 2026, 09:00 Lisbon time (GMT+1)", on the studio's clock (gh
+// #263) — the same zone the room modal took the time in.
 function when(s: string | null | undefined): string | null {
   const d = parseDbDate(s);
   if (!d) return null;
-  return d.toLocaleString('en-GB', {
+  const zone = studioZone();
+  const at = d.toLocaleString('en-GB', {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-    timeZoneName: 'short',
+    timeZone: zone,
   });
+  return `${at} ${zoneLabel(zone, d)}`;
 }
 
 export interface InviteOpts {
@@ -64,11 +68,8 @@ export interface InviteOpts {
 export function buildInvite(r: Room, o: InviteOpts): { subject: string; body: string } {
   const starts = when(r.starts_at);
 
-  // The start time is appended with a dash, not "on {time}" — the sentence has
-  // already spent its "on" on the site name.
-  const subject = starts
-    ? `You've been invited to a remote session on ${o.brand} — ${starts}`
-    : `You've been invited to a remote session on ${o.brand}`;
+  // The start time goes in the body's Starts line only.
+  const subject = `You've been invited to a remote session on ${o.brand}`;
 
   // Labels are deliberately not padded into columns — mail clients render in a
   // proportional font, so the alignment would not survive the trip.

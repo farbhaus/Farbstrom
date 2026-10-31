@@ -20,6 +20,7 @@ import {
 } from './session.js';
 import { viewerStore } from './state.js';
 import { getBrandName } from '../shared/branding.js';
+import { browserZone, isKnownZone, offsetLabel, zoneLabel } from '../shared/timezone.js';
 import type { JoinResponse, RoomInfo, StatusResponse } from './types.js';
 
 const API = '/api/public/rooms';
@@ -196,8 +197,26 @@ function stopScheduledCountdown(): void {
   }
 }
 
+function fmtStart(at: Date, zone: string): string {
+  const when = at.toLocaleString(undefined, {
+    timeZone: zone,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `${when} ${zoneLabel(zone, at)}`;
+}
+
 // Renders the absolute start time + a live countdown. startsAt is stored UTC
 // ("YYYY-MM-DD HH:MM:SS", no zone marker), so force a UTC parse.
+//
+// The time is given in the studio's zone when the admin has set one (gh #263)
+// — the clock the session was arranged on — and, for a guest whose own clock
+// reads differently at that moment, in theirs on a second line. Unset, it is
+// the guest's own time alone, named so it cannot be mistaken for the host's.
 export function showScheduledScreen(startsAt: string | null, name: string): void {
   waitingDisplayName = name;
   hideScreen('join-screen');
@@ -206,23 +225,24 @@ export function showScheduledScreen(startsAt: string | null, name: string): void
   if (nm) nm.textContent = name;
 
   const whenEl = el('scheduled-when');
+  const localRow = el('scheduled-local');
+  const localEl = el('scheduled-local-when');
   const countEl = el('scheduled-countdown');
   stopScheduledCountdown();
+  localRow?.classList.add('u-hidden');
   if (!startsAt) {
     if (whenEl) whenEl.textContent = '';
     if (countEl) countEl.textContent = '';
     return;
   }
   const target = new Date(startsAt.replace(' ', 'T') + 'Z');
-  if (whenEl) {
-    whenEl.textContent = target.toLocaleString(undefined, {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+  const studio = viewerStore.get().roomInfo?.timezone;
+  const mine = browserZone();
+  const zone = isKnownZone(studio) ? studio : mine;
+  if (whenEl) whenEl.textContent = fmtStart(target, zone);
+  if (zone !== mine && offsetLabel(zone, target) !== offsetLabel(mine, target)) {
+    if (localEl) localEl.textContent = fmtStart(target, mine);
+    localRow?.classList.remove('u-hidden');
   }
   const tick = (): void => {
     if (!countEl) return;

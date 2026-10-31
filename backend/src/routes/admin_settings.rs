@@ -1,6 +1,6 @@
-//! Authenticated credential management for the single admin: password
-//! change, TOTP enrolment, and passkey (WebAuthn) registration. Mounted at
-//! `/api/admin/settings`; every handler requires `AdminAuth`.
+//! Authenticated settings for the single admin: password change, TOTP
+//! enrolment, passkey (WebAuthn) registration, and the studio timezone.
+//! Mounted at `/api/admin/settings`; every handler requires `AdminAuth`.
 
 use axum::{
     extract::{Path, State},
@@ -399,6 +399,64 @@ async fn passkey_delete(
     Ok(Json(json!({ "ok": true })))
 }
 
+// ---- timezone -------------------------------------------------------------
+
+/// Settings key for the studio timezone (gh #263): an IANA name such as
+/// `Europe/Lisbon`. Absent means unset. Times are still stored as UTC; this
+/// only decides which zone the admin enters them in and which zone the invite
+/// and the viewer's scheduled screen name.
+pub const KEY_TIMEZONE: &str = "timezone";
+
+/// The shape of an IANA zone name as browsers list them (`Europe/Lisbon`,
+/// `America/Argentina/Buenos_Aires`, `UTC`, `Etc/GMT+5`). There is no tz
+/// database on this side to check membership against, so only the shape is
+/// bounded; a browser that does not know the name falls back to its own zone.
+fn valid_timezone(s: &str) -> bool {
+    s.len() <= 64
+        && s.starts_with(|c: char| c.is_ascii_alphabetic())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
+}
+
+async fn get_timezone(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db.get()?;
+    let tz = tokio::task::spawn_blocking(move || cred::settings_get(&conn, KEY_TIMEZONE))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({ "timezone": tz })))
+}
+
+#[derive(Deserialize)]
+struct TimezoneBody {
+    timezone: Option<String>,
+}
+
+/// Set the studio timezone; `null` or `""` clears it.
+async fn set_timezone(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TimezoneBody>,
+) -> Result<Json<Value>, AppError> {
+    let tz = body.timezone.filter(|s| !s.is_empty());
+    if let Some(ref s) = tz {
+        if !valid_timezone(s) {
+            return Err(AppError::BadRequest("Invalid timezone".into()));
+        }
+    }
+    let conn = state.db.get()?;
+    let stored = tz.clone();
+    tokio::task::spawn_blocking(move || match stored {
+        Some(s) => cred::settings_set(&conn, KEY_TIMEZONE, &s),
+        None => cred::settings_del(&conn, KEY_TIMEZONE),
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+    Ok(Json(json!({ "ok": true, "timezone": tz })))
+}
+
 /// Drop ceremony entries older than the TTL.
 fn sweep<T>(map: &mut std::collections::HashMap<Uuid, (Instant, T)>) {
     map.retain(|_, (ts, _)| ts.elapsed().as_secs() < CEREMONY_TTL_SECS);
@@ -415,4 +473,5 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/passkeys/register/start", post(passkey_register_start))
         .route("/passkeys/register/finish", post(passkey_register_finish))
         .route("/passkeys/{id}", axum::routing::delete(passkey_delete))
+        .route("/timezone", get(get_timezone).post(set_timezone))
 }
