@@ -13,7 +13,7 @@ Farbstrom is a private low-latency streaming platform for color-grading review s
 ```bash
 cargo check                              # fast type check
 cargo build --release                    # production binary
-cargo test                               # run all ~100 integration tests
+cargo test                               # run the whole suite (unit + integration)
 cargo test --test rooms_public_test      # single test file
 cargo test --test rooms_public_test join_creates_participant  # single test
 RUST_LOG=debug cargo test -- --nocapture # tests with logs
@@ -86,8 +86,8 @@ cp .env.example .env
 | `PORT` | `4001` | Axum bind port |
 | `DB_PATH` | `/data/stream.db` | SQLite file |
 | `DATA_PATH` | `/data` | Uploads and branding |
-| `OME_API_URL` | `http://localhost:8081/v1` | OME admin API |
-| `LIVEKIT_INTERNAL_URL` | `http://localhost:7880` | LiveKit HTTP signaling |
+| `OME_API_URL` | `http://localhost:8081/v1` | OME admin API. Must be `http://`: the backend's HTTP client is built without TLS (both upstreams are container-local), and `config.rs` refuses anything else at startup. |
+| `LIVEKIT_INTERNAL_URL` | `http://localhost:7880` | LiveKit's HTTP API (RoomService), for the backend only — never published or proxied to browsers. `http://` only, as above. |
 | `LIVEKIT_URL` | `ws://localhost:7880` | WebSocket URL sent to browser clients. In the container, **derived from `PUBLIC_HOST`** by `entrypoint.sh` (`wss://<PUBLIC_HOST>/livekit`). |
 | `PUBLIC_ORIGIN` | `http://localhost:4001` | WebAuthn RP origin/ID — must match the browser origin exactly. In the container, **derived from `PUBLIC_HOST`** (`https://<PUBLIC_HOST>`). |
 | `SITE_ADDRESS` | `localhost` | Caddy site address for the container's own Caddy. Set to your domain for standalone TLS, or `:80` (plain HTTP) to run behind an external TLS proxy. |
@@ -95,6 +95,7 @@ cp .env.example .env
 | `WEB_ROOT` | `/www` | Root of the built frontend (static mounts, `/privacy`, `/favicon.ico`, and the two HTML documents `routes::pages` rewrites). The Dockerfile copies there and the dev overlay bind-mounts `./www:/www`, so deployments never set it; it exists so tests can point at a fixture tree. |
 | `OME_LOG_PATH` | `/var/log/ovenmediaengine/ovenmediaengine.log` | OME's on-disk log, tailed by the admin dashboard's **OME Logs** panel (`GET /api/admin/ome-logs`, gh #261). OME's REST API has no log endpoint, so this reads the file sink set in the image's `origin_conf/Logger.xml` (root-owned but world-readable). Like `WEB_ROOT`, deployments never set it; it exists for test fixtures. |
 | `WEB_BIND` | `0.0.0.0` | Host interface the published HTTP/HTTPS ports bind to. Set to `127.0.0.1` when behind an external proxy so the plain-HTTP port isn't internet-reachable (Docker bypasses ufw). |
+| `TRUSTED_PROXIES` | loopback only | Peers the container's Caddy trusts to report the client address (`X-Forwarded-For`). Set `private_ranges` behind an external proxy — `deploy.sh --behind-proxy` does — or every client is seen as the proxy's Docker bridge address and shares one rate-limit bucket. See the global block in [`caddy/Caddyfile`](caddy/Caddyfile). |
 | `OME_ICE_ADDRESS` | `*`, or `127.0.0.1` when `PUBLIC_HOST` is localhost | ICE candidate address OME advertises to WHIP encoders. Derived in `entrypoint.sh`; set explicitly (e.g. a LAN IP) to push to a dev box from another machine. |
 | `SRT_PUBLIC_HOST` | host of `PUBLIC_ORIGIN` | SRT host returned by `/api/watch/:slug`. |
 | `SRT_PUBLIC_PORT` | `9998` | SRT playback UDP port returned by `/api/watch/:slug`. |
@@ -122,7 +123,7 @@ backend (Rust/Axum, localhost:4001)
 
 Browser (viewer page) — one origin, fronted by Caddy:
   ├─ OvenPlayer — stream video        (Caddy /live/*  → localhost:3333)
-  ├─ LiveKit JS SDK — cam/mic/screen  (Caddy /livekit/* → localhost:7880, wss)
+  ├─ LiveKit JS SDK — cam/mic/screen  (Caddy /livekit/rtc* → localhost:7880, wss; nothing else of 7880)
   └─ WebSocket — chat, presence       (Caddy /* → localhost:4001)
 ```
 
@@ -145,18 +146,19 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/db.rs` — R2D2 SQLite pool (8 connections), WAL mode, schema bootstrap from `schema.sql`. Connection-scoped pragmas go in `with_init` so they apply to **every** pooled connection — `foreign_keys`, `synchronous`, `busy_timeout`. `journal_mode = WAL` is set once instead, being persisted in the file header
 - `src/error.rs` — `AppError` + `IntoResponse` impl; central error → HTTP mapping
 - `src/events.rs` — typed WS event payloads shared between hub and routes
-- `src/auth.rs` — JWT (HS256, 7d) + bcrypt helpers
+- `src/auth.rs` — the `AdminAuth` extractor (Bearer header only), admin token minting (7 d, 90 d trusted), and the files-only link token behind `AdminFileAccess` (`?ft=`)
+- `src/jwt.rs` — HS256 JWT sign/verify over `hmac` + `sha2`, for the admin token and LiveKit's. Replaced the `jsonwebtoken` crate, whose RSA/EC support brought two advisories `cargo audit` had to ignore; verification refuses any `alg` but `HS256`, and a test pins that tokens minted by the old crate still verify
 - `src/livekit.rs` — hand-rolled LiveKit client: AccessToken JWT minting + RoomService HTTP
-- `src/ws.rs` — WebSocket hub, broadcast channels per room
+- `src/ws.rs` — WebSocket hub, broadcast channels per room; per-connection message limits (`Limits`) and a 16 KiB frame cap
 - `src/presence.rs` — in-memory presence registry for native SRT (Farbplay) viewers; their admission SSE connection is the heartbeat (browser viewers use the WS in `ws.rs` instead). Current Farbplay builds hold a WS *as well*, marked `client: "farbplay"` — see the roster gotcha below
 - `src/signed_policy.rs` — OME SignedPolicy streamid minting for SRT playback; the single signing helper behind both `/api/watch/:slug` (Farbplay) and the admin `/api/stream-keys/:id/srt-playback`
 - `src/tasks.rs` — background pollers: OME stream status, room expiry, file cleanup
-- `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename)
+- `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename), and stops at `MIN_FREE_BYTES` (4 GiB) free on the data volume — checked as the file grows, so concurrent uploads can't fill the disk the database lives on
 - `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `ome_logs` (admin tail of OME's log file), `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages)
-- `src/routes/sql.rs` — shared SQL: `row_to_json`, the room projection (`ROOM_SELECT` / `ROOM_SELECT_BY_ID` / `ROOM_COLS`, plus the `ROOM_LIST_*` variant carrying `waiting_count`) and `FILE_ROOM_SLUGS`. **A new `rooms` column is added here, not in seven handlers** — the projection and its column names are paired positionally, and a unit test asserts they stay the same length
+- `src/routes/sql.rs` — shared SQL: `row_to_json`, the room projection (`ROOM_SELECT_BY_ID` / `ROOM_COLS`, plus the `ROOM_LIST_*` variant carrying `waiting_count`) and `FILE_ROOM_SLUGS`. **A new `rooms` column is added here, not in seven handlers** — the projection and its column names are paired positionally, and a unit test asserts they stay the same length. The projections carry `has_password`, never `password_hash` (another test pins that)
 - `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, `verify_totp_or_recovery` (the one definition of "valid second factor", shared by login and 2FA teardown), WebAuthn RP builder
 - `src/time.rs` — `now_ms()`. **Every timestamp crossing the wire to a browser is epoch milliseconds**; route new ones through here rather than re-deriving, or they land in `new Date(ts)` as 1970
-- `tests/common/mod.rs` — shared test fixtures (in-memory DB, app setup)
+- `tests/common/mod.rs` — shared test fixtures (a fresh temp DB and data dir per test, app setup, seeding, WS clients)
 
 ## Frontend structure
 
@@ -170,14 +172,15 @@ npm run build                     # production build (CI + prod host)
 ```
 
 - `frontend/admin/` — admin SPA modules (`main`, `auth`, `rooms`, `stream-keys`, `files`, `branding`, `dashboard`, `settings`, `webauthn`, `types`). **A new `data-action` needs registering in `initDelegatedClicks()` in `main.ts`** — one delegated listener routes clicks to each module through an explicit `switch`, so an unlisted action is silently inert (the button just does nothing; no console error)
-- `frontend/viewer/` — viewer SPA modules (`main`, `types`, `state`, `session`, `screens`, `ws`, `player`, `livekit`/`conference`, `chat`, `pointer`, `roster`, `layout`, `scopes`/`scope-draw`/`scope-color`, `tour`, plus `globals.d.ts` for the CDN-loaded LiveKit/OvenPlayer globals). **A new toolbar button needs registering in `layout.ts`** — `TOOLBAR_EXTRA_IDS` (the mobile ⋯ sheet) and one of `LANDSCAPE_{LEFT,RIGHT}_IDS` (the short-landscape side pills). Miss them and the button simply vanishes on mobile, silently, exactly like an unlisted `data-action` does in admin
+- `frontend/viewer/` — viewer SPA modules (`main`, `types`, `state`, `session`, `screens`, `ws`, `player`, `livekit`/`conference`, `devices` (saved camera/mic/speaker, speaker routing, the picker's mic meter), `chat`, `pointer`, `roster`, `layout`, `scopes`/`scope-draw`/`scope-color`, `tour`, plus `globals.d.ts` for the LiveKit/OvenPlayer globals the vendored `<script>` tags define). **A new toolbar button needs registering in `layout.ts`** — `TOOLBAR_EXTRA_IDS` (the mobile ⋯ sheet) and one of `LANDSCAPE_{LEFT,RIGHT}_IDS` (the short-landscape side pills). Miss them and the button simply vanishes on mobile, silently, exactly like an unlisted `data-action` does in admin
 - `frontend/landing/` — landing page
-- `frontend/shared/` — `store.ts` (tiny reactive store), `utils.ts` (typed API wrapper, toast, formatters), `branding.ts` (read-only branding loader), `components.ts` (modal helpers)
+- `frontend/privacy/` — the privacy page's branding (its only script; kept out of the HTML so the CSP can forbid inline scripts)
+- `frontend/shared/` — `store.ts` (tiny reactive store), `utils.ts` (typed API wrapper, toast, formatters), `branding.ts` (read-only branding loader), `components.ts` (modal helpers), `timezone.ts` (zone labels and datetime-local ⇄ UTC on a named zone's clock, all via `Intl`)
 - `www/shared/` — design system CSS (`tokens.css`, `components.css`, `utils.css`); conventions in the [Design system](#design-system) section below
 - `www/{admin,viewer,landing}/index.html` — HTML markup, page-specific `<style>`, and the `<script type="module">` tag pointing at the compiled bundle
 - `www/dist/` — build output (gitignored; CI / prod host produces it)
 
-CDN-loaded runtime deps stay as `<script>` tags in the HTML: OvenPlayer, HLS.js, LiveKit client. No npm runtime deps.
+The three player libraries — OvenPlayer, hls.js, the LiveKit client — are classic `<script>` tags in the HTML, but **served from this origin**, not a CDN: exact versions are pinned as `devDependencies` in `frontend/package.json` (hashes in the lockfile) and `frontend/vendor.mjs` copies their prebuilt bundles into `www/dist/vendor/` as part of `npm run build` / `npm run watch`. That is what lets the CSP be `script-src 'self'`. They used to come from cdn.jsdelivr.net with no integrity check, two on floating versions, into pages holding the admin token.
 
 ## Design system
 
@@ -226,7 +229,9 @@ Conventions:
 
 **Enforced by CI.** `./scripts/design-lint.sh` (run it locally before pushing)
 fails on a hardcoded radius, z-index, font-size, font-weight, letter-spacing or
-color outside `tokens.css`, and on any token that is referenced-but-undefined or
+color outside `tokens.css` — and on a hardcoded radius, z-index or type value in
+a `style=""` the TypeScript writes into generated markup (`frontend/**/*.ts`;
+colors excepted there, since the scopes draw on canvas in hex), and on any token that is referenced-but-undefined or
 defined-but-unused. It allowlists exactly one thing: the `.btn-tab` radius
 reset. Both token allowlists (`UNDEFINED_OK`, `UNUSED_OK`) are empty since #248
 retired `--focus-aspect` and the `--panel-w-max`/`--strip-w-min`/`--strip-w-max`
@@ -246,16 +251,16 @@ meant neither could be promoted to `components.css`. Keep them distinct.
 
 **Authentication roles:**
 - Admin: `POST /api/auth/login` (password → JWT) — required for all `/api/rooms/*` mutations. 7 days by default, **90 days** when the login form's "trust this browser" box is ticked (`trust: true` in the body; the passkey login takes it too)
-- Participant: `POST /api/public/rooms/:slug/join` — returns a scoped JWT for WS + file access
-- Presenter role is admin-only (`POST /api/rooms/:id/enter`), never grantable from the public join flow
+- Participant: `POST /api/public/rooms/:slug/join` — returns a participant id + a random 48-hex token (stored on the `participants` row, not a JWT), the pair the WS, file, status and playback paths all take
+- Presenter: the admin's own "Enter Room" (`POST /api/rooms/:id/enter`), or the public join with the room's host link (`#role=presenter&pk=<presenter_key>`). The host link is the only public path to presenter, and its sessions are marked `participants.via_host_link = 1`: rotating the link revokes exactly those, never the admin's Enter Room session (it used to revoke every presenter, signing the admin out of the room they were hosting)
 
-**Presenter entry handoff.** Admin clicks "Enter Room" → backend creates `role='presenter', is_admitted=1` → admin JS writes `{participantId, token, deliveryMode, streamKey, role}` to `localStorage['_presession_{slug}']` and opens `/watch/{slug}` in a new tab → viewer reads the presession on load, moves it into `sessionStorage['viewer_session_{slug}']`, and deletes the localStorage entry. The localStorage key exists for milliseconds. No public URL grants presenter role. (The key really is `_presession_{slug}`, with no `viewer` prefix, unlike every other viewer key — see `PRESESSION_KEY` in `frontend/viewer/session.ts` and the writer in `frontend/admin/rooms.ts`.)
+**Presenter entry handoff.** Admin clicks "Enter Room" → backend creates `role='presenter', is_admitted=1` → admin JS writes `{participantId, token, deliveryMode, playbackId, role}` to `localStorage['_presession_{slug}']` and opens `/watch/{slug}` in a new tab → viewer reads the presession on load, moves it into `sessionStorage['viewer_session_{slug}']`, and deletes the localStorage entry. The localStorage key exists for milliseconds. (The key really is `_presession_{slug}`, with no `viewer` prefix, unlike every other viewer key — see `PRESESSION_KEY` in `frontend/viewer/session.ts` and the writer in `frontend/admin/rooms.ts`.)
 
-**Session isolation.** `viewer_session_{slug}` is in `sessionStorage` (per-tab, survives refresh, cleared on tab close); `viewer_name__/pass__{slug}` stay in `localStorage` (shared across tabs — intentional). `viewer_kicked_{slug}` is set on `{type:'kicked'}` or WS close 1008 and is checked at page load *before* WS connect, so a kicked viewer sees "Removed" instantly on refresh. If the sessionStorage flag is lost, the WS hub re-detects `is_kicked=1` and re-expels on reconnect.
+**Session isolation.** `viewer_session_{slug}` is in `sessionStorage` (per-tab, survives refresh, cleared on tab close); so is `viewer_pass_{slug}`, the room password a joiner typed — a refresh, or the automatic rejoin once a kick is lifted, fills it back in, and closing the tab forgets it. It used to sit in `localStorage` indefinitely; `session.ts` moves this room's legacy copy into the tab and drops every other room's on load. `viewer_name_{slug}` stays in `localStorage` (shared across tabs — intentional). A room password in the link is read from `#p=` (never sent to the server) or `?p=` (redacted from the request log), and wiped from the address bar either way. `viewer_kicked_{slug}` is set on `{type:'kicked'}` or WS close 1008 and is checked at page load *before* WS connect, so a kicked viewer sees "Removed" instantly on refresh. If the sessionStorage flag is lost, the WS hub re-detects `is_kicked=1` and re-expels on reconnect.
 
 **Database:** All queries use prepared statements with `?N` placeholders — no string interpolation. Schema in `backend/schema.sql`, bootstrapped on every startup.
 
-**Rate limiting:** `/api/auth/login` → 5 req/min; `/api/public/rooms/:slug/join` → 30 req/min; passkey ceremonies → 30 req/min in a separate bucket so an OS prompt doesn't burn the login budget. Uses `tower_governor` with `SmartIpKeyExtractor` (honours `X-Forwarded-For` from Caddy).
+**Rate limiting:** `/api/auth/login` → 5 req/min; `/api/public/rooms/:slug/join` → 30 req/min; passkey ceremonies → 30 req/min in a separate bucket so an OS prompt doesn't burn the login budget; and the routes a whole room hits at once — the `/ws/room/:slug` upgrade, the waiting-room event stream, `/:slug/info`, participant uploads — each a bucket of 30, refilling 1/s. Uses `tower_governor` with `SmartIpKeyExtractor`, which takes the **first** `X-Forwarded-For` address — so Caddy sends exactly one, its own `{client_ip}` (see `TRUSTED_PROXIES`), never a list a client could have started. Inside a socket, `ws.rs` caps each connection per message kind (chat 10 then 2/s; pointer moves 60 then 40/s; `pointer:hide` its own bucket, since Farbplay never throttles it; controls 20 then 10/s) and drops what's over unread. **Uploads** are bounded in bytes separately: 2.5 GB a file, 20 GB a room (`ROOM_UPLOAD_QUOTA`, drafts included), and never below 4 GiB free on the data volume; a room that has ended takes none.
 
 **Error handling:** `AppError::Internal` and `AppError::BadGateway` return a generic message to the client; actual error is logged server-side only.
 
@@ -303,13 +308,15 @@ sheet, and offers the tour as its second button rather than launching it. The
 sheet is generated from `SHORTCUTS` — the same list the key handler reads — so a
 new single-key shortcut cannot ship undocumented.
 
-**Public participant status.** `GET /api/public/rooms/:slug/status/:participantId?token=…` returns `{admitted, kicked, room_status: 'scheduled|live|ended'}`. Companion SSE stream at `/api/public/rooms/:slug/waiting/events/:participantId` emits `admitted`, `kicked`, `room_ended`, `ping` — waiting-room clients drive the full state machine from SSE alone without holding a WS open.
+**Public participant status.** `GET /api/public/rooms/:slug/status/:participantId?token=…` returns `{admitted, kicked, room_status: 'scheduled|live|ended', started, playback_id}` — `playback_id` is the room's stream as it is *now*, and null unless admitted and not kicked; a resumed viewer session takes it from here rather than from what it saved, and so does a waiting joiner the moment it is admitted — it holds no socket while it waits, so a key attached or swapped meanwhile never reached it as `stream:assigned`. Companion SSE stream at `/api/public/rooms/:slug/waiting/events/:participantId` emits `admitted`, `kicked`, `room_ended`, `ping` — waiting-room clients drive the full state machine from SSE alone without holding a WS open, and the browser one listens for all three outcomes (it used to hear only `admitted`, so a denied or ended joiner waited forever).
 
 **Moderation audit.** Kick and mute are logged via `tracing::info!` with `room_slug`, `actor_id`, `target_id` for after-the-fact audits. If LiveKit `remove_participant` fails the backend retries once after 250 ms and `error!`s on the second failure — the DB `is_kicked=1` flag and WS force-close happen first, so UI state is correct even when LiveKit is momentarily unreachable.
 
-**Farbplay room-link SRT playback** (`src/routes/watch.rs`, GitHub #165). `GET /api/watch/:slug?participantId=&token=` lets the native SRT viewer (Farbplay) connect from a room link instead of a raw `srt://` URL. The flow mirrors the browser viewer: Farbplay first `POST /api/public/rooms/:slug/join`s to become a `participants` row (password is checked there, not here), waits on the existing admission SSE (`…/waiting/events/:pid`) if the room has a waiting room, then calls this **admission-gated** endpoint. It returns `{srt: {host, port, streamid, latency}, ttlSeconds, title}` where `streamid` is `default/live/<key_token>?policy=<b64url>&signature=<b64url-hmac-sha1>`, signed with `OME_SIGNED_POLICY_SECRET` and expiring after ~30 s (`url_expire`). **OME signs the `srt://`-prefixed URL** (`srt://default/live/<key>?policy=…`, scheme + vhost as host), so the backend must HMAC that form even though the client sends only the path. OME validates it via the `<SignedPolicy>` block (scoped to the SRT publisher only). The signed streamid is minted **only for an admitted, non-kicked participant**: missing `participantId`/`token` or kicked/not-yet-admitted → **403**; unknown participant / wrong token / wrong slug / ended / expired / no stream key → **404**. A kicked viewer therefore can't reconnect (the backstop behind the SSE self-disconnect; no server-side SRT sever today — contract O1/O2). **Security caveat:** this gives expiry/replay-limiting, *not* secrecy — Farbstrom's OME stream name *is* the ingest stream key (`OutputStreamName=${OriginStreamName}`), so the key is in the streamid in plaintext (and is already handed to web viewers on join). Decoupling the playback identity from the ingest key is a separate follow-up.
+**Farbplay room-link SRT playback** (`src/routes/watch.rs`, GitHub #165). `GET /api/watch/:slug?participantId=&token=` lets the native SRT viewer (Farbplay) connect from a room link instead of a raw `srt://` URL. The flow mirrors the browser viewer: Farbplay first `POST /api/public/rooms/:slug/join`s to become a `participants` row (password is checked there, not here), waits on the existing admission SSE (`…/waiting/events/:pid`) if the room has a waiting room, then calls this **admission-gated** endpoint. It returns `{srt: {host, port, streamid, latency}, ttlSeconds, title}` where `streamid` is `default/live/<playback_id>?policy=<b64url>&signature=<b64url-hmac-sha1>`, signed with `OME_SIGNED_POLICY_SECRET` and expiring after ~30 s (`url_expire`). **OME signs the `srt://`-prefixed URL** (`srt://default/live/<playback_id>?policy=…`, scheme + vhost as host), so the backend must HMAC that form even though the client sends only the path. OME validates it via the `<SignedPolicy>` block (scoped to the SRT publisher only). The signed streamid is minted **only for an admitted, non-kicked participant**: missing `participantId`/`token` or kicked/not-yet-admitted → **403**; unknown participant / wrong token / wrong slug / ended / expired / no stream key → **404**. A kicked viewer therefore can't reconnect (the backstop behind the SSE self-disconnect; no server-side SRT sever today — contract O1/O2). The stream name in the streamid is the key's playback id, which is no secret — see "Playback ids" below.
 
-**Every SRT playback target is signed, by one helper** (`src/signed_policy.rs`, GitHub #226). `<SignedPolicy>` is enabled for the SRT publisher, and OME rejects an **unsigned** streamid exactly as it rejects an invalid one — so there is no such thing as a static, copy-pasteable SRT playback URL. Both callers mint through `signed_policy::sign_streamid(secret, stream_name, ttl)`: `/api/watch/:slug` (Farbplay, 30 s) and `GET /api/stream-keys/:id/srt-playback` (admin JWT, 300 s), which backs the **Generate** button on the Stream Keys tab's playback SRT row. The frontend cannot build this URL — the secret is backend-only — and must **percent-encode the streamid** inside the outer `srt://…?streamid=` URL, or a player reads the streamid's own `?policy=…&signature=…` as sibling SRT socket options. `url_expire` is checked at connect time only, so a session established inside the TTL keeps running.
+**Playback ids: what viewers get is never the ingest key** (`src/playback.rs`, `src/routes/webhook.rs`). Each stream key has a random `playback_id`, and OME publishes every stream under it: the admission webhook answers an allowed ingest with `new_url`, renaming the stream (measured on OME v0.21.0 for RTMP, SRT and WHIP). Join, the admin's Enter Room, `stream:assigned`, `/api/watch` and the status endpoint all hand out the playback id; the `key_token` stays in the admin's Stream Keys tab, for encoders. It used to be handed to every joiner — including ones held in the waiting room — which made every viewer able to push video into the room and to watch it without being admitted. Browser playback is admission-gated as well: `<Publishers>webrtc,llhls</Publishers>` makes OME ask the webhook before each WebRTC / LL-HLS session, and the backend allows an admitted, non-kicked participant of a running room on that stream (`participantId` + `token` in the playback URL's query, the same pair the file endpoints take) or an admin preview token (`apt`, 5 min, `GET /api/ome/playback-token`). OME asks once per session — LL-HLS chunklists ride on its own `session` parameter — so a kick refuses *new* sessions and one already playing runs on until the viewer reconnects. The OME stream list, the poller, the dashboard and the stream kick all speak playback ids; the webhook's ingest lookups still go by `key_token`, because OME's callbacks carry the URL the encoder used (`url`) beside the renamed one (`new_url`).
+
+**Every SRT playback target is signed, by one helper** (`src/signed_policy.rs`, GitHub #226). `<SignedPolicy>` is enabled for the SRT publisher, and OME rejects an **unsigned** streamid exactly as it rejects an invalid one — so there is no such thing as a static, copy-pasteable SRT playback URL. Both callers mint through `signed_policy::sign_streamid(secret, stream_name, ttl)`: `/api/watch/:slug` (Farbplay, 30 s) and `GET /api/stream-keys/:id/srt-playback` (admin JWT, 300 s), which backs the **Generate** button on the Stream Keys tab's playback SRT row (its WebRTC and LL-HLS rows have one too, minting a preview token — see "Playback ids"). The frontend cannot build this URL — the secret is backend-only — and must **percent-encode the streamid** inside the outer `srt://…?streamid=` URL, or a player reads the streamid's own `?policy=…&signature=…` as sibling SRT socket options. `url_expire` is checked at connect time only, so a session established inside the TTL keeps running.
 
 **Farbplay is marked on the WS roster** (`client: "farbplay"`, GitHub #227). Farbplay used to open no WebSocket at all and was identified purely by *SSE presence without WS presence*; pointer collaboration changed that, and the viewer's Farbplay roster section silently emptied. Its auth frame now carries `"client": "farbplay"` (absent ⇒ browser), which `ws.rs` whitelists via `normalize_client`, stores on `WsParticipant` — **on the reconnect branch too**, or a dropped socket demotes the viewer to the browser list — and republishes in `participants:update`. `roster.ts` renders marked entries in the Farbplay section, unioned with the SSE-only list that older Farbplay builds still produce. Farbplay entries stay in `viewerStore.roster`, so pointer cursors and conference tiles treat them like any other participant.
 
@@ -317,8 +324,15 @@ new single-key shortcut cannot ship undocumented.
 
 GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
-- **audit** — `cargo audit` (advisory DB check).
-- **frontend** — `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
+- **audit** — `cargo audit` (advisory DB check). Nothing is ignored: there is no `.cargo/audit.toml`, since replacing `jsonwebtoken` took the last flagged crates (`rsa`, `crypto-bigint`) out of the tree. An advisory with no fix should be ignored there, with its reason, rather than left red.
+- **frontend** — Node 26 (the active LTS, as in the Dockerfile): `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
+
+Every workflow runs with a read-only `GITHUB_TOKEN` unless a job asks for more
+(the notices job, auto-merge), and every action is pinned to a commit SHA with
+its tag in a trailing comment — which Dependabot's `github-actions` updates keep
+current. `docker-single.yml` refuses to publish a release tag that is not on
+`main`: the notices job commits to `main` on the same assumption, and `v1.1.5`
+was tagged on `dev` and shipped code `main` did not have.
 
 Third-party notices are **not** a CI gate. `docs/THIRD_PARTY_NOTICES.md` is a
 generated file, and gating it per-PR turned CI red on every dependabot cargo
@@ -333,11 +347,14 @@ fails if you don't.
 
 ## Updating pinned components
 
-Dependabot watches `cargo`, `github-actions`, and the literal Docker `FROM` bases
-(`rust`, `ubuntu`, `node`). **It cannot see the four component pins** — they are `ARG`s
-interpolated into `FROM` (`FROM caddy:${CADDY_VERSION}`), which Dependabot does not
-resolve. Nor does anything watch the CDN `<script>` tags. Both lists below are **manual**;
-check them when you touch the stack.
+Dependabot watches `cargo` (majors included — for 0.x crates every 0.y bump is a
+major, and ignoring them is how rusqlite, reqwest and the RustCrypto set fell years
+behind), `npm` in `frontend/`, `github-actions`, and the literal Docker `FROM` bases
+(`rust`, `ubuntu`, `node`). Auto-merge (into `dev`) takes patch and minor only, and
+**never the three player libraries** — their PRs wait for a by-hand playback check.
+**Dependabot cannot see the four component pins** — they are `ARG`s interpolated into
+`FROM` (`FROM caddy:${CADDY_VERSION}`), which it does not resolve. That list is
+**manual**; check it when you touch the stack.
 
 **Component versions — change all three places together**, or a local `make dev` build
 silently disagrees with what CI bakes:
@@ -352,25 +369,23 @@ The four are `OME_VERSION`, `LIVEKIT_VERSION`, `CADDY_VERSION`, `VALKEY_VERSION`
 no `build-args`, so `Dockerfile` alone decides the published image. `VALKEY_TAG` may carry
 an image suffix (`9.1.1-alpine`); the Dockerfile strips it to the source tag.
 
-**CDN scripts** — in *both* [`www/viewer/index.html`](www/viewer/index.html) and
-[`www/admin/index.html`](www/admin/index.html) (livekit-client is viewer-only). Keep the
-pages in sync. **OvenPlayer is pinned exactly**, the others float on minor: OvenPlayer's
-DOM class names are load-bearing for the chrome-hiding CSS in each page's `<style>` block
-and have drifted before, so it must never move on its own.
+**Player libraries** — exact versions in [`frontend/package.json`](frontend/package.json)
+`devDependencies` (`ovenplayer`, `hls.js`, `livekit-client`), copied into `www/dist/vendor/`
+by [`frontend/vendor.mjs`](frontend/vendor.mjs); bump with `npm install --save-exact`.
+Both [`www/viewer/index.html`](www/viewer/index.html) and
+[`www/admin/index.html`](www/admin/index.html) load them (livekit-client is viewer-only).
+Take extra care with OvenPlayer: its DOM class names are load-bearing for the
+chrome-hiding CSS in each page's `<style>` block and have drifted before. Diff the
+`op-*` classes between the two tarballs (`npm pack ovenplayer@<old>` / `@<new>`) and
+check each one the CSS hides still exists — 0.10.53 → 0.10.54 kept them all, and
+`viewTemplate.js` differed only in line endings.
 
 ## Useful reference docs
 
 - `README.md` — what Farbstrom is and what it does
 - `docs/DEPLOYMENT.md` — architecture diagram, tech stack, ingest protocols, deployment/ops
 
-## Recommended tests to add
-
-Still thin, worth regression coverage:
-1. Viewer JWT → presenter endpoints (`/conference/kick`, `/conference/mute`) → 403. (A *kicked* presenter is covered in `room_state_test.rs`; a plain viewer is not.)
-2. `POST /api/rooms/:id/enter` (admin JWT) produces `role='presenter' AND is_admitted=1`; no public endpoint reaches the same state.
-3. Kick blocks re-join by case-insensitive name match (`POST /api/public/rooms/:slug/join` → 403).
-4. Webhook HMAC: wrong signature → 401; tampered body → 401.
-5. Status endpoint shape: `GET /api/public/rooms/:slug/status/:pid?token=…` → `{admitted, kicked, room_status}` for each of waiting/admitted/kicked/ended.
+## Tests
 
 **Two fixtures, and the difference matters.** `common::test_app` builds only
 `routes::build_router` (the `/api/*` half) over a mock transport — fine for HTTP
@@ -382,13 +397,17 @@ while exercising nothing: an early SPA-fallback test did exactly that, because
 everything unmatched 404s in the API-only router anyway.
 
 Existing suites, worth knowing before writing overlapping ones:
-`db_integrity_test` (pool pragmas, cascades, `created_at` → epoch ms),
-`file_visibility_test` (draft visibility, dedup blast radius, delete
-accounting), `room_state_test` (ended/expired gates, kicked presenters, slugs,
+`db_integrity_test` (pool pragmas, cascades, `created_at` → epoch ms, the
+display-name cleanup),
+`file_visibility_test` (draft visibility, uploads — always drafts, the room
+quota, closed rooms — shared-row blast radius, delete accounting, admin file
+links), `room_state_test` (ended/expired gates, kicked presenters, slugs,
 stream-key deletion), `robustness_test` (colour validation, OME name allowlist),
 `ws_test` (the WS protocol surface — auth gate, kick, chat + history, roster
-markers, presenter gating, moderation filtering), `app_routing_test` (cache
-headers, SPA fallback, Open Graph injection), `rate_limit_test`.
+markers, presenter gating, moderation filtering, per-connection limits),
+`app_routing_test` (cache headers, SPA fallback, JSON 404 for unknown `/api/*`,
+Open Graph injection), `rate_limit_test` (every bucket, in one test function —
+see the gotcha below).
 
 ## Gotchas
 
@@ -414,6 +433,45 @@ Non-obvious facts that aren't derivable from reading the code.
   reconnect cannot detect a marker it fails to re-read — the value is already
   right. `reconnect_updates_the_client_marker` reconnects with a *different*
   marker, which is what actually pins that line (gh #227).
+- **The server ends a connection; it never asks.** A kick, a host revocation or
+  the room ending queue the explanatory frame and a close, then cancel the
+  connection's `closer` (`CancellationToken` on `WsParticipant`), which stops its
+  read loop. Queueing the close and waiting for the client to answer let a
+  modified client that never answered go on chatting — and a revoked presenter go
+  on steering everyone's view. `a_kicked_client_that_ignores_the_close_is_cut_off`
+  plays that client with `common::RawWs`, because axum-test's client answers a
+  close on its own.
+- **One live socket per participant.** A new authenticated socket supersedes the
+  old one (close 1008 "Superseded", then its `closer`), and the disconnect timer is
+  keyed to `conn_id`. Nothing pings from the server side, so after a dropped link
+  the client reconnects long before the old TCP connection dies — and when it
+  finally did, its timer removed the participant the new socket had taken over:
+  connected, deaf to every broadcast, gone from the roster.
+- **Event listeners must survive `RecvError::Lagged`.** The channels hold 64; a
+  receiver that falls further behind gets `Lagged` once and then carries on. Every
+  listener used to be `while let Ok(..) = rx.recv()`, which ended it for good — one
+  waiting joiner opening 150 admission streams stopped every presenter seeing new
+  arrivals until a restart. New listeners go through `spawn_listener`.
+- **A new client message type needs a bucket in `Limits::allow`.** Unknown types
+  pass free (the handler ignores them anyway), so a new one that broadcasts or
+  writes would be unthrottled until it is listed. Size buckets against what the
+  clients actually send — both throttle pointer moves to 33 ms — and give anything
+  a client must never lose (like `pointer:hide`) a bucket no flood of something
+  else can drain. Over-limit frames are dropped, not answered: a socket is never
+  closed for rate, because the viewer reads a 1008 as kicked or stale auth.
+- **Frames over 16 KiB end the connection** (`WS_MAX_MESSAGE`). The largest
+  legitimate one is a 500-character chat message; raise it before adding a message
+  that can be larger.
+
+**OME admission webhook**
+- **OME sends `closing` for every session that ends, including ones it never let
+  publish** — a second encoder refused as a duplicate of the live one, and a
+  session the webhook itself denied (both measured on v0.21.0). Demoting the room
+  on that notification let anyone with the key blank the stream for everyone. A
+  close is re-checked against OME's stream list 2 s later instead.
+- **Never call OME's REST API from inside the webhook handler.** OME is blocked
+  waiting for the webhook's reply, and the two stall each other until OME's 5 s
+  webhook timeout (measured). Answer first; ask afterwards from a spawned task.
 
 **Rate limiting**
 - **The buckets are process-global.** `tower_governor` keeps its limiter inside
@@ -424,6 +482,13 @@ Non-obvious facts that aren't derivable from reading the code.
   127.0.0.1 and drain each other), which is why `rate_limit_test.rs` is one test
   function in its own binary. It also cannot share a binary with anything calling
   `test_app`, which sets `STREAM_DISABLE_RATE_LIMIT` process-wide.
+- **A limiter that cannot tell clients apart is worse than none.** Behind an
+  external proxy every request reaches Caddy from the same Docker bridge address;
+  until `TRUSTED_PROXIES` was set there, Caddy discarded the proxy's
+  `X-Forwarded-For` (correctly — it did not trust the peer) and every client fell
+  into one bucket, so five wrong passwords from anyone locked everyone out of
+  sign-in for a minute. The `{client_ip}` the backend is handed is only as good as
+  that setting.
 
 **Database / pool**
 - **`foreign_keys` is ON here by accident of the build, not by the pragma in
@@ -465,6 +530,15 @@ Non-obvious facts that aren't derivable from reading the code.
 - `ver` is `#[serde(default)]`, so a token minted before the claim existed reads
   as generation 0 — the same value a fresh install starts at. Upgrading does not
   sign the operator out.
+- **The session token never goes in a URL.** `AdminAuth` reads the
+  `Authorization` header only. The library's `<img>` thumbnails, `<video>`
+  previews and downloads, which cannot send a header, carry `?ft=` instead — a
+  token from `GET /api/admin/files/link-token` that opens library files and
+  nothing else, lasts ten minutes, and is HMAC'd with the session generation, so
+  a revocation ends it too. Those URLs used to carry the 7- or 90-day session
+  JWT itself, into browser history. Downloads are an `<a download>` click, not
+  `window.open`: the link is built after an await, and a popup that late is fair
+  game for a blocker.
 - **Both revoking endpoints return a replacement token**, and the SPA adopts it
   (`adoptReissuedToken`), so the tab that performed the revocation is not logged
   out by its own action. "Sign out other devices" is password-gated on top of
@@ -489,12 +563,34 @@ Non-obvious facts that aren't derivable from reading the code.
   silently and invalidate the authenticator.
 
 **Files**
-- **Content-hash dedup means one `session_files` row can serve several rooms** —
-  a second uploader of identical bytes gets the *existing* row id back. So
-  "this file originated in my room" does not imply "only my room has it": the
-  host delete path checks `room_files` for other rooms before hard-deleting, and
-  otherwise only detaches. Same reason blob unlinking always recounts
-  `stored_path` references first.
+- **A participant upload is always a draft, and never de-duplicated.** There used
+  to be an immediate-share mode that de-duplicated by content hash, handing a
+  second uploader of identical bytes the *existing* row — so a guest in room B who
+  uploaded room A's file got room A's filename and uploader back, and the file
+  joined room B's list. No client used it (the viewer has always uploaded with
+  `defer=true`, now ignored); it was removed rather than made safe. Content-hash
+  dedup survives in the **admin library** upload only, where the admin sees every
+  file anyway.
+- **One `session_files` row can still serve several rooms** — the library assigns
+  any shared file, a room's own uploads included, to other rooms through
+  `room_files`. So "this file originated in my room" does not imply "only my room
+  has it": the host delete path checks `room_files` for other rooms before
+  hard-deleting, and otherwise only detaches. Blob unlinking recounts
+  `stored_path` references first for the same reason.
+- **A refused upload must be read before it is refused, or the refusal is lost.**
+  When a handler answers without reading the request body, hyper closes the
+  connection, and Caddy — still writing the upload upstream — fails with a broken
+  pipe and answers **502 with an empty body** instead (measured: one in five 1 MB
+  uploads to an ended room; straight to the backend the refusal arrived every
+  time). So an authenticated refusal reads and discards the rest first
+  (`uploads::drain`, `discard_rest`), up to 64 MiB: afterwards all 66 refused
+  uploads measured (64 KB to 30 MB) and 6 of 6 oversized branding images got their
+  real answer through Caddy. Larger bodies still race, which is why the viewer and
+  the branding form check sizes before sending. Two rules: never drain for an
+  unauthenticated request (it would make the server ingest data for anyone), and
+  never call `next_field()` on a refused field you have not finished reading —
+  multer skims the rest of it, uncounted. The rate limiter's 429 answers before
+  any of this and can race the same way; for a flood that is acceptable.
 - **Drafts (`is_shared = 0`) are hidden from every read path**, including
   `download_file` — which authorises on room membership, so without the filter
   any room member who knew a file id could pull someone else's unsent upload.
@@ -503,7 +599,16 @@ Non-obvious facts that aren't derivable from reading the code.
 **LiveKit**
 - `entrypoint.sh` generates `/livekit.yaml` with a `keys:` map (`KEY: SECRET`) — the **space after the colon** is required (YAML), else LiveKit boots with no auth and only logs "Could not parse keys". The backend must mint tokens with the same `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`. Keys are inlined into the YAML so the LiveKit process needs no key secrets in its env (`supervisord.conf` strips them with `env -u`).
 - No upstream Rust SDK — `src/livekit.rs` is hand-rolled (AccessToken JWT + RoomService over `reqwest`) against `LIVEKIT_INTERNAL_URL` (HTTP, not WSS).
+- **`DeleteRoom` checks `roomCreate`, not `roomAdmin`.** With only `roomAdmin` LiveKit answers `401 permissions denied`; every caller ignored the error, so ending, deleting or expiring a room never tore down its call (verified against 1.13.5). `RemoveParticipant` and `MutePublishedTrack` do take `roomAdmin`.
 - Caddy `/livekit/*` block needs `header_up Host {upstream_hostport}` for WebSocket signaling to work through the proxy ([`caddy/Caddyfile`](caddy/Caddyfile)).
+- **Only `/livekit/rtc*` is proxied; the rest of `/livekit/*` is a 404.** The browser client opens its socket on `/rtc/v1` (`/rtc` on older servers) and probes `…/validate` on failure (`createRtcUrl` / `createValidateUrl` in `livekit-client/src/api/utils.ts`); region lookups are LiveKit Cloud only. LiveKit's Twirp RoomService API — what the backend drives — was reachable from the internet both through this block and on a published `7880`; port 7880 is no longer published either. A new client version that needs another path has to be added here, or the call fails at connect.
+- **`entrypoint.sh` refuses to start without `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`.** They used to default to LiveKit's well-known dev pair (`devkey` / `secret`), so a deployment missing them ran a LiveKit anyone could mint tokens for, beside a backend crash-looping on the same missing variables.
+- **LiveKit refuses speaker selection on every Safari-based browser** — `supportsSetSinkId()` returns `false` for Safari without checking, so `switchActiveDevice('audiooutput')` throws there, although Safari has shipped `HTMLMediaElement.setSinkId` since 18.4. `devices.ts` routes the remote `<audio>` elements LiveKit's `attach()` returns (and the broadcast's `<video>`) itself whenever `supportsAudioOutputSelection()` is false. WebKit honours `setSinkId` only inside a user gesture, so the picker starts every element's call in the same tick; an element that appears later (new participant, player remount) is best effort and logs to the diagnostics panel if refused. Whether a given Safari release actually moves WebRTC audio is unmeasured — STP 251 fixed `setSinkId()` "reporting success without switching audio output for a single-track MediaStream". The picker's **Test** button plays a tone through a MediaStream-backed element, the same path a participant's voice takes, which is how to check.
+- **Changing capture constraints on a published mic means `restartTrack()`, not mute/unmute.** `setMicrophoneEnabled(true, opts)` on an existing track only calls `unmute()` and ignores `opts` (mute doesn't stop the track, so unmute never re-captures) — the noise/echo toggles silently needed a page refresh for exactly that reason. `restartTrack(opts)` falls back to `deviceId: {ideal: 'default'}` when `opts` carries none, so pass the current device or it jumps to the system default. A restart preserves the muted state.
+- **Never call `getUserMedia` for a kind that is already live.** Safari mutes the earlier track when the page captures the same kind again (WebKit bug 179363, "expected behaviour"), and LiveKit pauses a muted track's upstream 5 s later — the participant goes silent with nothing on screen. The device picker used to do this on every open; `listDevices()` now only asks for unnamed kinds that aren't live.
+- **A failed input switch leaves nothing capturing.** LiveKit's `restart()` stops the old track *before* `getUserMedia` for the new one (Safari requires that order), so if the new device fails the mic is dead. `switchInput()` switches back to the previous device on failure. `switchActiveDevice` also resolves `false` (no throw) when the browser captured a different device than asked — check the boolean.
+- **Saved devices are requested as a bare (ideal) `deviceId`**, so an unplugged one falls back to the default rather than failing the capture. Safari's device ids are salted per origin and the salt is lost with website data, so the label is saved too and `restoreSavedInput()` (on `LocalTrackPublished`) re-finds a renamed device by name once a capture has made labels readable.
+- **Remote audio can be blocked by autoplay policy.** A saved cam/mic pref connects the call on page load without a click; if the browser then refuses to play remote audio LiveKit emits `AudioPlaybackStatusChanged` and does nothing else. `room.startAudio()` must run inside a gesture, so the viewer arms a one-shot capture listener on the next click/key.
 
 **OvenPlayer**
 - `ovenplayer.js` does NOT bundle `hls.js` — load it separately or LLHLS fails silently.
@@ -584,17 +689,22 @@ Non-obvious facts that aren't derivable from reading the code.
 **SRT encryption** (DB-managed runtime toggle, gh #208)
 - Toggled at runtime from the admin **Settings** tab (`POST /api/stream-keys/srt-encryption` `{ingest, playback}`). **No `.env` — the DB is the sole source of truth.** The two legs are **independent**: ingest (encoder → server, 9999) and playback (server → viewers, 9998) each have their own `srt_ingest_enabled` / `srt_playback_enabled` flag + generated passphrase (`srt_{ingest,playback}_passphrase`) in the `settings` table (`src/srt.rs`, hex via `rand`). Playback is the exposed leg (public internet), so the UI recommends it; ingest is usually a trusted network. `pbkeylen` is fixed at 16 (`srt::PBKEYLEN`). Absent flag ⇒ that leg disabled.
 - The UI is **two checkboxes + one Apply button** (`frontend/admin/settings.ts`): the checkboxes stage a desired state and Apply sends the full `{ingest, playback}` state so OME restarts **once** even when both legs change. The Stream Keys tab still reads `srt-config` to append the passphrase to its SRT URLs, but the toggle lives in Settings.
-- **Why it must restart OME, not hot-reload:** OME (v0.21.0) reads its SRT passphrase from `Server.xml` `${env:...}` only at process startup — `SIGHUP` reloads just `logger.xml`, and its REST API returns 403 for bind changes. So the backend can't push a new passphrase into a running OME. The bridge: `Server.xml` is unchanged (still `${env:...}`, one bind per leg); the backend writes both passphrases to `<data>/srt.env`; the `[program:ome]` command is the `ome_start.sh` wrapper that **sources `srt.env` then execs `ome_launcher.sh`**; the handler runs `supervisorctl restart ome` (`srt::restart_ome`) to re-read it. For that restart the unprivileged backend (`user=app`) needs the supervisor socket — `[unix_http_server]` is `chown=app:app chmod=0700` in `supervisord.conf`. The passphrases reach OME **only** via `srt.env` (the wrapper), never the container env.
+- **Why it must restart OME, not hot-reload:** OME (v0.21.0) reads its SRT passphrase from `Server.xml` `${env:...}` only at process startup — `SIGHUP` reloads just `logger.xml`, and its REST API returns 403 for bind changes. So the backend can't push a new passphrase into a running OME. The bridge: `Server.xml` is unchanged (still `${env:...}`, one bind per leg); the backend writes both passphrases to `<data>/srt.env`; the `[program:ome]` command is the `ome_start.sh` wrapper that **reads `srt.env` then execs `ome_launcher.sh`**; the handler runs `supervisorctl restart ome` (`srt::restart_ome`) to re-read it. For that restart the unprivileged backend (`user=app`) needs the supervisor socket — `[unix_http_server]` is `chown=app:app chmod=0700` in `supervisord.conf`. The passphrases reach OME **only** via `srt.env` (the wrapper), never the container env.
+- **`srt.env` is parsed, never sourced.** `ome_start.sh` runs as root and the file is the backend's to write, so sourcing it gave the backend user a root shell on the next OME restart — which the same user can trigger through that socket. The wrapper takes only `SRT_INGEST_PASSPHRASE`, `SRT_PLAYBACK_PASSPHRASE` (lowercase hex, what `srt::gen_passphrase` makes) and `SRT_PBKEYLEN` (16/24/32), ignoring any other line without echoing it. The backend still writes `export NAME='value'` lines, so an older image that did source the file reads the same thing after a rollback; a passphrase that is not hex would be dropped (encryption off on that leg), which nothing generates.
 - OME's SRT passphrase is **bind-level (per-port), not per-stream**. Wire confidentiality only, *not* access control (still the admission webhook + SignedPolicy). Restarting OME briefly drops **every** stream (SRT + browser), and enabling a leg is a **hard cutover** (that leg's encoders / Farbplay clients must reconnect with the passphrase) — the admin UI confirms before applying.
 - Reads are live: `srt-config` (admin) and `/api/watch/:slug` (playback → Farbplay) resolve from the DB (`srt::resolve`). A disabled leg writes an empty passphrase to `srt.env`, so its bind stays plaintext.
 - Cold-boot ordering: the backend writes `srt.env` from the DB on startup (`srt::init_startup`, which also migrates the pre-split combined `srt_encryption_enabled` flag into the two per-leg flags); `ome_start.sh` waits up to ~10 s for the backend (priority 20) to write it before OME (priority 30) launches; fail-open to unencrypted is safe because ingest admission is fail-closed while the backend is down. Tests set `STREAM_DISABLE_OME_RESTART=1` to skip the `supervisorctl` shell-out.
 
-**Timezones**
-- `expires_at` is stored as a UTC ISO string. Admin `datetime-local` is converted both ways. Rooms created before this fix may be off by the UTC offset — re-save them in admin to correct.
+**Timezones** (gh #263)
+- `starts_at` / `expires_at` are stored as UTC `YYYY-MM-DD HH:MM:SS`. Rooms created before that fix may be off by the UTC offset — re-save them in admin to correct.
+- **The studio timezone** (Settings → Timezone, `settings.timezone`, an IANA name; `GET`/`POST /api/admin/settings/timezone`) decides which clock admin times are *entered and shown* on: the room modal's `datetime-local` inputs, the room cards, and the invite (`12 Oct 2026, 09:00 Lisbon time (GMT+1)`). It is public through `/:slug/info`'s `timezone`, so the viewer's scheduled screen states the start in that zone and adds a "Your time:" line when the guest's offset differs at that instant. Unset, admin uses the browser's zone — byte-for-byte the old behaviour — and the viewer shows the guest's own time, labelled.
+- **No tz data ships anywhere.** The backend checks only the name's shape (it has no zone database); the browser resolves it through `Intl`, and one that does not know the name falls back to its own zone (`isKnownZone`). `wallToUtc` resolves DST edges the way `new Date("YYYY-MM-DDTHH:MM")` does for local time — a repeated time is the earlier instant, a skipped one moves forward — and was checked against it every 15 minutes of a year in seven zones, Lord Howe's 30-minute and Troll's two-hour shifts included.
+- **Chrome reports some zones by their legacy alias** (`Asia/Calcutta`, not `Asia/Kolkata`), so a guest's own-zone label can read "Calcutta time" there; WebKit gives the current name. Labels are the IANA name's last segment, not CLDR's display names, which say "Western European Time" where people say Lisbon.
 
 **Docker (single container)**
-- Everything is baked into the image — `docker restart` does NOT pick up code/config changes. Rebuild: `make dev` (selects `docker-compose.dev.yml`, builds from source). `Server.xml`, `caddy/Caddyfile`, `supervisord.conf`, and the compiled `www/dist` are all baked in, so editing them on the host needs a rebuild too (except `./www` while the dev overlay's bind mount is active).
+- Everything is baked into the image — `docker restart` does NOT pick up code/config changes. Rebuild: `make dev` (selects `docker-compose.dev.yml`, builds from source, tagged `farbstrom:dev` — never `farbhaus/farbstrom`, so a later plain `docker compose up -d` on the same machine pulls the published image instead of running the local build under its name). `Server.xml`, `caddy/Caddyfile`, `supervisord.conf`, and the compiled `www/dist` are all baked in, so editing them on the host needs a rebuild too (except `./www` while the dev overlay's bind mount is active).
 - `$` in `.env` values must be doubled (`$$`) — Compose interpolates `$VAR`.
+- **The backend is compiled against a newer glibc than it runs on** (Debian bookworm 2.36 → the OME image's Ubuntu 22.04, 2.35). That works only while it needs no symbol newer than 2.35 — it needs at most 2.34 today — so the final stage runs `ldd` on the binary and fails the build on any `version … not found`, rather than shipping a backend that cannot start.
 - Start order is supervisord **priority**, not `depends_on`: Valkey → backend → OME/LiveKit → Caddy, so the admission webhook (backend, `localhost:4001`) is up before OME accepts ingests. Admission is fail-closed — if the backend is down, ingests are denied (no unauthorised streaming).
 - The OME admission webhook URL is `localhost:4001` (env-overridable `OME_WEBHOOK_URL` in `Server.xml`); LiveKit's Redis is `localhost:6379` (generated `livekit.yaml`) — no Docker service names resolve inside the single container.
 - Privilege & secrets: Caddy/OME/LiveKit run as root (privileged ports / TURN); the backend (`user=app`) and Valkey (`user=valkey`) drop privileges. `supervisord.conf` removes the backend-only secrets (`JWT_SECRET`, `ADMIN_PASSWORD`, `LIVEKIT_API_KEY/SECRET`) from the third-party processes via `env -u` — add any new such secret to those four `-u` lists.

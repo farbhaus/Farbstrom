@@ -14,8 +14,8 @@ use tokio_util::io::ReaderStream;
 
 use tracing::info;
 
-use crate::auth::AdminAuth;
-use crate::error::AppError;
+use crate::auth::{AdminAuth, AdminFileAccess};
+use crate::error::{multipart_error, AppError};
 use crate::events::{FileSharedEvent, FileUnsharedEvent};
 use crate::routes::files::{extract_extension, sanitize_mime, MAX_FILE_SIZE, SAFE_MIMES};
 use crate::routes::sql::FILE_ROOM_SLUGS;
@@ -214,11 +214,7 @@ async fn upload_library_file(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
-    {
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
         if field.name() != Some("file") {
             continue;
         }
@@ -346,14 +342,18 @@ async fn replace_file(
     Path(file_id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
-    // Load existing row so we can delete the old blob after success
+    // Load existing row so we can delete the old blob after success. Replacing
+    // swaps the contents and keeps the row's name (renaming is its own action),
+    // so the name announced to the rooms below is the stored one — announcing
+    // the uploaded file's name showed every room a name the database never
+    // kept, gone again on their next reload.
     let conn = state.db.get()?;
     let file_id_lookup = file_id.clone();
-    let existing: Option<(String, Option<String>)> = tokio::task::spawn_blocking(move || {
+    let existing: Option<(String, String)> = tokio::task::spawn_blocking(move || {
         conn.query_row(
-            "SELECT stored_path, content_hash FROM session_files WHERE id = ?1",
+            "SELECT stored_path, original_name FROM session_files WHERE id = ?1",
             params![file_id_lookup],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
         .map_err(|e| AppError::Internal(e.to_string()))
@@ -361,14 +361,10 @@ async fn replace_file(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let (old_stored, _old_hash) =
+    let (old_stored, stored_name) =
         existing.ok_or_else(|| AppError::NotFound("File not found".into()))?;
 
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
-    {
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
         if field.name() != Some("file") {
             continue;
         }
@@ -467,7 +463,7 @@ async fn replace_file(
         }
 
         // Notify each assigned room to refresh
-        broadcast_shared_to_assigned(&state, &file_id, &mime, size, &original_name).await;
+        broadcast_shared_to_assigned(&state, &file_id, &mime, size, &stored_name).await;
 
         return Ok(Json(json!({
             "id": file_id,
@@ -583,8 +579,21 @@ async fn delete_files_inner(state: &Arc<AppState>, ids: &[String]) -> Result<usi
     Ok(deleted)
 }
 
+/// A file-link token for the library's `<img>` / `<video>` / download URLs,
+/// which cannot carry the session header (`AdminFileAccess`).
+async fn link_token(_auth: AdminAuth, State(state): State<Arc<AppState>>) -> Json<Value> {
+    let version = state
+        .admin_token_version
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let now_secs = crate::time::now_ms() / 1000;
+    Json(json!({
+        "token": crate::auth::mint_file_link_token(&state.config.jwt_secret, version, now_secs),
+        "ttlSeconds": crate::auth::FILE_LINK_TTL_SECS,
+    }))
+}
+
 async fn download_library_file(
-    _auth: AdminAuth,
+    _auth: AdminFileAccess,
     State(state): State<Arc<AppState>>,
     Path(file_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -592,7 +601,7 @@ async fn download_library_file(
 }
 
 async fn preview_library_file(
-    _auth: AdminAuth,
+    _auth: AdminFileAccess,
     State(state): State<Arc<AppState>>,
     Path(file_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -837,6 +846,7 @@ pub fn files_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_files).post(upload_library_file))
         .route("/stats", get(files_stats))
+        .route("/link-token", get(link_token))
         .route("/bulk-delete", post(bulk_delete_files))
         .route(
             "/{id}",

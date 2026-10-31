@@ -39,7 +39,7 @@ async fn issue_session(state: &AppState, trust: bool) -> Result<String, AppError
     let version = state
         .admin_token_version
         .load(std::sync::atomic::Ordering::SeqCst);
-    Ok(create_admin_token(&state.config.jwt_secret, version, ttl)?)
+    Ok(create_admin_token(&state.config.jwt_secret, version, ttl))
 }
 
 /// Public: which extra factors the login screen should offer. Reveals only
@@ -94,10 +94,6 @@ async fn login(
 
     let token = issue_session(&state, body.trust).await?;
     Ok(Json(json!({ "token": token })))
-}
-
-async fn logout() -> Json<Value> {
-    Json(json!({ "ok": true }))
 }
 
 // ---- passkey login --------------------------------------------------------
@@ -192,7 +188,6 @@ pub fn router() -> Router<Arc<AppState>> {
     };
     Router::new()
         .route("/login", login_handler)
-        .route("/logout", post(logout))
         .route("/methods", get(methods))
         .route("/passkey/start", pk_start)
         .route("/passkey/finish", pk_finish)

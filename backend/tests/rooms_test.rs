@@ -108,11 +108,10 @@ async fn create_room_push_to_talk_round_trips() {
     assert_eq!(body["noise_reduction"], 1);
 
     // Persisted.
-    let res = server
-        .get(&format!("/api/rooms/{}", room_id))
-        .add_header(name.clone(), val.clone())
-        .await;
-    assert_eq!(res.json::<Value>()["push_to_talk"], 1);
+    assert_eq!(
+        common::admin_room(&server, &token, &room_id).await["push_to_talk"],
+        1
+    );
 
     // Turning it back off via update leaves the audio settings alone.
     let res = server
@@ -149,11 +148,7 @@ async fn create_room_audio_defaults_off_round_trips() {
     assert_eq!(body["echo_cancellation"], 0);
 
     // Re-fetch to confirm it persisted.
-    let res = server
-        .get(&format!("/api/rooms/{}", room_id))
-        .add_header(name.clone(), val.clone())
-        .await;
-    let body: Value = res.json();
+    let body = common::admin_room(&server, &token, &room_id).await;
     assert_eq!(body["noise_reduction"], 0);
     assert_eq!(body["echo_cancellation"], 0);
 
@@ -173,39 +168,27 @@ async fn create_room_audio_defaults_off_round_trips() {
 // Get room
 // ---------------------------------------------------------------------------
 
+/// The room list carries what the admin UI reads per room — and, since the
+/// hash stopped riding along, only whether a password is set.
 #[tokio::test]
-async fn get_room_returns_404() {
-    let state = common::test_state();
-    let server = common::test_app(state.clone());
-    let token = common::admin_token(&state);
-    let (name, val) = auth_header(&token);
-
-    let res = server
-        .get("/api/rooms/nonexistent-id")
-        .add_header(name, val)
-        .await;
-    assert_eq!(res.status_code(), 404);
-}
-
-#[tokio::test]
-async fn get_room_succeeds() {
+async fn room_list_says_whether_a_password_is_set_without_the_hash() {
     let state = common::test_state();
     let server = common::test_app(state.clone());
     let token = common::admin_token(&state);
 
-    let room_id = common::seed_room(&state, "My Room", "my-room-abc123");
+    let open_id = common::seed_room(&state, "My Room", "my-room-abc123");
+    let locked_id =
+        common::seed_room_with_password(&state, "Locked", "locked-abc123", "hunter2-hunter2");
 
-    let (name, val) = auth_header(&token);
-    let res = server
-        .get(&format!("/api/rooms/{}", room_id))
-        .add_header(name, val)
-        .await;
-    assert_eq!(res.status_code(), 200);
-
-    let body: Value = res.json();
-    assert_eq!(body["id"], room_id);
-    assert_eq!(body["name"], "My Room");
-    assert_eq!(body["slug"], "my-room-abc123");
+    let open = common::admin_room(&server, &token, &open_id).await;
+    assert_eq!(open["name"], "My Room");
+    assert_eq!(open["slug"], "my-room-abc123");
+    assert_eq!(open["has_password"], 0);
+    let locked = common::admin_room(&server, &token, &locked_id).await;
+    assert_eq!(locked["has_password"], 1);
+    for room in [&open, &locked] {
+        assert!(room.get("password_hash").is_none(), "hash sent: {room}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -270,12 +253,7 @@ async fn end_room_succeeds() {
     assert_eq!(body["ok"], true);
 
     // Verify status changed to ended
-    let (name2, val2) = auth_header(&token);
-    let res2 = server
-        .get(&format!("/api/rooms/{}", room_id))
-        .add_header(name2, val2)
-        .await;
-    let room: Value = res2.json();
+    let room = common::admin_room(&server, &token, &room_id).await;
     assert_eq!(room["status"], "ended");
 }
 
@@ -613,15 +591,37 @@ async fn rotate_presenter_key_returns_404_for_missing_room() {
     assert_eq!(res.status_code(), 404);
 }
 
+/// Rotating revokes the presenters the old link let in, and nobody else: not
+/// viewers, and not the admin's own "Enter Room" session — which is a presenter
+/// too, and used to be signed out of the room by the admin's own rotation.
 #[tokio::test]
-async fn rotate_presenter_key_deletes_existing_presenters() {
+async fn rotate_presenter_key_revokes_host_link_presenters_only() {
     let state = common::test_state();
     let server = common::test_app(state.clone());
     let token = common::admin_token(&state);
 
     let room_id = common::seed_room(&state, "Rotate Drop", "rotate-drop-abc123");
-    let (pres_id, _) =
-        common::seed_participant(&state, &room_id, "Old Host", "presenter", true, false);
+    let key = common::get_room_presenter_key(&state, &room_id);
+    let host = server
+        .post("/api/public/rooms/rotate-drop-abc123/join")
+        .json(&json!({ "name": "Colorist", "role": "presenter", "presenter_key": key }))
+        .await;
+    assert_eq!(host.json::<Value>()["role"], "presenter");
+    let host_id = host.json::<Value>()["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (h, v) = auth_header(&token);
+    let entered = server
+        .post(&format!("/api/rooms/{}/enter", room_id))
+        .add_header(h, v)
+        .json(&json!({ "name": "Admin" }))
+        .await;
+    assert_eq!(entered.status_code(), 200);
+    let admin_id = entered.json::<Value>()["participantId"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (viewer_id, _) =
         common::seed_participant(&state, &room_id, "Old Viewer", "viewer", true, false);
 
@@ -633,22 +633,56 @@ async fn rotate_presenter_key_deletes_existing_presenters() {
     assert_eq!(res.status_code(), 200);
 
     let conn = state.db.get().unwrap();
-    let pres_exists: i64 = conn
-        .query_row(
+    let exists = |id: &str| -> bool {
+        conn.query_row(
             "SELECT COUNT(*) FROM participants WHERE id = ?1",
-            rusqlite::params![pres_id],
-            |row| row.get(0),
+            rusqlite::params![id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            == 1
+    };
+    assert!(
+        !exists(&host_id),
+        "the host-link presenter should be revoked"
+    );
+    assert!(exists(&admin_id), "the admin's own session must survive");
+    assert!(exists(&viewer_id), "viewers are untouched");
+}
+
+/// Presenters from before `via_host_link` existed cannot be told apart, so the
+/// migration marks them all as host-link sessions — a rotation must still
+/// revoke what it revoked before the upgrade.
+#[test]
+fn presenters_from_before_the_column_still_rotate_out() {
+    let dir = std::env::temp_dir().join(format!("zstream-migrate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("stream.db");
+    let (db, data) = (db_path.to_str().unwrap(), dir.to_str().unwrap());
+    // A database as it was before the column: today's schema with it dropped.
+    drop(stream_backend::db::init_pool(db, data));
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE participants DROP COLUMN via_host_link;
+             INSERT INTO rooms (id, name, slug) VALUES ('r', 'R', 'r');
+             INSERT INTO participants (id, room_id, name, role) VALUES
+                 ('p', 'r', 'Host', 'presenter'), ('v', 'r', 'Guest', 'viewer');",
         )
         .unwrap();
-    let viewer_exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM participants WHERE id = ?1",
-            rusqlite::params![viewer_id],
+    }
+    let pool = stream_backend::db::init_pool(db, data);
+    let conn = pool.get().unwrap();
+    let marked = |id: &str| -> i64 {
+        conn.query_row(
+            "SELECT via_host_link FROM participants WHERE id = ?1",
+            [id],
             |row| row.get(0),
         )
-        .unwrap();
-    assert_eq!(pres_exists, 0, "presenter should be removed");
-    assert_eq!(viewer_exists, 1, "viewer should remain");
+        .unwrap()
+    };
+    assert_eq!(marked("p"), 1);
+    assert_eq!(marked("v"), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -715,4 +749,135 @@ async fn detaching_stream_key_leaves_ended_room_ended() {
     let body: Value = res.json();
     assert!(body["stream_key_id"].is_null());
     assert_eq!(body["status"], "ended");
+}
+
+// ---------------------------------------------------------------------------
+// delivery:changed fires on a change, not on every save
+// ---------------------------------------------------------------------------
+
+/// The admin modal sends every field on every save. Treating "the body carries
+/// delivery_mode" as "it changed" pushed delivery:changed to every viewer on a
+/// rename — and each re-pinned its stage, overriding the host's grid layout.
+#[tokio::test]
+async fn saving_a_room_announces_a_delivery_mode_change_only_when_it_changes() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let token = common::admin_token(&state);
+    let room_id = common::seed_room(&state, "Room", "dm-change");
+    let mut rx = state.events.delivery_mode_changed.subscribe();
+
+    let save = |body: serde_json::Value| {
+        server
+            .put(&format!("/api/rooms/{room_id}"))
+            .add_header("Authorization", format!("Bearer {token}"))
+            .json(&body)
+    };
+
+    // A rename, with the unchanged mode along for the ride as the modal sends it.
+    assert_eq!(
+        save(json!({ "name": "Renamed", "delivery_mode": "webrtc" }))
+            .await
+            .status_code(),
+        200
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "nothing changed, nothing to announce"
+    );
+
+    assert_eq!(
+        save(json!({ "delivery_mode": "llhls" }))
+            .await
+            .status_code(),
+        200
+    );
+    assert_eq!(
+        rx.try_recv().expect("a real change is announced").mode,
+        "llhls"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Deny: the waiting room's missing "no"
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn admin_can_deny_a_waiting_participant() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let token = common::admin_token(&state);
+    let room_id = common::seed_room(&state, "Room", "deny-room");
+    let (pid, ptok) =
+        common::seed_participant(&state, &room_id, "Unwanted", "viewer", false, false);
+    let mut kicked = state.events.participant_kicked.subscribe();
+
+    let res = server
+        .post(&format!("/api/rooms/{room_id}/kick/{pid}"))
+        .add_header("Authorization", format!("Bearer {token}"))
+        .await;
+    assert_eq!(res.status_code(), 200);
+    assert_eq!(kicked.try_recv().unwrap().participant_id, pid);
+
+    // The waiting client polls this, and its admission stream says the same.
+    let status: Value = server
+        .get(&format!(
+            "/api/public/rooms/deny-room/status/{pid}?token={ptok}"
+        ))
+        .await
+        .json();
+    assert_eq!(status["kicked"], true);
+    assert_eq!(status["admitted"], false);
+}
+
+#[tokio::test]
+async fn deny_needs_an_admin_and_a_participant_of_that_room() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let token = common::admin_token(&state);
+    let room_a = common::seed_room(&state, "A", "deny-a");
+    let room_b = common::seed_room(&state, "B", "deny-b");
+    let (pid, _) = common::seed_participant(&state, &room_b, "Elsewhere", "viewer", false, false);
+
+    let anon = server
+        .post(&format!("/api/rooms/{room_a}/kick/{pid}"))
+        .await;
+    assert_eq!(anon.status_code(), 401);
+    let wrong_room = server
+        .post(&format!("/api/rooms/{room_a}/kick/{pid}"))
+        .add_header("Authorization", format!("Bearer {token}"))
+        .await;
+    assert_eq!(wrong_room.status_code(), 404);
+}
+
+/// Enter Room makes the admin an admitted presenter straight away — and, since
+/// it holds no host link, not one a link rotation revokes.
+#[tokio::test]
+async fn enter_room_creates_an_admitted_presenter_outside_the_host_link() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let token = common::admin_token(&state);
+    let room_id = common::seed_room(&state, "Enter", "enter-state-abc123");
+
+    let (h, v) = auth_header(&token);
+    let res = server
+        .post(&format!("/api/rooms/{}/enter", room_id))
+        .add_header(h, v)
+        .json(&json!({ "name": "Admin" }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["role"], "presenter");
+    let pid = body["participantId"].as_str().unwrap().to_string();
+
+    let (role, admitted, via_link): (String, i64, i64) = state
+        .db
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT role, is_admitted, via_host_link FROM participants WHERE id = ?1",
+            [&pid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((role.as_str(), admitted, via_link), ("presenter", 1, 0));
 }

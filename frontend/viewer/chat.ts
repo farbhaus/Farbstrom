@@ -251,6 +251,8 @@ interface Draft {
   state: DraftState;
   pct: number;
   xhr: XMLHttpRequest | null;
+  /** Why the server refused it, when it said (quota, size cap, room over). */
+  error?: string;
 }
 
 let drafts: Draft[] = [];
@@ -261,6 +263,11 @@ function chatAcceptsFiles(): boolean {
   const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
   return !!input && !input.disabled;
 }
+
+// The server's per-file cap (`MAX_FILE_SIZE` in routes/files.rs). Checked here
+// first: a refusal of an upload far larger than this can arrive as a dropped
+// connection rather than the reason, after the whole file has been sent.
+const MAX_UPLOAD_BYTES = 2560 * 1024 * 1024;
 
 // Single entry point for both the paperclip picker and a panel drop.
 function enqueueFiles(files: File[]): void {
@@ -275,15 +282,17 @@ function enqueueFiles(files: File[]): void {
     toast(`Up to ${MAX_DRAFTS} attachments at a time — ${files.length - accepted.length} skipped`);
   }
   for (const file of accepted) {
+    const tooBig = file.size > MAX_UPLOAD_BYTES;
     drafts.push({
       localId: `d${++draftSeq}`,
       file,
       fileId: null,
       name: file.name,
       size: file.size,
-      state: 'queued',
+      state: tooBig ? 'failed' : 'queued',
       pct: 0,
       xhr: null,
+      ...(tooBig ? { error: 'File too large (max 2.5 GB)' } : {}),
     });
   }
   renderDrafts();
@@ -336,6 +345,13 @@ function startUpload(draft: Draft): void {
       } catch {
         /* malformed response — fall through to the failure path */
       }
+    } else {
+      try {
+        const reason = (JSON.parse(xhr.responseText) as { error?: string }).error;
+        if (reason) draft.error = reason;
+      } catch {
+        /* not the API's error shape — keep the generic label */
+      }
     }
     finish('failed');
   };
@@ -355,7 +371,7 @@ function draftSubtitle(draft: Draft): string {
     case 'uploading':
       return `${fmtBytes(draft.size)} · ${draft.pct}%`;
     case 'failed':
-      return 'Upload failed';
+      return draft.error || 'Upload failed';
     default:
       return fmtBytes(draft.size);
   }

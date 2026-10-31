@@ -3,17 +3,19 @@
 #
 # Component versions are PINNED here — these defaults are what CI bakes into the
 # published image, so a rebuild can't silently pull a new major. Override per
-# build with --build-arg (the local docker-compose.override.yml wires these from
+# build with --build-arg (the local docker-compose.dev.yml wires these from
 # .env: CADDY_TAG / LIVEKIT_TAG / OME_TAG / VALKEY_TAG). NOTE: deploy hosts that
 # PULL farbhaus/farbstrom get whatever CI baked — pin the whole image there with
 # FARBSTROM_TAG; the *_TAG vars only affect a local/source build.
 ARG OME_VERSION=v0.21.0
-ARG LIVEKIT_VERSION=v1.13.5
-ARG CADDY_VERSION=2.11.4
-ARG VALKEY_VERSION=9.1.1
+ARG LIVEKIT_VERSION=v1.13.11
+ARG CADDY_VERSION=2.11.7
+ARG VALKEY_VERSION=9.1.3
 
 # ------------------------------------------------------------------------------
-# Stage 1 — Backend builder (Debian-based, matches final glibc)
+# Stage 1 — Backend builder. Debian bookworm (glibc 2.36), while the final
+# image is OME's Ubuntu 22.04 (glibc 2.35): that only works while the binary
+# needs no glibc symbol newer than 2.35, which the final stage checks.
 # ------------------------------------------------------------------------------
 FROM rust:1-bookworm AS backend-builder
 RUN apt-get update && apt-get install -y libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
@@ -65,7 +67,7 @@ RUN VER="${VALKEY_VERSION%%-*}" \
 # Stage 3 — Frontend builder (tsc → www/dist), so the image is self-contained:
 # no Node needed on CI or deploy hosts. outDir is ../www/dist → /www/dist here.
 # ------------------------------------------------------------------------------
-FROM node:22-alpine AS frontend-builder
+FROM node:26-alpine AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -85,8 +87,12 @@ FROM livekit/livekit-server:${LIVEKIT_VERSION} AS livekit-src
 # ------------------------------------------------------------------------------
 FROM ovenmedialabs/ovenmediaengine:${OME_VERSION}
 
-# Runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Runtime dependencies. `upgrade` first: the OME base image's packages are
+# frozen at whenever upstream built it, so without this the image shipped
+# whatever Ubuntu security fixes had landed since (libssl3 3.0.2-0ubuntu1.26,
+# four point releases behind, at the time this was added).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     supervisor \
     ca-certificates \
     libssl3 \
@@ -113,6 +119,14 @@ COPY --from=caddy-src /usr/bin/caddy /usr/local/bin/caddy
 # Backend binary + schema
 COPY --from=backend-builder /app/target/release/stream-backend /usr/local/bin/stream-backend
 COPY --from=backend-builder /app/schema.sql /app/schema.sql
+# Built against a newer glibc than this image has (see stage 1). It works today
+# because the binary asks for nothing past 2.34, but nothing guaranteed that:
+# fail the build here rather than ship an image whose backend cannot start.
+RUN if ldd /usr/local/bin/stream-backend 2>&1 | grep -q 'not found'; then \
+        ldd /usr/local/bin/stream-backend; \
+        echo 'stream-backend needs a newer glibc than the runtime image has' >&2; \
+        exit 1; \
+    fi
 
 # Dependency attribution notices, so the published image carries the licences of
 # what is compiled into it (see the generating stage above).
@@ -148,14 +162,16 @@ ENV LIVEKIT_INTERNAL_URL=http://localhost:7880
 ENV LIVEKIT_URL=wss://localhost/livekit
 ENV PUBLIC_ORIGIN=https://localhost
 
-# Caddy / LiveKit / OME / Backend / Valkey
+# What the host publishes: Caddy, RTMP, SRT ingest/playback, OME TURN and
+# WebRTC ingest, LiveKit ICE/TCP and media. The backend (4001), OME's API (8081)
+# and LiveKit's API (7880) are container-internal; Caddy fronts what browsers
+# need of them.
 EXPOSE 80 443 443/udp
-EXPOSE 4001
 EXPOSE 1935
 EXPOSE 9999/udp 9998/udp
 EXPOSE 3478
 EXPOSE 10000-10009/udp
-EXPOSE 7880 7881
+EXPOSE 7881
 EXPOSE 50000-50100/udp
 
 # Honest AND mode-independent: backend /healthz (app up) AND a TCP probe that

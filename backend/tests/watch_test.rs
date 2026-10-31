@@ -8,7 +8,7 @@ use serde_json::Value;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Seed a room with a stream key assigned, returning (room_id, key_token).
+/// Seed a room with a stream key assigned, returning (room_id, key_id).
 fn seed_room_with_key(
     state: &std::sync::Arc<stream_backend::state::AppState>,
     name: &str,
@@ -16,9 +16,9 @@ fn seed_room_with_key(
     status: &str,
     waiting_room: bool,
 ) -> (String, String) {
-    let (key_id, key_token) = common::seed_stream_key(state, &format!("{}-key", slug));
+    let (key_id, _key_token) = common::seed_stream_key(state, &format!("{}-key", slug));
     let room_id = common::seed_room_full(state, name, slug, status, waiting_room, Some(&key_id));
-    (room_id, key_token)
+    (room_id, key_id)
 }
 
 fn set_room_expiry(
@@ -122,7 +122,7 @@ async fn admitted_participant_gets_signed_srt_details() {
     let state = common::test_state();
     let server = common::test_app(state.clone());
 
-    let (room_id, key_token) = seed_room_with_key(&state, "Project X", "watch-ok", "live", false);
+    let (room_id, key_id) = seed_room_with_key(&state, "Project X", "watch-ok", "live", false);
     let (pid, tok) = common::seed_participant(&state, &room_id, "Alice", "viewer", true, false);
 
     let res = server.get(&watch_url("watch-ok", &pid, &tok)).await;
@@ -138,10 +138,12 @@ async fn admitted_participant_gets_signed_srt_details() {
     assert!(body["srt"]["passphrase"].is_null());
     assert!(body["srt"]["pbkeylen"].is_null());
 
-    // streamid: default/live/<key>?policy=<b64url>&signature=<b64url-hmac>
+    // streamid: default/live/<playback id>?policy=<b64url>&signature=<b64url-hmac>
+    // — the name OME publishes under, not the ingest key.
     let streamid = body["srt"]["streamid"].as_str().unwrap();
     let (signed, sig) = streamid.split_once("&signature=").unwrap();
-    assert!(signed.starts_with(&format!("default/live/{}?policy=", key_token)));
+    let playback_id = common::playback_id(&state, &key_id);
+    assert!(signed.starts_with(&format!("default/live/{}?policy=", playback_id)));
 
     let expected = common::expected_signature(&state.config.ome_signed_policy_secret, signed);
     assert_eq!(sig, expected);

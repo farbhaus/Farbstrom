@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use rand::RngExt;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::auth::AdminAuth;
 use crate::error::AppError;
-use crate::events::{HostRevokedEvent, ModerationChangedEvent};
+use crate::events::{HostRevokedEvent, KickedEvent, ModerationChangedEvent};
 use crate::livekit::LiveKitClient;
 use crate::routes::sql::{
     row_to_json, ROOM_COLS, ROOM_LIST_COLS, ROOM_LIST_SELECT, ROOM_SELECT_BY_ID,
@@ -20,10 +20,16 @@ use crate::state::AppState;
 /// Room slug: a lowercased ASCII-alphanumeric skeleton of the name plus a
 /// random suffix.
 ///
+/// The slug is the room link, and for a room without a password or waiting
+/// room it is the only thing standing between a stranger and the stream — so
+/// the suffix carries 64 random bits. It used to carry 24 (`-a1b2c3`): with the
+/// name readable in the link, guessing a room was 16.7 million tries against an
+/// endpoint nothing throttled.
+///
 /// Every character outside `[a-z0-9]` becomes a separator, so a name written
 /// wholly in a non-Latin script (Japanese, Cyrillic, Greek) reduces to nothing
 /// and used to yield a leading-dash slug like `-a1b2c3`. Such names fall back
-/// to `room`, giving `room-a1b2c3` — no name in the URL either way, but a
+/// to `room`, giving `room-<suffix>` — no name in the URL either way, but a
 /// well-formed slug rather than one starting with punctuation.
 ///
 /// The mapping guarantees pure ASCII output, so the byte-slice truncation below
@@ -46,7 +52,7 @@ fn generate_slug(name: &str) -> String {
     } else {
         &slug_base[..slug_base.len().min(80)]
     };
-    let random_suffix: [u8; 3] = rand::rng().random();
+    let random_suffix: [u8; 8] = rand::rng().random();
     let hex: String = random_suffix.iter().map(|b| format!("{:02x}", b)).collect();
     format!("{}-{}", slug_base, hex)
 }
@@ -74,30 +80,6 @@ async fn list_rooms(
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
     Ok(Json(rooms))
-}
-
-// GET /:id - single room
-async fn get_room(
-    _auth: AdminAuth,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, AppError> {
-    let conn = state.db.get()?;
-    let room = tokio::task::spawn_blocking(move || {
-        let mut stmt = conn.prepare(ROOM_SELECT_BY_ID)?;
-        let cols = ROOM_COLS;
-        let row = stmt
-            .query_row(rusqlite::params![id], |row| row_to_json(row, cols))
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => AppError::NotFound("Room not found".into()),
-                _ => AppError::Internal(e.to_string()),
-            })?;
-        Ok::<_, AppError>(row)
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))??;
-
-    Ok(Json(room))
 }
 
 #[derive(Deserialize)]
@@ -259,25 +241,24 @@ async fn update_room(
         return Err(AppError::NotFound("Room not found".into()));
     }
 
-    // Capture the current stream_key_id + slug so we can emit the right
-    // WS event (stream:assigned / stream:removed) after the UPDATE commits.
-    // Only queried when the request actually touches stream_key_id.
+    // Capture what the WS events below compare against: the stream key
+    // (stream:assigned / stream:removed) and the delivery mode
+    // (delivery:changed). The admin modal sends every field on every save, so
+    // "the request carries it" is not "it changed".
     let wants_stream_key_change = body.get("stream_key_id").is_some();
-    let (old_sk_id, slug_for_event): (Option<String>, String) = if wants_stream_key_change {
+    let (old_sk_id, slug_for_event, old_delivery_mode): (Option<String>, String, String) = {
         let conn = state.db.get()?;
         let id_q = id.clone();
         tokio::task::spawn_blocking(move || {
             conn.query_row(
-                "SELECT stream_key_id, slug FROM rooms WHERE id = ?1",
+                "SELECT stream_key_id, slug, delivery_mode FROM rooms WHERE id = ?1",
                 rusqlite::params![id_q],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
         })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .map_err(|e| AppError::Internal(e.to_string()))?
-    } else {
-        (None, String::new())
     };
 
     // Build dynamic SET clauses
@@ -483,11 +464,12 @@ async fn update_room(
         // re-mount without being told. Re-saving the SAME key stays silent.
         let attached = new_sk_id.is_some() && old_sk_id != new_sk_id;
         if attached {
-            // Pull the fresh key_token off the row we just returned so
+            // Pull the fresh playback id off the row we just returned so
             // the WS event can ship it to clients (avoids a second query
             // and keeps the value consistent with what /join would give).
-            let key_token = room
-                .get("key_token")
+            // Never the key_token: this goes to every viewer in the room.
+            let playback_id = room
+                .get("playback_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
@@ -496,7 +478,7 @@ async fn update_room(
                 .stream_key_assigned
                 .send(crate::events::StreamKeyAssignedEvent {
                     slug: slug_for_event.clone(),
-                    stream_key: key_token,
+                    playback_id,
                 });
         } else if old_sk_id.is_some() && new_sk_id.is_none() {
             // Mirror the OME poller's live -> pending transition for viewers
@@ -512,8 +494,14 @@ async fn update_room(
     }
 
     // Delivery-mode change: tell viewers so they re-layout (browser broadcast
-    // tile vs. call-grid only), mirroring the stream-key events above.
-    if let Some(dm) = body.get("delivery_mode").and_then(|v| v.as_str()) {
+    // tile vs. call-grid only), mirroring the stream-key events above. Only on
+    // an actual change: this used to fire on every save, so renaming a room
+    // re-pinned every viewer's stage — overriding the host's grid layout.
+    if let Some(dm) = body
+        .get("delivery_mode")
+        .and_then(|v| v.as_str())
+        .filter(|dm| *dm != old_delivery_mode)
+    {
         if let Some(slug) = room.get("slug").and_then(|v| v.as_str()) {
             let _ =
                 state
@@ -648,7 +636,9 @@ async fn delete_room(
     let _ = state.events.room_ended.send(slug.clone());
 
     let livekit = LiveKitClient::new(&state.config, state.http_client.clone());
-    let _ = livekit.delete_room(&slug).await;
+    if let Err(e) = livekit.delete_room(&slug).await {
+        tracing::warn!(room_slug = %slug, error = %e, "LiveKit delete_room failed");
+    }
 
     Ok(Json(json!({ "ok": true })))
 }
@@ -667,21 +657,15 @@ async fn enter_room(
 ) -> Result<Json<Value>, AppError> {
     let name = body
         .name
-        .map(|n| {
-            let trimmed = n.trim().to_string();
-            if trimmed.is_empty() {
-                "Host".to_string()
-            } else {
-                trimmed.chars().take(50).collect()
-            }
-        })
+        .as_deref()
+        .and_then(crate::routes::rooms_public::clean_display_name)
         .unwrap_or_else(|| "Host".to_string());
 
     let conn = state.db.get()?;
     let id_clone = id.clone();
     let room_data = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
-            "SELECT r.slug, r.delivery_mode, sk.key_token \
+            "SELECT r.slug, r.delivery_mode, sk.playback_id \
              FROM rooms r \
              LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
              WHERE r.id = ?1",
@@ -703,7 +687,7 @@ async fn enter_room(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let (slug, delivery_mode, stream_key) = room_data;
+    let (slug, delivery_mode, playback_id) = room_data;
 
     let participant_id = uuid::Uuid::new_v4().to_string();
     let token_bytes: [u8; 24] = rand::rng().random();
@@ -730,7 +714,7 @@ async fn enter_room(
         "token": token,
         "slug": slug,
         "deliveryMode": delivery_mode,
-        "streamKey": stream_key,
+        "playbackId": playback_id,
         "role": "presenter",
     })))
 }
@@ -758,11 +742,15 @@ async fn rotate_presenter_key(
         return Err(AppError::NotFound("Room not found".into()));
     }
 
-    // Look up the room slug + current presenter participants. The old host
+    // Look up the room slug + the presenters the old host link let in. That
     // link must stop granting host privileges immediately — delete those
-    // participant rows (invalidates their session token) and push a WS
-    // event that force-rejoins them through the public join API, which now
-    // sees the stale pk and downgrades them to viewer.
+    // participant rows (invalidates their session token) and push a WS event
+    // that force-rejoins them through the public join API, which now sees the
+    // stale pk and downgrades them to viewer.
+    //
+    // Only host-link sessions: the admin's own "Enter Room" presenter holds no
+    // link, and rotating used to sign the admin out of the room along with
+    // everyone else.
     let conn = state.db.get()?;
     let id_clone = id.clone();
     let (slug, presenter_ids): (String, Vec<String>) = tokio::task::spawn_blocking(move || {
@@ -771,13 +759,15 @@ async fn rotate_presenter_key(
                 row.get(0)
             })?;
         let mut stmt = conn.prepare(
-            "SELECT id FROM participants WHERE room_id = ?1 AND role = 'presenter' AND is_kicked = 0",
+            "SELECT id FROM participants \
+             WHERE room_id = ?1 AND role = 'presenter' AND via_host_link = 1 AND is_kicked = 0",
         )?;
         let ids: Vec<String> = stmt
             .query_map([&id_clone], |row| row.get::<_, String>(0))?
             .collect::<Result<_, _>>()?;
         conn.execute(
-            "DELETE FROM participants WHERE room_id = ?1 AND role = 'presenter' AND is_kicked = 0",
+            "DELETE FROM participants \
+             WHERE room_id = ?1 AND role = 'presenter' AND via_host_link = 1 AND is_kicked = 0",
             [&id_clone],
         )?;
         Ok::<_, rusqlite::Error>((slug, ids))
@@ -936,6 +926,60 @@ async fn admit_all(
     Ok(Json(json!({ "ok": true })))
 }
 
+// POST /:id/kick/:participantId - deny a waiting participant, or remove one
+// from the room. Mirrors the presenter's `conference/kick`: the waiting room had
+// Admit and nothing else, so an unwanted joiner could only be let in or left
+// waiting until the room ended.
+async fn kick_participant(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Path((id, participant_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db.get()?;
+    let (id_q, pid_q) = (id.clone(), participant_id.clone());
+    let slug = tokio::task::spawn_blocking(move || {
+        let changes = conn.execute(
+            "UPDATE participants SET is_kicked = 1 WHERE id = ?1 AND room_id = ?2",
+            rusqlite::params![pid_q, id_q],
+        )?;
+        if changes == 0 {
+            return Err(AppError::NotFound("Participant not found".into()));
+        }
+        Ok::<_, AppError>(conn.query_row(
+            "SELECT slug FROM rooms WHERE id = ?1",
+            rusqlite::params![id_q],
+            |row| row.get::<_, String>(0),
+        )?)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+
+    tracing::info!(
+        room_slug = %slug,
+        actor_id = "admin",
+        target_id = %participant_id,
+        action = "kick",
+        "participant kicked",
+    );
+    let _ = state.events.participant_kicked.send(KickedEvent {
+        slug: slug.clone(),
+        participant_id: participant_id.clone(),
+    });
+    let _ = state
+        .events
+        .moderation_changed
+        .send(ModerationChangedEvent { slug: slug.clone() });
+
+    // Someone admitted and in the call stops publishing too; a waiting joiner
+    // was never in it, which LiveKit answers with a harmless 404.
+    let livekit = LiveKitClient::new(&state.config, state.http_client.clone());
+    if let Err(e) = livekit.remove_participant(&slug, &participant_id).await {
+        tracing::warn!(room_slug = %slug, target_id = %participant_id, error = %e, "LiveKit remove_participant failed");
+    }
+
+    Ok(Json(json!({ "ok": true })))
+}
+
 // GET /:id/kicked - kicked participants
 async fn get_kicked(
     _auth: AdminAuth,
@@ -1018,7 +1062,7 @@ async fn fire_moderation_changed(state: &Arc<AppState>, room_id: &str) {
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_rooms).post(create_room))
-        .route("/{id}", get(get_room).put(update_room).delete(delete_room))
+        .route("/{id}", put(update_room).delete(delete_room))
         .route("/{id}/end", post(end_room))
         .route("/{id}/reactivate", post(reactivate_room))
         .route("/{id}/enter", post(enter_room))
@@ -1028,6 +1072,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}/admit/{participantId}", post(admit_participant))
         .route("/{id}/admit-all", post(admit_all))
         .route("/{id}/kicked", get(get_kicked))
+        .route("/{id}/kick/{participantId}", post(kick_participant))
         .route("/{id}/unkick/{participantId}", post(unkick_participant))
 }
 

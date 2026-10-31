@@ -112,7 +112,8 @@ export function parseDbDate(s: string | null | undefined): Date | null {
   return /[TZ]/.test(s) ? new Date(s) : new Date(s.replace(' ', 'T') + 'Z');
 }
 
-export function fmtDateTime(s: string | null | undefined): string | null {
+// In this browser's zone unless one is given.
+export function fmtDateTime(s: string | null | undefined, timeZone?: string): string | null {
   const d = parseDbDate(s);
   if (!d) return null;
   return d.toLocaleString('en-GB', {
@@ -121,6 +122,7 @@ export function fmtDateTime(s: string | null | undefined): string | null {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    ...(timeZone ? { timeZone } : {}),
   });
 }
 

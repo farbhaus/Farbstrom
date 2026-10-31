@@ -218,3 +218,58 @@ fn deleting_a_stream_key_nulls_the_room_pointer() {
         .unwrap();
     assert_eq!(sk, None, "rooms.stream_key_id left dangling");
 }
+
+/// Names stored before the join validated them are brought into line once, at
+/// startup: a blank or invisible-only name became an empty row in the admin's
+/// waiting list, and a right-to-left override reordered the line around it.
+#[test]
+fn display_names_from_before_validation_are_cleaned_once() {
+    let dir = std::env::temp_dir().join(format!("zstream-names-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("stream.db");
+    let (db, data) = (db_path.to_str().unwrap(), dir.to_str().unwrap());
+    drop(stream_backend::db::init_pool(db, data));
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "DELETE FROM settings WHERE key = 'display_names_cleaned';
+             INSERT INTO rooms (id, name, slug) VALUES ('r', 'R', 'r');
+             INSERT INTO participants (id, room_id, name) VALUES
+                 ('blank', 'r', '   '),
+                 ('rlo', 'r', 'Mallory' || char(8238) || 'gpj.exe'),
+                 ('fine', 'r', 'Ana');
+             INSERT INTO chat_messages (id, room_id, name, role, text) VALUES
+                 ('m', 'r', char(8203) || char(8203), 'viewer', 'hi');",
+        )
+        .unwrap();
+    }
+    let pool = stream_backend::db::init_pool(db, data);
+    let conn = pool.get().unwrap();
+    let name = |table: &str, id: &str| -> String {
+        conn.query_row(
+            &format!("SELECT name FROM {table} WHERE id = ?1"),
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(name("participants", "blank"), "Guest");
+    assert_eq!(name("participants", "rlo"), "Mallorygpj.exe");
+    assert_eq!(name("participants", "fine"), "Ana");
+    assert_eq!(name("chat_messages", "m"), "Guest");
+
+    // Once: a name the operator's data holds afterwards is left alone.
+    conn.execute("UPDATE participants SET name = '  ' WHERE id = 'fine'", [])
+        .unwrap();
+    drop(conn);
+    drop(pool);
+    let pool = stream_backend::db::init_pool(db, data);
+    let again: String = pool
+        .get()
+        .unwrap()
+        .query_row("SELECT name FROM participants WHERE id = 'fine'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(again, "  ", "the cleanup ran a second time");
+}

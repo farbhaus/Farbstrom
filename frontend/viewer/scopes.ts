@@ -434,8 +434,8 @@ function stepZoom(dir: 1 | -1): void {
 // Farbplay and no frame of it ever reaches this browser. Mirrors the tile's own
 // visibility rule in player.ts (updateStageVisibility).
 export function scopesAvailable(): boolean {
-  const { streamKey, deliveryMode, displayFile } = viewerStore.get();
-  return (!!streamKey && deliveryMode !== 'srt') || !!displayFile;
+  const { playbackId, deliveryMode, displayFile } = viewerStore.get();
+  return (!!playbackId && deliveryMode !== 'srt') || !!displayFile;
 }
 
 let available = false;

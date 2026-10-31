@@ -7,13 +7,14 @@
 <link rel="icon" type="image/svg+xml" href="/shared/favicon.svg">
 <link rel="icon" type="image/png" href="/shared/favicon.png">
 <link rel="apple-touch-icon" href="/shared/favicon.png">
-<!-- OvenPlayer is pinned EXACTLY, unlike the two below: its DOM class names are
-     load-bearing for the chrome-hiding CSS in this page's <style> block
-     (.op-ui, .op-spinner-container, .op-bigbutton-container) and they have
-     drifted before. Bump it deliberately, and re-check that CSS when you do. -->
-<script src="https://cdn.jsdelivr.net/npm/ovenplayer@0.10.53/dist/ovenplayer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7/dist/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.21/dist/livekit-client.umd.min.js"></script>
+<!-- All three are pinned exactly (frontend/package.json) and served from this
+     origin. OvenPlayer most of all: its DOM class names are load-bearing for
+     the chrome-hiding CSS in this page's <style> block (.op-ui,
+     .op-spinner-container, .op-bigbutton-container) and they have drifted
+     before. Bump it deliberately, and re-check that CSS when you do. -->
+<script src="/dist/vendor/ovenplayer.js"></script>
+<script src="/dist/vendor/hls.min.js"></script>
+<script src="/dist/vendor/livekit-client.umd.js"></script>
 <link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/shared/components.css">
 <link rel="stylesheet" href="/shared/utils.css">
@@ -57,7 +58,8 @@ html, body { overflow: hidden; }
 .waiting-label { color: var(--dim); }
 .waiting-name { font-size: var(--fs-lg); font-weight: var(--fw-semi); }
 .waiting-msg { color: var(--dim); font-size: var(--fs-base); }
-.waiting-msg #scheduled-when { color: var(--text); font-weight: var(--fw-semi); }
+.waiting-msg #scheduled-when,
+.waiting-msg #scheduled-local-when { color: var(--text); font-weight: var(--fw-semi); }
 .scheduled-countdown { margin-top: 6px; font-size: var(--fs-xl); font-weight: var(--fw-bold); color: var(--accent); font-variant-numeric: tabular-nums; }
 .dot-anim::after { content: ''; animation: dots 1.5s steps(4, end) infinite; }
 @keyframes dots { 0%,25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
@@ -121,6 +123,15 @@ html, body { overflow: hidden; }
     text-transform: none; letter-spacing: normal; font-weight: var(--fw-normal);
 }
 .device-picker-check input { width: 16px; height: 16px; cursor: pointer; }
+.device-picker-inline { display: flex; gap: var(--sp-2); }
+.device-picker-inline select { flex: 1; min-width: 0; }
+/* Input level of the mic actually being published. Driven per frame from JS
+   (devices.ts), so the shared bar's width ease is switched off — it would lag
+   the voice by a third of a second. */
+.device-meter { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+.device-meter .progress { flex: 1; }
+.device-meter .progress-fill { width: 0; transition: none; }
+.device-meter-hint { font-size: var(--fs-xs); color: var(--dim); white-space: nowrap; }
 .device-privacy-note { margin-top: 16px; font-size: var(--fs-xs); line-height: var(--lh-body); color: var(--dim); text-align: left; }
 .device-privacy-note a { color: var(--accent); }
 
@@ -405,8 +416,8 @@ body.stage-morphing .tile.is-morphing {
    .op-ui (control bar, loading spinner, big centre play button, captions,
    message boxes) }. Hiding .op-ui drops every overlay while keeping the
    video. The explicit spinner/big-button hides guard against either being
-   injected outside .op-ui in a future CDN build. (Class names are pinned to
-   OvenPlayer "latest" and have drifted before.) */
+   injected outside .op-ui in a future build. (These class names have drifted
+   between OvenPlayer releases before — the version is pinned for that reason.) */
 #player .op-ui,
 #player .op-spinner-container,
 #player .op-bigbutton-container { display: none !important; }
@@ -726,8 +737,10 @@ body.has-focus #stage-strip {
 }
 body.has-focus #stage-strip::-webkit-scrollbar { display: none; }
 /* An empty call panel is just a grey stub floating on the picture — which is
-   exactly what a solo participant would see. Nothing in it, nothing drawn. */
-body.has-focus #stage-strip:not(:has(.tile)) { display: none; }
+   exactly what a solo participant would see. Nothing in it, nothing drawn.
+   "Empty" means no *visible* tile: focus mode parks every unfocused tile here,
+   including the hidden share tile, which used to keep the stub showing. */
+body.has-focus #stage-strip:not(:has(.tile:not(.hidden))) { display: none; }
 /* The pinned tile's own chrome is now against the window edges, where the
    floating chips and the toolbar already live — and it sits in the tile's
    stacking context, well below them, so it would simply disappear underneath.
@@ -1468,7 +1481,7 @@ body.has-focus.strip-hidden #stage-strip {
         <form id="join-form">
             <div class="form-row">
                 <label>Your Name</label>
-                <input type="text" id="name-input" placeholder="Your name" autocomplete="name" required>
+                <input type="text" id="name-input" placeholder="Your name" autocomplete="name" maxlength="50" required>
             </div>
             <div class="form-row" id="password-row" style="display:none">
                 <label>Room Password</label>
@@ -1500,6 +1513,7 @@ body.has-focus.strip-hidden #stage-strip {
         <div class="waiting-label">Scheduled</div>
         <div class="waiting-name" id="scheduled-name"></div>
         <div class="waiting-msg">This session starts on <span id="scheduled-when"></span></div>
+        <div class="waiting-msg u-hidden" id="scheduled-local">Your time: <span id="scheduled-local-when"></span></div>
         <div class="scheduled-countdown" id="scheduled-countdown"></div>
     </div>
 </div>
@@ -1570,10 +1584,17 @@ body.has-focus.strip-hidden #stage-strip {
         <div class="device-picker-row">
             <label>Microphone</label>
             <select id="device-mic"></select>
+            <div class="device-meter" aria-hidden="true">
+                <div class="progress progress-sm"><div class="progress-fill ok" id="device-mic-level"></div></div>
+                <span class="device-meter-hint" id="device-mic-hint"></span>
+            </div>
         </div>
-        <div class="device-picker-row">
+        <div class="device-picker-row" id="device-speaker-row">
             <label>Speaker</label>
-            <select id="device-speaker"></select>
+            <div class="device-picker-inline">
+                <select id="device-speaker"></select>
+                <button class="btn btn-sm" id="device-speaker-test" type="button">Test</button>
+            </div>
         </div>
         <div class="device-picker-row">
             <label class="device-picker-check">
@@ -1725,7 +1746,7 @@ body.has-focus.strip-hidden #stage-strip {
                 </div>
                 <div class="tile-name" id="tile-share-name">Screen</div>
             </div>
-            <div class="tile" id="self-tile" style="display:none">
+            <div class="tile hidden" id="self-tile" style="display:none">
                 <div class="tile-inner">
                     <video id="self-preview" autoplay muted playsinline></video>
                 </div>

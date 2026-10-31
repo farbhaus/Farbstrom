@@ -554,3 +554,163 @@ async fn conf_get_lists_return_data() {
     assert_eq!(kicked.len(), 1);
     assert_eq!(kicked[0]["name"], "Naughty");
 }
+
+// ---------------------------------------------------------------------------
+// The ingest key never reaches a viewer
+// ---------------------------------------------------------------------------
+
+/// Joiners used to get the key_token itself — the credential that pushes video
+/// — including joiners held in the waiting room who were never admitted. They
+/// get the playback id now, and playback is admission-gated on top of that.
+#[tokio::test]
+async fn join_hands_out_the_playback_id_never_the_ingest_key() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let (sk_id, key_token) = common::seed_stream_key(&state, "K");
+    common::seed_room_full(&state, "Room", "join-no-key", "live", true, Some(&sk_id));
+
+    let res = server
+        .post("/api/public/rooms/join-no-key/join")
+        .json(&json!({ "name": "Waiting Wanda" }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["admitted"], false);
+    assert_eq!(body["playback_id"], common::playback_id(&state, &sk_id));
+    assert!(
+        !res.text().contains(&key_token),
+        "the ingest key must not appear anywhere in a join response"
+    );
+    // The old field name is gone: no client reads it (Farbplay's join decoder
+    // takes participant_id, token, admitted, waiting_room and room_name).
+    assert!(body.get("stream_key").is_none());
+}
+
+#[tokio::test]
+async fn admin_enter_hands_out_the_playback_id_never_the_ingest_key() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let (sk_id, key_token) = common::seed_stream_key(&state, "K");
+    let room_id =
+        common::seed_room_full(&state, "Room", "enter-no-key", "live", false, Some(&sk_id));
+
+    let res = server
+        .post(&format!("/api/rooms/{room_id}/enter"))
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", common::admin_token(&state)),
+        )
+        .json(&json!({ "name": "Host" }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let body: Value = res.json();
+    assert_eq!(body["playbackId"], common::playback_id(&state, &sk_id));
+    assert!(!res.text().contains(&key_token));
+}
+
+// ---------------------------------------------------------------------------
+// Display names
+// ---------------------------------------------------------------------------
+
+/// The public join used to accept any string: blank names showed up as empty
+/// rows with an Admit button, and a 1.5 MB one went out in every roster frame.
+#[tokio::test]
+async fn join_rejects_blank_names_and_caps_long_ones() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    common::seed_room(&state, "Room", "names-room");
+
+    for blank in ["", "   ", "\u{202E}\u{200B}"] {
+        let res = server
+            .post("/api/public/rooms/names-room/join")
+            .json(&json!({ "name": blank }))
+            .await;
+        assert_eq!(res.status_code(), 400, "{blank:?}");
+    }
+
+    let res = server
+        .post("/api/public/rooms/names-room/join")
+        .json(&json!({ "name": format!("  {}  ", "A".repeat(1_500_000)) }))
+        .await;
+    assert_eq!(res.status_code(), 200);
+    let pid = res.json::<Value>()["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let stored: String = state
+        .db
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT name FROM participants WHERE id = ?1",
+            rusqlite::params![pid],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, "A".repeat(50));
+}
+
+/// The status endpoint is what a resumed or waiting viewer runs its state
+/// machine from, so its shape is pinned for every state: `playback_id` is the
+/// room's stream only for someone who may play it.
+#[tokio::test]
+async fn status_reports_each_participant_state() {
+    let state = common::test_state();
+    let server = common::test_app(state.clone());
+    let (sk_id, _) = common::seed_stream_key(&state, "K");
+    let room = common::seed_room_full(&state, "Shape", "status-shape", "live", true, Some(&sk_id));
+    let stream = common::playback_id(&state, &sk_id);
+    let (waiting, w_tok) = common::seed_participant(&state, &room, "W", "viewer", false, false);
+    let (admitted, a_tok) = common::seed_participant(&state, &room, "A", "viewer", true, false);
+    let (kicked, k_tok) = common::seed_participant(&state, &room, "K", "viewer", true, true);
+
+    let status = |pid: String, tok: String| {
+        let server = &server;
+        async move {
+            let res = server
+                .get(&format!(
+                    "/api/public/rooms/status-shape/status/{pid}?token={tok}"
+                ))
+                .await;
+            assert_eq!(res.status_code(), 200);
+            res.json::<Value>()
+        }
+    };
+
+    let w = status(waiting.clone(), w_tok.clone()).await;
+    assert_eq!(
+        (w["admitted"].clone(), w["kicked"].clone()),
+        (json!(false), json!(false))
+    );
+    assert_eq!(w["room_status"], "live");
+    assert!(
+        w["playback_id"].is_null(),
+        "a waiting joiner was handed the stream"
+    );
+
+    let a = status(admitted.clone(), a_tok.clone()).await;
+    assert_eq!(
+        (a["admitted"].clone(), a["kicked"].clone()),
+        (json!(true), json!(false))
+    );
+    assert_eq!(a["playback_id"], stream);
+
+    let k = status(kicked, k_tok).await;
+    assert_eq!(k["kicked"], true);
+    assert!(
+        k["playback_id"].is_null(),
+        "a kicked participant was handed the stream"
+    );
+
+    state
+        .db
+        .get()
+        .unwrap()
+        .execute("UPDATE rooms SET status = 'ended' WHERE id = ?1", [&room])
+        .unwrap();
+    // Naming the stream of a room that is over grants nothing: the admission
+    // webhook refuses playback in an ended room.
+    for (pid, tok) in [(waiting, w_tok), (admitted, a_tok)] {
+        assert_eq!(status(pid, tok).await["room_status"], "ended");
+    }
+}

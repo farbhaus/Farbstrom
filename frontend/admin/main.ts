@@ -46,7 +46,12 @@ import {
   loadKeys,
   setOnChange as setKeysOnChange,
 } from './stream-keys.js';
-import { initSettings, loadSettings } from './settings.js';
+import {
+  initSettings,
+  loadSettings,
+  loadStudioZone,
+  setOnTimezoneChange,
+} from './settings.js';
 import { copyToClipboard } from '../shared/utils.js';
 import type { TabId } from './types.js';
 
@@ -57,7 +62,14 @@ function getActiveTab(): TabId {
 }
 
 async function loadAll(): Promise<void> {
-  await Promise.all([loadRooms(), loadKeys(), loadOme(), loadBranding(), loadDashboard()]);
+  // Rooms render their times on the studio's clock, so they wait for it.
+  await Promise.all([
+    loadStudioZone().then(loadRooms),
+    loadKeys(),
+    loadOme(),
+    loadBranding(),
+    loadDashboard(),
+  ]);
   // After keys load, push them to rooms.ts so the room modal's <select> is populated.
   setStreamKeys(getStreamKeys());
 }
@@ -207,6 +219,7 @@ function initDelegatedClicks(): void {
       case 'reveal-key':
       case 'unblock-key':
       case 'gen-srt-play':
+      case 'gen-browser-play':
         handleKeyAction(action, target);
         return;
       case 'kick-stream':
@@ -221,6 +234,7 @@ function initDelegatedClicks(): void {
       case 'rotate-host-key':
       case 'admit-all':
       case 'admit-one':
+      case 'deny-one':
       case 'unkick-one':
       case 'toggle-participants':
         handleRoomAction(action, target);
@@ -242,6 +256,7 @@ function init(): void {
 
   setRoomsOnChange(() => void loadAll());
   setKeysOnChange(() => void loadAll());
+  setOnTimezoneChange(() => void loadRooms());
 
   initLoginForm();
   initTabs();
@@ -261,13 +276,19 @@ function init(): void {
       .catch(() => doLogout());
   }
 
-  // Background refresh: full reload every 15s, fast list poll every 3s.
+  // Background refresh: full reload every 15s, fast list poll every 3s — while
+  // the tab is visible. The fast poll is three requests per room, and a
+  // forgotten background tab used to keep making them all day; a tab coming
+  // back into view catches up at once instead.
   setInterval(() => {
-    if (getToken()) void loadAll();
+    if (getToken() && !document.hidden) void loadAll();
   }, 15000);
   setInterval(() => {
-    if (getToken()) void refreshParticipantLists();
+    if (getToken() && !document.hidden) void refreshParticipantLists();
   }, 3000);
+  document.addEventListener('visibilitychange', () => {
+    if (getToken() && !document.hidden) void loadAll();
+  });
 }
 
 init();

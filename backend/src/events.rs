@@ -58,14 +58,15 @@ pub struct ModerationChangedEvent {
     pub slug: String,
 }
 
-/// Emitted when an admin attaches a stream key to a room. Carries the new
-/// key_token so connected clients can swap it into their session and reload
-/// the player without bouncing through /join (which would require re-auth
-/// and, for presenters handed off via pre-session, would lose the role).
+/// Emitted when an admin attaches a stream key to a room. Carries the key's
+/// playback id — never its key_token, since this reaches every viewer — so
+/// connected clients can swap it into their session and reload the player
+/// without bouncing through /join (which would require re-auth and, for
+/// presenters handed off via pre-session, would lose the role).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamKeyAssignedEvent {
     pub slug: String,
-    pub stream_key: String,
+    pub playback_id: String,
 }
 
 /// Emitted when an admin changes a room's delivery mode. Connected viewers

@@ -297,12 +297,18 @@ async fn srt_playback_returns_signed_streamid() {
     assert_eq!(body["ttlSeconds"], 300);
 
     // Same shape the Farbplay flow mints (both go through signed_policy):
-    // default/live/<key>?policy=<b64url>&signature=<b64url-hmac>. No `/playlist`
-    // suffix — the SRT publisher's default playlist is named `master`, and
-    // SignedPolicy signs the path, so the two forms are not interchangeable.
+    // default/live/<playback id>?policy=<b64url>&signature=<b64url-hmac>. No
+    // `/playlist` suffix — the SRT publisher's default playlist is named
+    // `master`, and SignedPolicy signs the path, so the two forms are not
+    // interchangeable.
     let streamid = body["streamid"].as_str().unwrap();
     let (signed, sig) = streamid.split_once("&signature=").unwrap();
-    assert!(signed.starts_with(&format!("default/live/{}?policy=", key_token)));
+    let playback_id = common::playback_id(&state, &key_id);
+    assert!(signed.starts_with(&format!("default/live/{}?policy=", playback_id)));
+    assert!(
+        !streamid.contains(&key_token),
+        "OME publishes under the playback id; the ingest key must not appear"
+    );
     assert!(!streamid.contains("/playlist"));
 
     let expected = common::expected_signature(&state.config.ome_signed_policy_secret, signed);

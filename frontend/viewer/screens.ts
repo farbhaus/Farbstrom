@@ -9,29 +9,41 @@ import {
   KICKED_KEY,
   loadSavedSession,
   NAME_KEY,
-  PASS_KEY,
-  PREF_KEY,
   presenterKey,
+  savedPassword,
+  savePassword,
   saveSession,
   SESSION_KEY,
   setSession,
   slug,
+  updateSavedPlaybackId,
 } from './session.js';
 import { viewerStore } from './state.js';
 import { getBrandName } from '../shared/branding.js';
-import type { JoinResponse, RoomInfo } from './types.js';
+import { browserZone, isKnownZone, offsetLabel, zoneLabel } from '../shared/timezone.js';
+import type { JoinResponse, RoomInfo, StatusResponse } from './types.js';
 
 const API = '/api/public/rooms';
 
 let onAdmitted: () => void = () => {};
+let onDenied: () => void = () => {};
+let onEnded: () => void = () => {};
 let statusInterval: ReturnType<typeof setInterval> | null = null;
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
 // Remembered so the scheduled -> waiting-room transition (once the room starts)
 // can re-render the waiting screen with the viewer's name.
 let waitingDisplayName = '';
 
-export function configureScreens(opts: { onAdmitted: () => void }): void {
+export function configureScreens(opts: {
+  onAdmitted: () => void;
+  /** The host turned this joiner away (or kicked them) while they waited. */
+  onDenied: () => void;
+  /** The room ended or was deleted while they waited. */
+  onEnded: () => void;
+}): void {
   onAdmitted = opts.onAdmitted;
+  onDenied = opts.onDenied;
+  onEnded = opts.onEnded;
 }
 
 function el(id: string): HTMLElement | null {
@@ -88,6 +100,27 @@ function onRoomStarted(): void {
   showWaitingScreen(waitingDisplayName);
 }
 
+async function fetchStatus(pid: string, tok: string): Promise<StatusResponse | null> {
+  try {
+    const res = await fetch(`${API}/${slug}/status/${pid}?token=${encodeURIComponent(tok)}`);
+    return res.ok ? ((await res.json()) as StatusResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The room's stream is read on admission, not kept from the join: a waiting
+// joiner holds no socket, so a key attached, swapped or detached meanwhile
+// never reached it, and one who refreshed while waiting was told none (the
+// status endpoint names the stream only to someone who may play it).
+function adoptStream(status: StatusResponse): void {
+  viewerStore.set({ playbackId: status.playback_id });
+  updateSavedPlaybackId(status.playback_id);
+}
+
+// The admission stream says `kicked` and `room_ended` as well as `admitted`;
+// only the last was ever listened for, so someone the host turned away — or
+// whose room ended — sat on "waiting for the host" indefinitely.
 export function pollAdmission(): void {
   const pid = loadSavedSession()?.participantId || '';
   const tok = loadSavedSession()?.token || '';
@@ -95,9 +128,19 @@ export function pollAdmission(): void {
   const sse = new EventSource(
     `${API}/${slug}/waiting/events/${pid}?token=${encodeURIComponent(tok)}`,
   );
-  sse.addEventListener('admitted', () => {
+  sse.addEventListener('admitted', async () => {
     sse.close();
+    const status = await fetchStatus(pid, tok);
+    if (status) adoptStream(status);
     onAdmitted();
+  });
+  sse.addEventListener('kicked', () => {
+    sse.close();
+    onDenied();
+  });
+  sse.addEventListener('room_ended', () => {
+    sse.close();
+    onEnded();
   });
   sse.addEventListener('ping', (e) => {
     let data: { started?: boolean; room_status?: string } = {};
@@ -114,16 +157,17 @@ export function pollAdmission(): void {
     sse.close();
     clearAdmissionPoll();
     statusInterval = setInterval(async () => {
-      const res = await fetch(`${API}/${slug}/status/${pid}?token=${encodeURIComponent(tok)}`);
-      if (!res.ok) return;
-      let data;
-      try {
-        data = await res.json();
-      } catch {
-        return;
-      }
-      if (data.admitted) {
+      const data = await fetchStatus(pid, tok);
+      if (!data) return;
+      if (data.kicked) {
         clearAdmissionPoll();
+        onDenied();
+      } else if (data.room_status === 'ended') {
+        clearAdmissionPoll();
+        onEnded();
+      } else if (data.admitted) {
+        clearAdmissionPoll();
+        adoptStream(data);
         onAdmitted();
       } else if (data.started === true || (data.room_status && data.room_status !== 'scheduled')) {
         onRoomStarted();
@@ -137,6 +181,13 @@ export function stopAdmissionPoll(): void {
   stopScheduledCountdown();
 }
 
+/** Take down the waiting and scheduled screens, and the polling behind them. */
+export function leaveWaitingScreens(): void {
+  stopAdmissionPoll();
+  hideScreen('waiting-screen');
+  hideScreen('scheduled-screen');
+}
+
 // ---- Scheduled start screen (issue #200) ----
 
 function stopScheduledCountdown(): void {
@@ -146,8 +197,26 @@ function stopScheduledCountdown(): void {
   }
 }
 
+function fmtStart(at: Date, zone: string): string {
+  const when = at.toLocaleString(undefined, {
+    timeZone: zone,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `${when} ${zoneLabel(zone, at)}`;
+}
+
 // Renders the absolute start time + a live countdown. startsAt is stored UTC
 // ("YYYY-MM-DD HH:MM:SS", no zone marker), so force a UTC parse.
+//
+// The time is given in the studio's zone when the admin has set one (gh #263)
+// — the clock the session was arranged on — and, for a guest whose own clock
+// reads differently at that moment, in theirs on a second line. Unset, it is
+// the guest's own time alone, named so it cannot be mistaken for the host's.
 export function showScheduledScreen(startsAt: string | null, name: string): void {
   waitingDisplayName = name;
   hideScreen('join-screen');
@@ -156,23 +225,24 @@ export function showScheduledScreen(startsAt: string | null, name: string): void
   if (nm) nm.textContent = name;
 
   const whenEl = el('scheduled-when');
+  const localRow = el('scheduled-local');
+  const localEl = el('scheduled-local-when');
   const countEl = el('scheduled-countdown');
   stopScheduledCountdown();
+  localRow?.classList.add('u-hidden');
   if (!startsAt) {
     if (whenEl) whenEl.textContent = '';
     if (countEl) countEl.textContent = '';
     return;
   }
   const target = new Date(startsAt.replace(' ', 'T') + 'Z');
-  if (whenEl) {
-    whenEl.textContent = target.toLocaleString(undefined, {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+  const studio = viewerStore.get().roomInfo?.timezone;
+  const mine = browserZone();
+  const zone = isKnownZone(studio) ? studio : mine;
+  if (whenEl) whenEl.textContent = fmtStart(target, zone);
+  if (zone !== mine && offsetLabel(zone, target) !== offsetLabel(mine, target)) {
+    if (localEl) localEl.textContent = fmtStart(target, mine);
+    localRow?.classList.remove('u-hidden');
   }
   const tick = (): void => {
     if (!countEl) return;
@@ -280,7 +350,7 @@ export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
     viewerStore.set({ roomInfo });
 
     const savedName = localStorage.getItem(NAME_KEY) || '';
-    const savedPass = localStorage.getItem(PASS_KEY) || '';
+    const savedPass = savedPassword();
     if (savedName) (el('name-input') as HTMLInputElement).value = savedName;
     if (savedPass) (el('password-input') as HTMLInputElement).value = savedPass;
 
@@ -291,35 +361,25 @@ export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
     }
 
     const savedSession = loadSavedSession();
-    // If the room's broadcast mode flipped since we joined (admin attached
-    // or cleared a stream key), the saved session is stale: its streamKey
-    // would lock the page into the old mode. Drop it, then fall through
-    // to the auto-rejoin path so the user is put back into the room
-    // without having to re-enter their name.
-    const savedHasKey = !!(savedSession && savedSession.streamKey);
-    const serverHasKey = !!roomInfo.has_stream_key;
-    const modeFlipped = savedSession && savedHasKey !== serverHasKey;
-    if (modeFlipped) sessionStorage.removeItem(SESSION_KEY);
 
-    if (savedSession && !modeFlipped && roomInfo.status !== 'ended') {
+    if (savedSession && roomInfo.status !== 'ended') {
       setSession(savedSession.participantId, savedSession.token);
       const role = isPresenter ? 'presenter' : savedSession.role || 'viewer';
       viewerStore.set({
         role,
         deliveryMode: roomInfo.delivery_mode || savedSession.deliveryMode || 'webrtc',
-        streamKey: savedSession.streamKey,
+        playbackId: savedSession.playbackId ?? null,
         noiseDefault: !!roomInfo.noise_reduction,
         echoDefault: !!roomInfo.echo_cancellation,
         pttDefault: !!roomInfo.push_to_talk,
       });
 
-      // Re-check admission on resume. A participant who refreshed while in
-      // the waiting room must land back on waiting-screen, not sneak into
-      // the app shell. Presenters skip the check — the role guarantees
-      // admission server-side.
-      if (role === 'presenter') {
-        return { kind: 'show-app', roomInfo, initialStatus: roomInfo.status };
-      }
+      // Re-check admission on resume, and take the room's stream from the
+      // server rather than from what was saved — the admin may have attached,
+      // swapped or detached a key since, and a session saved before playback
+      // ids existed holds no usable one at all. A participant who refreshed
+      // while in the waiting room must land back on waiting-screen, not sneak
+      // into the app shell.
       try {
         const sres = await fetch(
           `${API}/${slug}/status/${savedSession.participantId}?token=${encodeURIComponent(savedSession.token)}`,
@@ -328,12 +388,15 @@ export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
           sessionStorage.removeItem(SESSION_KEY);
           return { kind: 'show-join', roomInfo };
         }
-        const sdata = await sres.json();
+        const sdata: StatusResponse = await sres.json();
         if (sdata.kicked) {
           sessionStorage.setItem(KICKED_KEY, '1');
           return { kind: 'show-kicked', roomInfo };
         }
-        if (sdata.admitted) {
+        viewerStore.set({ playbackId: sdata.playback_id });
+        updateSavedPlaybackId(sdata.playback_id);
+        // Presenters are admitted by role.
+        if (role === 'presenter' || sdata.admitted) {
           return { kind: 'show-app', roomInfo, initialStatus: roomInfo.status };
         }
         // A held joiner in a scheduled room lands on the scheduled screen
@@ -352,17 +415,19 @@ export async function loadRoomInfo(): Promise<RoomInfoOutcome> {
           waitingName: savedName,
         };
       } catch {
+        // Unreachable server: a host still resumes on what was saved, as
+        // before; anyone else is asked to join again.
+        if (role === 'presenter') {
+          return { kind: 'show-app', roomInfo, initialStatus: roomInfo.status };
+        }
         return { kind: 'show-join', roomInfo };
       }
-    } else if (savedSession && !modeFlipped && roomInfo.status === 'ended') {
+    } else if (savedSession && roomInfo.status === 'ended') {
       sessionStorage.removeItem(SESSION_KEY);
       return { kind: 'show-join', roomInfo };
-    } else if (autoName || (modeFlipped && savedName)) {
-      // ?n= from admin one-shot links OR a known returning user whose
-      // session we just invalidated — skip the join form. URL params
-      // (role, pk) survive location.reload(), so host privilege is
-      // preserved automatically.
-      (el('name-input') as HTMLInputElement).value = autoName || savedName;
+    } else if (autoName) {
+      // ?n= from admin one-shot links — skip the join form.
+      (el('name-input') as HTMLInputElement).value = autoName;
       const pw = autoPassword || savedPass;
       if (pw) (el('password-input') as HTMLInputElement).value = pw;
       const joined = await doJoin();
@@ -416,7 +481,7 @@ export async function doJoin(): Promise<RoomInfoOutcome> {
     viewerStore.set({
       role: data.role || 'viewer',
       deliveryMode: data.delivery_mode,
-      streamKey: data.stream_key,
+      playbackId: data.playback_id,
       noiseDefault: data.noise_reduction_default,
       echoDefault: data.echo_cancellation_default,
       pttDefault: data.push_to_talk_default,
@@ -426,12 +491,11 @@ export async function doJoin(): Promise<RoomInfoOutcome> {
       participantId: data.participant_id,
       token: data.token,
       deliveryMode: data.delivery_mode,
-      streamKey: data.stream_key,
+      playbackId: data.playback_id,
       role: data.role || 'viewer',
     });
     localStorage.setItem(NAME_KEY, name);
-    if (password) localStorage.setItem(PASS_KEY, password);
-    else localStorage.removeItem(PASS_KEY);
+    savePassword(password);
 
     if (!data.admitted) {
       // A scheduled room holds every joiner (regardless of waiting_room) on
@@ -477,9 +541,4 @@ export function showWaitingScreen(name: string): void {
   showHidden('waiting-screen');
   const wn = el('waiting-name');
   if (wn) wn.textContent = name;
-}
-
-// localStorage cleanup on session-end.
-export function cleanupSessionStorage(): void {
-  localStorage.removeItem(PREF_KEY);
 }

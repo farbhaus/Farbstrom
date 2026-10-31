@@ -1,6 +1,6 @@
-//! Authenticated credential management for the single admin: password
-//! change, TOTP enrolment, and passkey (WebAuthn) registration. Mounted at
-//! `/api/admin/settings`; every handler requires `AdminAuth`.
+//! Authenticated settings for the single admin: password change, TOTP
+//! enrolment, passkey (WebAuthn) registration, and the studio timezone.
+//! Mounted at `/api/admin/settings`; every handler requires `AdminAuth`.
 
 use axum::{
     extract::{Path, State},
@@ -107,7 +107,7 @@ async fn change_password(
         &state.config.jwt_secret,
         version,
         crate::auth::ADMIN_TOKEN_TTL_SECS,
-    )?;
+    );
     Ok(Json(json!({ "ok": true, "token": token })))
 }
 
@@ -134,7 +134,7 @@ async fn sign_out_everywhere(
         &state.config.jwt_secret,
         version,
         crate::auth::ADMIN_TOKEN_TTL_SECS,
-    )?;
+    );
     Ok(Json(json!({ "ok": true, "token": token })))
 }
 
@@ -167,12 +167,15 @@ async fn totp_setup(
     let secret = cred::gen_totp_secret();
     let totp = cred::totp_from_secret(&secret)?;
     let qr = totp
-        .get_qr_base64()
+        .to_qr_base64()
         .map_err(|e| AppError::Internal(format!("QR: {e}")))?;
     let conn = state.db.get()?;
     let s = secret.clone();
     tokio::task::spawn_blocking(move || {
         cred::settings_set(&conn, cred::KEY_TOTP_SECRET, &s)?;
+        // A new secret starts a new sequence of codes; the replay floor belongs
+        // to the old one.
+        cred::settings_del(&conn, cred::KEY_TOTP_LAST_STEP)?;
         cred::settings_set(&conn, cred::KEY_TOTP_ENABLED, "0")
     })
     .await
@@ -188,23 +191,34 @@ struct TotpEnableBody {
     code: String,
 }
 
+/// Confirm enrolment with a first code, which issues the recovery codes.
+///
+/// Refused once enabled: calling it again used to issue a fresh set of recovery
+/// codes, silently invalidating the ones the operator had saved.
 async fn totp_enable(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
     Json(body): Json<TotpEnableBody>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
-    let secret =
-        tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_SECRET))
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?
-            .ok_or_else(|| AppError::BadRequest("Run setup first".into()))?;
+    let (secret, enabled) = tokio::task::spawn_blocking(move || {
+        (
+            cred::settings_get(&conn, cred::KEY_TOTP_SECRET),
+            cred::settings_get(&conn, cred::KEY_TOTP_ENABLED).as_deref() == Some("1"),
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    if enabled {
+        return Err(AppError::BadRequest(
+            "Two-factor authentication is already enabled.".into(),
+        ));
+    }
+    let secret = secret.ok_or_else(|| AppError::BadRequest("Run setup first".into()))?;
 
-    let totp = cred::totp_from_secret(&secret)?;
-    let valid = totp
-        .check_current(&body.code)
-        .map_err(|e| AppError::Internal(format!("TOTP: {e}")))?;
-    if !valid {
+    // Consumes the code, so the one typed to confirm enrolment can't then be
+    // replayed to sign in.
+    if !cred::verify_totp_code(&state, &secret, &body.code).await? {
         return Err(AppError::BadRequest("Incorrect code".into()));
     }
 
@@ -267,6 +281,7 @@ async fn totp_disable(
     tokio::task::spawn_blocking(move || {
         cred::settings_del(&conn, cred::KEY_TOTP_SECRET)?;
         cred::settings_del(&conn, cred::KEY_TOTP_ENABLED)?;
+        cred::settings_del(&conn, cred::KEY_TOTP_LAST_STEP)?;
         cred::settings_del(&conn, cred::KEY_TOTP_RECOVERY)
     })
     .await
@@ -384,6 +399,64 @@ async fn passkey_delete(
     Ok(Json(json!({ "ok": true })))
 }
 
+// ---- timezone -------------------------------------------------------------
+
+/// Settings key for the studio timezone (gh #263): an IANA name such as
+/// `Europe/Lisbon`. Absent means unset. Times are still stored as UTC; this
+/// only decides which zone the admin enters them in and which zone the invite
+/// and the viewer's scheduled screen name.
+pub const KEY_TIMEZONE: &str = "timezone";
+
+/// The shape of an IANA zone name as browsers list them (`Europe/Lisbon`,
+/// `America/Argentina/Buenos_Aires`, `UTC`, `Etc/GMT+5`). There is no tz
+/// database on this side to check membership against, so only the shape is
+/// bounded; a browser that does not know the name falls back to its own zone.
+fn valid_timezone(s: &str) -> bool {
+    s.len() <= 64
+        && s.starts_with(|c: char| c.is_ascii_alphabetic())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
+}
+
+async fn get_timezone(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db.get()?;
+    let tz = tokio::task::spawn_blocking(move || cred::settings_get(&conn, KEY_TIMEZONE))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({ "timezone": tz })))
+}
+
+#[derive(Deserialize)]
+struct TimezoneBody {
+    timezone: Option<String>,
+}
+
+/// Set the studio timezone; `null` or `""` clears it.
+async fn set_timezone(
+    _auth: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TimezoneBody>,
+) -> Result<Json<Value>, AppError> {
+    let tz = body.timezone.filter(|s| !s.is_empty());
+    if let Some(ref s) = tz {
+        if !valid_timezone(s) {
+            return Err(AppError::BadRequest("Invalid timezone".into()));
+        }
+    }
+    let conn = state.db.get()?;
+    let stored = tz.clone();
+    tokio::task::spawn_blocking(move || match stored {
+        Some(s) => cred::settings_set(&conn, KEY_TIMEZONE, &s),
+        None => cred::settings_del(&conn, KEY_TIMEZONE),
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
+    Ok(Json(json!({ "ok": true, "timezone": tz })))
+}
+
 /// Drop ceremony entries older than the TTL.
 fn sweep<T>(map: &mut std::collections::HashMap<Uuid, (Instant, T)>) {
     map.retain(|_, (ts, _)| ts.elapsed().as_secs() < CEREMONY_TTL_SECS);
@@ -400,4 +473,5 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/passkeys/register/start", post(passkey_register_start))
         .route("/passkeys/register/finish", post(passkey_register_finish))
         .route("/passkeys/{id}", axum::routing::delete(passkey_delete))
+        .route("/timezone", get(get_timezone).post(set_timezone))
 }

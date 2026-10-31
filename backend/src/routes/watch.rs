@@ -17,11 +17,10 @@
 //! Password is enforced at `join`, not here. Direct `srt://…` URLs (power users)
 //! bypass rooms entirely and are unaffected.
 //!
-//! Security caveat: in Farbstrom the OME stream name *is* the ingest stream key
-//! (`OutputStreamName=${OriginStreamName}`), so the signed streamid necessarily
-//! contains `default/live/<key_token>` in plaintext. SignedPolicy here provides
-//! expiry / replay-limiting, **not** path secrecy — the key is already handed to
-//! web viewers on join. See #165 and the credential-separation follow-up.
+//! The streamid names the stream by its key's playback id, which is what OME
+//! publishes under (the admission webhook renames every ingest to it), so it
+//! carries nothing that can push video. SignedPolicy provides expiry /
+//! replay-limiting; the playback id itself is not a secret.
 //!
 //! When SRT playback encryption is enabled, this endpoint also returns the
 //! passphrase + pbkeylen so Farbplay can AES-decrypt the SRT playback leg. That
@@ -83,14 +82,14 @@ async fn watch(
     let conn = state.db.get()?;
     let slug_clone = slug.clone();
     // Look up the participant by (id, token) within this room (same pattern as
-    // rooms_public::participant_status), joined to the room's stream key. Ended/
+    // rooms_public::participant_status), joined to the room's stream. Ended/
     // expired rooms are filtered in SQL so they collapse to "no row" → 404, the
     // same as an unknown room or a bad token. `expires_at` is a UTC
     // "YYYY-MM-DD HH:MM:SS" string (see rooms::normalize_datetime), so it
     // compares directly against CURRENT_TIMESTAMP.
-    let (is_admitted, is_kicked, room_name, key_token) = tokio::task::spawn_blocking(move || {
+    let (is_admitted, is_kicked, room_name, playback_id) = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
-            "SELECT p.is_admitted, p.is_kicked, r.name, sk.key_token \
+            "SELECT p.is_admitted, p.is_kicked, r.name, sk.playback_id \
              FROM participants p \
              JOIN rooms r ON r.id = p.room_id \
              LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
@@ -105,7 +104,7 @@ async fn watch(
                     row.get::<_, i32>(0)?,            // is_admitted
                     row.get::<_, i32>(1)?,            // is_kicked
                     row.get::<_, String>(2)?,         // room name
-                    row.get::<_, Option<String>>(3)?, // stream key_token
+                    row.get::<_, Option<String>>(3)?, // stream playback_id
                 ))
             },
         )
@@ -130,7 +129,7 @@ async fn watch(
     }
 
     // 404 if no stream key is assigned — there is nothing to watch.
-    let stream_name = key_token.ok_or_else(|| AppError::NotFound("Room not found".into()))?;
+    let stream_name = playback_id.ok_or_else(|| AppError::NotFound("Room not found".into()))?;
 
     let streamid = crate::signed_policy::sign_streamid(
         &state.config.ome_signed_policy_secret,

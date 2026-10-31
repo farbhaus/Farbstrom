@@ -17,6 +17,10 @@ pub enum AppError {
     /// the client can tell "you sent something wrong" from "this clashes".
     Conflict(String),
     Gone(String),
+    /// 413: an upload over its size cap, or over its room's quota.
+    PayloadTooLarge(String),
+    /// 507: the data volume is down to its reserve (`uploads::MIN_FREE_BYTES`).
+    InsufficientStorage(String),
     Internal(String),
     BadGateway(String),
 }
@@ -34,6 +38,14 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             AppError::Gone(msg) => (StatusCode::GONE, "GONE", msg),
+            AppError::PayloadTooLarge(msg) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE", msg)
+            }
+            AppError::InsufficientStorage(msg) => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "INSUFFICIENT_STORAGE",
+                msg,
+            ),
             AppError::Internal(msg) => {
                 tracing::error!(error = %msg, "internal error");
                 (
@@ -59,6 +71,18 @@ impl IntoResponse for AppError {
     }
 }
 
+/// A multipart read failure. The one worth telling apart is the request body
+/// outrunning its route's `DefaultBodyLimit`: axum reports it as a parse error,
+/// which is how an oversized branding image used to fail with "Error parsing
+/// multipart/form-data request".
+pub fn multipart_error(e: axum::extract::multipart::MultipartError) -> AppError {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        AppError::PayloadTooLarge("Upload too large".into())
+    } else {
+        AppError::BadRequest(e.body_text())
+    }
+}
+
 impl From<r2d2::Error> for AppError {
     fn from(e: r2d2::Error) -> Self {
         AppError::Internal(format!("Database pool error: {}", e))
@@ -74,16 +98,6 @@ impl From<rusqlite::Error> for AppError {
 impl From<bcrypt::BcryptError> for AppError {
     fn from(e: bcrypt::BcryptError) -> Self {
         AppError::Internal(format!("Bcrypt error: {}", e))
-    }
-}
-
-impl From<jsonwebtoken::errors::Error> for AppError {
-    fn from(e: jsonwebtoken::errors::Error) -> Self {
-        // Don't leak parser internals (which key kind, which claim failed,
-        // signature vs expiry) to whoever is poking at the token. Log the
-        // detail; return a generic message.
-        tracing::warn!(error = %e, "jwt decode/encode failed");
-        AppError::Unauthorized("Invalid or expired token".into())
     }
 }
 

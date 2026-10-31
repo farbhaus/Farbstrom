@@ -1,5 +1,4 @@
 use crate::config::AppConfig;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,6 +17,11 @@ struct LiveKitClaims {
 pub struct LiveKitVideoGrant {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub room_admin: Option<bool>,
+    /// What `DeleteRoom` checks — not `room_admin`. Without it LiveKit answers
+    /// `401 permissions denied`, and ending, deleting or expiring a room never
+    /// tore down its call (verified against LiveKit 1.13.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_create: Option<bool>,
     pub room_join: bool,
     pub room: String,
     pub can_publish: bool,
@@ -42,12 +46,9 @@ impl LiveKitClient {
         }
     }
 
-    /// Mint a short-lived RoomService admin token.
-    ///
-    /// Returns the encode error rather than an empty string: sending `Bearer `
-    /// makes LiveKit answer 401, so a signing failure used to surface as
-    /// "LiveKit API error: 401" and read as a key mismatch.
-    fn service_token(&self, room: &str) -> Result<String, String> {
+    /// Mint a short-lived RoomService token for `room`: `roomAdmin`, plus
+    /// `roomCreate` when `room_create` is set — the grant `DeleteRoom` requires.
+    fn service_token(&self, room: &str, room_create: bool) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -61,6 +62,7 @@ impl LiveKitClient {
             nbf: now,
             video: Some(LiveKitVideoGrant {
                 room_admin: Some(true),
+                room_create: room_create.then_some(true),
                 room_join: false,
                 room: room.to_string(),
                 can_publish: false,
@@ -68,16 +70,11 @@ impl LiveKitClient {
             }),
         };
 
-        encode(
-            &Header::new(Algorithm::HS256),
-            &claims,
-            &EncodingKey::from_secret(self.api_secret.as_bytes()),
-        )
-        .map_err(|e| format!("LiveKit service token signing failed: {e}"))
+        crate::jwt::sign(&claims, self.api_secret.as_bytes())
     }
 
     pub async fn delete_room(&self, room_name: &str) -> Result<(), String> {
-        let token = self.service_token(room_name)?;
+        let token = self.service_token(room_name, true);
         let res = self
             .http
             .post(format!(
@@ -99,7 +96,7 @@ impl LiveKitClient {
     }
 
     pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<(), String> {
-        let token = self.service_token(room)?;
+        let token = self.service_token(room, false);
         let res = self
             .http
             .post(format!(
@@ -127,7 +124,7 @@ impl LiveKitClient {
         track_sid: &str,
         muted: bool,
     ) -> Result<(), String> {
-        let token = self.service_token(room)?;
+        let token = self.service_token(room, false);
         let res = self
             .http
             .post(format!(
@@ -189,6 +186,7 @@ impl LiveKitClient {
             nbf: now,
             video: Some(LiveKitVideoGrant {
                 room_admin: None,
+                room_create: None,
                 room_join: true,
                 room: room.to_string(),
                 can_publish: true,
@@ -211,11 +209,42 @@ impl LiveKitClient {
             metadata: serde_json::json!({ "role": role }).to_string(),
         };
 
-        encode(
-            &Header::new(Algorithm::HS256),
-            &full,
-            &EncodingKey::from_secret(self.api_secret.as_bytes()),
-        )
-        .map_err(|e| e.to_string())
+        Ok(crate::jwt::sign(&full, self.api_secret.as_bytes()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+
+    fn client() -> LiveKitClient {
+        LiveKitClient {
+            http: reqwest::Client::new(),
+            api_url: String::new(),
+            api_key: "key".into(),
+            api_secret: "secret-that-is-at-least-thirty-two-chars".into(),
+        }
+    }
+
+    /// The `video` grant a token carries, as LiveKit reads it.
+    fn video_grant(token: &str) -> serde_json::Value {
+        let payload = token.split('.').nth(1).unwrap();
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&json).unwrap()["video"].clone()
+    }
+
+    #[test]
+    fn only_room_deletion_asks_for_room_create() {
+        let delete = video_grant(&client().service_token("r", true));
+        assert_eq!(delete["roomCreate"], true, "DeleteRoom requires roomCreate");
+        assert_eq!(delete["roomAdmin"], true);
+        assert_eq!(delete["room"], "r");
+
+        let moderate = video_grant(&client().service_token("r", false));
+        assert!(moderate.get("roomCreate").is_none());
+        assert_eq!(moderate["roomAdmin"], true);
     }
 }

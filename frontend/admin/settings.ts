@@ -1,10 +1,12 @@
-// Settings tab: change the admin password, enrol/disable TOTP 2FA, and
-// register/remove WebAuthn passkeys. Mirrors branding.ts's load/init split.
+// Settings tab: change the admin password, enrol/disable TOTP 2FA,
+// register/remove WebAuthn passkeys, and pick the studio timezone. Mirrors
+// branding.ts's load/init split.
 
 import { apiFetch, setToken } from './auth.js';
 import { toast, esc, fmtDateTime } from '../shared/utils.js';
 import { closeModal, confirmModal, openModal, promptModal } from '../shared/components.js';
 import { doRegister, webauthnSupported } from './webauthn.js';
+import { browserZone, isKnownZone, offsetLabel, zoneList } from '../shared/timezone.js';
 import type { SettingsStatus } from './types.js';
 
 function $(id: string): HTMLElement | null {
@@ -20,9 +22,10 @@ function show(id: string, visible: boolean): void {
 }
 
 export async function loadSettings(): Promise<void> {
-  // Independent of the account-settings status call below, so it still loads if
-  // that fails.
+  // Independent of the account-settings status call below, so they still load
+  // if that fails.
   void loadSrtEncryption();
+  void loadStudioZone().then(renderTimezone);
   let res: Response | null;
   try {
     res = await apiFetch('/api/admin/settings/status');
@@ -71,7 +74,7 @@ export async function loadSettings(): Promise<void> {
         </div>`,
           )
           .join('')
-      : '<span style="font-size:13px;color:var(--dim)">No passkeys registered.</span>';
+      : '<span class="empty-note">No passkeys registered.</span>';
   }
 }
 
@@ -139,7 +142,7 @@ async function confirmTotp(): Promise<void> {
   if (box) {
     box.style.display = '';
     box.innerHTML =
-      '<div class="room-card-meta">Save these one-time recovery codes somewhere safe — they are shown only once:</div><pre style="font-size:13px;line-height:1.7">' +
+      '<div class="room-card-meta">Save these one-time recovery codes somewhere safe — they are shown only once:</div><pre class="recovery-codes">' +
       (d.recoveryCodes as string[]).map(esc).join('\n') +
       '</pre>';
   }
@@ -365,11 +368,97 @@ async function applySrtEncryption(): Promise<void> {
   updateSrtApplyState(); // re-enables Apply if the POST failed (still dirty)
 }
 
+// ---- Studio timezone (gh #263) ----
+
+// The zone room start/expiry times are entered in, and that the invite and the
+// viewer's scheduled screen name. Null while unloaded or unset; studioZone()
+// then falls back to this browser's zone, which is what every admin time meant
+// before the setting existed.
+let savedZone: string | null = null;
+let onTimezoneChange: () => void = () => {};
+
+export function setOnTimezoneChange(fn: () => void): void {
+  onTimezoneChange = fn;
+}
+
+export function studioZone(): string {
+  return isKnownZone(savedZone) ? savedZone : browserZone();
+}
+
+export async function loadStudioZone(): Promise<void> {
+  try {
+    const res = await apiFetch('/api/admin/settings/timezone');
+    if (res && res.ok) savedZone = ((await res.json()) as { timezone: string | null }).timezone;
+  } catch (e) {
+    console.error('[settings] timezone request failed', e);
+  }
+}
+
+// Grouped by region, so typing a city's first letters finds it.
+function zoneOptions(): string {
+  const now = new Date();
+  const opt = (zone: string, text: string): string =>
+    `<option value="${esc(zone)}">${esc(text.replace(/_/g, ' '))} (${esc(offsetLabel(zone, now))})</option>`;
+  const loose: string[] = [];
+  const regions = new Map<string, string[]>();
+  for (const zone of zoneList()) {
+    const slash = zone.indexOf('/');
+    if (slash < 0) {
+      loose.push(opt(zone, zone));
+      continue;
+    }
+    const region = zone.slice(0, slash);
+    const list = regions.get(region) ?? [];
+    list.push(opt(zone, zone.slice(slash + 1)));
+    regions.set(region, list);
+  }
+  return (
+    `<option value="">Not set — use this browser's zone</option>` +
+    loose.join('') +
+    [...regions]
+      .map(([region, opts]) => `<optgroup label="${esc(region)}">${opts.join('')}</optgroup>`)
+      .join('')
+  );
+}
+
+function renderTimezone(): void {
+  const sel = $('set-tz') as HTMLSelectElement | null;
+  if (!sel) return;
+  if (!sel.options.length) sel.innerHTML = zoneOptions();
+  sel.value = savedZone ?? '';
+  // A saved zone this browser does not list (renamed upstream, or an older
+  // engine) would otherwise show as "Not set" and be cleared by the next save.
+  if (savedZone && sel.value !== savedZone) {
+    sel.insertAdjacentHTML('beforeend', `<option value="${esc(savedZone)}">${esc(savedZone)}</option>`);
+    sel.value = savedZone;
+  }
+}
+
+async function saveTimezone(): Promise<void> {
+  const sel = $('set-tz') as HTMLSelectElement | null;
+  if (!sel) return;
+  const timezone = sel.value || null;
+  const res = await apiFetch('/api/admin/settings/timezone', {
+    method: 'POST',
+    body: JSON.stringify({ timezone }),
+  });
+  if (res && res.ok) {
+    savedZone = timezone;
+    toast('Timezone saved');
+    onTimezoneChange();
+  } else {
+    sel.value = savedZone ?? '';
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not save timezone');
+  }
+}
+
 export function initSettings(): void {
   $('set-pw-btn')?.addEventListener('click', changePassword);
   $('srt-enc-ingest')?.addEventListener('change', updateSrtApplyState);
   $('srt-enc-playback')?.addEventListener('change', updateSrtApplyState);
   $('srt-enc-apply')?.addEventListener('click', () => void applySrtEncryption());
+  $('set-tz')?.addEventListener('change', () => void saveTimezone());
   $('set-totp-enable-btn')?.addEventListener('click', startTotpSetup);
   $('set-signout-all-btn')?.addEventListener('click', signOutEverywhere);
   $('set-totp-confirm-btn')?.addEventListener('click', confirmTotp);

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::auth::AdminAuth;
-use crate::error::AppError;
+use crate::error::{multipart_error, AppError};
 use crate::state::AppState;
 
 async fn get_branding_status(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
@@ -97,6 +97,31 @@ async fn get_asset(
     ))
 }
 
+/// Largest logo / background / favicon accepted. Without its own limit the
+/// route had axum's 2 MB default, which a full-resolution background JPEG
+/// overruns — and the failure surfaced as a multipart parse error.
+pub const BRANDING_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// The route's body limit sits above the image cap by the drain allowance, so an
+/// oversized image can be read to the end and refused cleanly (see
+/// `uploads::drain`) rather than cut off mid-request — only the first
+/// `BRANDING_MAX_BYTES` are ever held in memory.
+const BRANDING_BODY_LIMIT: usize = BRANDING_MAX_BYTES + crate::uploads::DRAIN_MAX_BYTES as usize;
+
+fn image_too_large() -> AppError {
+    AppError::PayloadTooLarge(format!(
+        "Image too large (max {} MB)",
+        BRANDING_MAX_BYTES / (1024 * 1024)
+    ))
+}
+
+fn too_large(e: axum::extract::multipart::MultipartError) -> AppError {
+    match multipart_error(e) {
+        AppError::PayloadTooLarge(_) => image_too_large(),
+        other => other,
+    }
+}
+
 async fn upload_asset(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
@@ -107,21 +132,18 @@ async fn upload_asset(
         return Err(AppError::BadRequest("Invalid asset type".into()));
     }
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
-    {
+    while let Some(mut field) = multipart.next_field().await.map_err(too_large)? {
         if field.name() == Some("file") {
             let mime = field
                 .content_type()
                 .unwrap_or("application/octet-stream")
                 .to_string();
             // Strict per-asset image allowlist. Branding assets are served
-            // publicly and the CSP allows inline scripts, so an HTML/SVG
-            // upload served back with its own content-type would be
-            // same-origin stored XSS. SVG is deliberately excluded (it can
-            // embed <script>); logo is PNG-only, background is JPEG-only.
+            // publicly from this origin, so an HTML/SVG upload served back with
+            // its own content-type would be same-origin stored XSS — the CSP's
+            // `script-src 'self'` would not stop a script served from here.
+            // SVG is deliberately excluded (it can embed <script>); logo is
+            // PNG-only, background is JPEG-only.
             let allowed = match asset.as_str() {
                 "logo" => mime == "image/png",
                 "bg" => mime == "image/jpeg" || mime == "image/jpg",
@@ -142,10 +164,14 @@ async fn upload_asset(
                     _ => "Background must be a JPEG".into(),
                 }));
             }
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            let mut data = Vec::new();
+            while let Some(chunk) = field.chunk().await.map_err(too_large)? {
+                if data.len() + chunk.len() > BRANDING_MAX_BYTES {
+                    crate::uploads::discard_rest(&mut field).await;
+                    return Err(image_too_large());
+                }
+                data.extend_from_slice(&chunk);
+            }
 
             let dir = format!("{}/branding", state.config.data_path);
             tokio::fs::create_dir_all(&dir)
@@ -273,27 +299,6 @@ async fn save_site_name(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn get_colors(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
-    let conn = state.db.get()?;
-    let colors = tokio::task::spawn_blocking(move || {
-        let mut result = serde_json::Map::new();
-        for &key in COLOR_KEYS {
-            if let Ok(val) = conn.query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                params![key],
-                |row| row.get::<_, String>(0),
-            ) {
-                result.insert(key.to_string(), Value::String(val));
-            }
-        }
-        result
-    })
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    Ok(Json(Value::Object(colors)))
-}
-
 async fn save_colors(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
@@ -336,7 +341,6 @@ async fn save_colors(
 pub fn public_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(get_branding_status))
-        .route("/colors", get(get_colors))
         .route("/{asset}", get(get_asset))
 }
 
@@ -344,5 +348,10 @@ pub fn admin_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/colors", post(save_colors))
         .route("/site-name", post(save_site_name))
-        .route("/{asset}", post(upload_asset).delete(delete_asset))
+        .route(
+            "/{asset}",
+            post(upload_asset)
+                .layer(DefaultBodyLimit::max(BRANDING_BODY_LIMIT))
+                .delete(delete_asset),
+        )
 }

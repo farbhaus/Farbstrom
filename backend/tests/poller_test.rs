@@ -3,9 +3,10 @@ mod common;
 use std::collections::HashSet;
 use stream_backend::tasks::reconcile_rooms;
 
-/// The set OME's `/v1/.../streams` returns, as the poller builds it.
-fn active(keys: &[&str]) -> HashSet<String> {
-    keys.iter().map(|k| k.to_string()).collect()
+/// The set OME's `/v1/.../streams` returns, as the poller builds it: stream
+/// names, which are playback ids — never key tokens.
+fn active(streams: &[&str]) -> HashSet<String> {
+    streams.iter().map(|k| k.to_string()).collect()
 }
 
 fn room_status(state: &std::sync::Arc<stream_backend::state::AppState>, id: &str) -> String {
@@ -41,12 +42,13 @@ fn block_key(state: &std::sync::Arc<stream_backend::state::AppState>, key_id: &s
 #[tokio::test]
 async fn pending_room_goes_live_when_its_key_is_already_broadcasting() {
     let state = common::test_state();
-    let (sk_id, key_token) = common::seed_stream_key(&state, "Key");
+    let (sk_id, _key_token) = common::seed_stream_key(&state, "Key");
+    let playback_id = common::playback_id(&state, &sk_id);
     let room_id =
         common::seed_room_full(&state, "Room", "room-225", "pending", false, Some(&sk_id));
 
     let conn = state.db.get().unwrap();
-    let t = reconcile_rooms(&conn, &active(&[&key_token])).unwrap();
+    let t = reconcile_rooms(&conn, &active(&[&playback_id])).unwrap();
 
     assert_eq!(room_status(&state, &room_id), "live");
     assert_eq!(t.went_live.len(), 1, "should report the promotion");
@@ -73,7 +75,8 @@ async fn pending_room_stays_pending_when_its_key_is_not_broadcasting() {
 #[tokio::test]
 async fn blocked_key_does_not_promote_a_pending_room() {
     let state = common::test_state();
-    let (sk_id, key_token) = common::seed_stream_key(&state, "Kicked Key");
+    let (sk_id, _key_token) = common::seed_stream_key(&state, "Kicked Key");
+    let playback_id = common::playback_id(&state, &sk_id);
     let room_id = common::seed_room_full(
         &state,
         "Room",
@@ -85,7 +88,7 @@ async fn blocked_key_does_not_promote_a_pending_room() {
     block_key(&state, &sk_id);
 
     let conn = state.db.get().unwrap();
-    let t = reconcile_rooms(&conn, &active(&[&key_token])).unwrap();
+    let t = reconcile_rooms(&conn, &active(&[&playback_id])).unwrap();
 
     assert_eq!(
         room_status(&state, &room_id),
@@ -100,7 +103,8 @@ async fn blocked_key_does_not_promote_a_pending_room() {
 #[tokio::test]
 async fn scheduled_and_ended_rooms_are_never_promoted() {
     let state = common::test_state();
-    let (sk_id, key_token) = common::seed_stream_key(&state, "Key");
+    let (sk_id, _key_token) = common::seed_stream_key(&state, "Key");
+    let playback_id = common::playback_id(&state, &sk_id);
     let scheduled = common::seed_room_full(
         &state,
         "Scheduled",
@@ -112,7 +116,7 @@ async fn scheduled_and_ended_rooms_are_never_promoted() {
     let ended = common::seed_room_full(&state, "Ended", "room-ended", "ended", false, Some(&sk_id));
 
     let conn = state.db.get().unwrap();
-    let t = reconcile_rooms(&conn, &active(&[&key_token])).unwrap();
+    let t = reconcile_rooms(&conn, &active(&[&playback_id])).unwrap();
 
     assert_eq!(room_status(&state, &scheduled), "scheduled");
     assert_eq!(room_status(&state, &ended), "ended");
@@ -124,12 +128,13 @@ async fn scheduled_and_ended_rooms_are_never_promoted() {
 #[tokio::test]
 async fn all_rooms_sharing_a_broadcasting_key_are_promoted() {
     let state = common::test_state();
-    let (sk_id, key_token) = common::seed_stream_key(&state, "Shared Key");
+    let (sk_id, _key_token) = common::seed_stream_key(&state, "Shared Key");
+    let playback_id = common::playback_id(&state, &sk_id);
     let a = common::seed_room_full(&state, "A", "room-a", "pending", false, Some(&sk_id));
     let b = common::seed_room_full(&state, "B", "room-b", "pending", false, Some(&sk_id));
 
     let conn = state.db.get().unwrap();
-    let t = reconcile_rooms(&conn, &active(&[&key_token])).unwrap();
+    let t = reconcile_rooms(&conn, &active(&[&playback_id])).unwrap();
 
     assert_eq!(room_status(&state, &a), "live");
     assert_eq!(room_status(&state, &b), "live");
@@ -196,7 +201,8 @@ async fn room_without_a_stream_key_is_untouched() {
 async fn one_pass_handles_both_directions() {
     let state = common::test_state();
     let (stopped_id, _stopped_token) = common::seed_stream_key(&state, "Stopped");
-    let (running_id, running_token) = common::seed_stream_key(&state, "Running");
+    let (running_id, _running_token) = common::seed_stream_key(&state, "Running");
+    let running_playback_id = common::playback_id(&state, &running_id);
 
     let dropping = common::seed_room_full(
         &state,
@@ -216,7 +222,7 @@ async fn one_pass_handles_both_directions() {
     );
 
     let conn = state.db.get().unwrap();
-    let t = reconcile_rooms(&conn, &active(&[&running_token])).unwrap();
+    let t = reconcile_rooms(&conn, &active(&[&running_playback_id])).unwrap();
 
     assert_eq!(room_status(&state, &dropping), "pending");
     assert_eq!(room_status(&state, &rising), "live");

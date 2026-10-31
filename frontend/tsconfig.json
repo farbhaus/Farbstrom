@@ -19,5 +19,5 @@
     "declaration": false,
     "skipLibCheck": true
   },
-  "include": ["admin/**/*.ts", "landing/**/*.ts", "shared/**/*.ts", "viewer/**/*.ts", "viewer/**/*.d.ts"]
+  "include": ["admin/**/*.ts", "landing/**/*.ts", "privacy/**/*.ts", "shared/**/*.ts", "viewer/**/*.ts", "viewer/**/*.d.ts"]
 }

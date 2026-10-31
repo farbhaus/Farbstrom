@@ -108,6 +108,25 @@ set_env() {
 
 have_apt() { command -v apt-get >/dev/null 2>&1; }
 
+# backfill_env — add settings introduced in later versions to an existing .env,
+# so upgrading a deployment picks them up without a manual edit or a secret
+# rotation. Shared by --update and the reuse-.env path of a normal deploy.
+backfill_env() {
+  # OME_SIGNED_POLICY_SECRET (Farbplay SRT room-link flow) is read by both the
+  # backend and OME, so a single value in .env keeps them in sync.
+  if ! grep -qE "^OME_SIGNED_POLICY_SECRET=.+" .env; then
+    info "Adding OME_SIGNED_POLICY_SECRET to existing .env"
+    set_env OME_SIGNED_POLICY_SECRET "$(gen_secret)"
+  fi
+  # Behind an external proxy (SITE_ADDRESS=:80) the container's Caddy must
+  # trust that proxy's X-Forwarded-For, or every client shares the proxy's
+  # address — and with it one rate-limit bucket for logins and joins.
+  if grep -qE '^SITE_ADDRESS=:80$' .env && ! grep -qE '^TRUSTED_PROXIES=.+' .env; then
+    info "Adding TRUSTED_PROXIES=private_ranges to existing .env (behind-proxy deploy)"
+    set_env TRUSTED_PROXIES "private_ranges"
+  fi
+}
+
 # install_apt PKG... — install Debian/Ubuntu packages.
 install_apt() {
   info "Installing $* (apt)"
@@ -257,6 +276,7 @@ fi
 # FARBSTROM_TAG=vX.Y.Z in .env, then re-run --update.
 if [[ $UPDATE -eq 1 ]]; then
   [[ -f .env ]] || die "--update needs an existing .env (run a normal deploy first)."
+  backfill_env
   info "Pulling newest image"
   $DOCKER compose -f docker-compose.yml pull
   info "Recreating the container"
@@ -339,20 +359,11 @@ if [[ -f .env ]]; then
     info "NOTE: .env already targets '$existing_site' — keeping it (ignoring '$DOMAIN')."
     info "      To switch host: edit SITE_ADDRESS/PUBLIC_ORIGIN/LIVEKIT_URL in .env, or re-run with --regenerate."
   fi
-  # Backfill secrets introduced in later versions so upgrading an existing
-  # deployment picks them up without a manual edit or a full secret rotation.
-  # OME_SIGNED_POLICY_SECRET (Farbplay SRT room-link flow) is read by both the
-  # backend (env_file) and OME (compose interpolation), so a single value in
-  # .env keeps them in sync once both containers are recreated below.
-  if ! grep -qE "^OME_SIGNED_POLICY_SECRET=.+" .env; then
-    info "Adding OME_SIGNED_POLICY_SECRET to existing .env"
-    set_env OME_SIGNED_POLICY_SECRET "$(gen_secret)"
-  fi
+  backfill_env
 else
   info "Generating .env for $DOMAIN"
   cp .env.example .env
   ADMIN_PASSWORD="$(gen_password)"
-  set_env DOMAIN             "$DOMAIN"
   if [[ -n "$BEHIND_PROXY" ]]; then
     # Behind an external TLS proxy: the container's own Caddy serves plain HTTP
     # on loopback, the proxy terminates TLS. SITE_ADDRESS is just a listen addr
@@ -360,6 +371,9 @@ else
     # keeps the plain-HTTP port off the internet (Docker bypasses ufw).
     set_env SITE_ADDRESS       ":80"
     set_env PUBLIC_HOST        "$DOMAIN"
+    # The external proxy reaches Caddy from a Docker bridge address; trust it to
+    # say who the client is (see the global block in caddy/Caddyfile).
+    set_env TRUSTED_PROXIES    "private_ranges"
     set_env WEB_BIND           "127.0.0.1"
     set_env HTTP_PORT          "8880"
     set_env HTTPS_PORT         "8444"

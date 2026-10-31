@@ -22,12 +22,18 @@ CREATE TABLE IF NOT EXISTS stream_keys (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     key_token   TEXT UNIQUE NOT NULL,
-    room_id     TEXT REFERENCES rooms(id) ON DELETE SET NULL,
+    -- (Databases created before rooms.stream_key_id carry a room_id column
+    -- here too. Nothing reads or writes it; SQLite cannot drop a column that
+    -- holds a foreign key without rebuilding the table, so it is left alone.)
     -- Set to 1 when an admin kicks the live stream. The admission webhook denies
     -- ingest for a blocked key, so a kicked encoder can't auto-reconnect; an
     -- admin clears it via "Allow ingest" in the Streamkeys tab.
     blocked     INTEGER NOT NULL DEFAULT 0,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    -- The name OME publishes the stream under (the admission webhook renames
+    -- every ingest to it). Viewers are only ever handed this, never key_token,
+    -- which is the credential that can push video. Unique index in db.rs.
+    playback_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS participants (
@@ -38,7 +44,11 @@ CREATE TABLE IF NOT EXISTS participants (
     is_admitted INTEGER NOT NULL DEFAULT 0,
     is_kicked   INTEGER NOT NULL DEFAULT 0,
     token       TEXT UNIQUE,
-    joined_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    joined_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    -- 1 for a presenter who came in through the room's host link, which
+    -- rotating the link revokes. The admin's own "Enter Room" session is a
+    -- presenter too, but holds no link and must survive the rotation.
+    via_host_link INTEGER NOT NULL DEFAULT 0
 );
 
 -- session_files holds both participant uploads and admin-library files.
@@ -101,7 +111,6 @@ CREATE INDEX IF NOT EXISTS idx_rooms_slug          ON rooms(slug);
 CREATE INDEX IF NOT EXISTS idx_rooms_status        ON rooms(status);
 CREATE INDEX IF NOT EXISTS idx_rooms_stream_key    ON rooms(stream_key_id);
 CREATE INDEX IF NOT EXISTS idx_stream_keys_token   ON stream_keys(key_token);
-CREATE INDEX IF NOT EXISTS idx_stream_keys_room    ON stream_keys(room_id);
 CREATE INDEX IF NOT EXISTS idx_participants_room   ON participants(room_id);
 CREATE INDEX IF NOT EXISTS idx_participants_token  ON participants(token);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_room  ON chat_messages(room_id, created_at);

@@ -27,26 +27,6 @@ async fn ome_status_returns_502_when_ome_unavailable() {
 }
 
 #[tokio::test]
-async fn ome_streams_returns_401_without_auth() {
-    let state = common::test_state();
-    let server = common::test_app(state);
-    let res = server.get("/api/ome/streams").await;
-    assert_eq!(res.status_code(), 401);
-}
-
-#[tokio::test]
-async fn ome_streams_returns_502_when_ome_unavailable() {
-    let state = common::test_state();
-    let token = common::admin_token(&state);
-    let server = common::test_app(state);
-    let res = server
-        .get("/api/ome/streams")
-        .add_header(header::AUTHORIZATION, auth_val(&token))
-        .await;
-    assert_eq!(res.status_code(), 502);
-}
-
-#[tokio::test]
 async fn ome_delete_returns_401_without_auth() {
     let state = common::test_state();
     let server = common::test_app(state);

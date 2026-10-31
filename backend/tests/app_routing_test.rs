@@ -171,3 +171,31 @@ async fn brand_name_is_escaped_into_the_meta_tags() {
     );
     assert!(body.contains("&quot;il&lt;script&gt;"));
 }
+
+/// An unknown API path is a JSON 404. It used to fall through to the SPA
+/// catch-all and come back as the viewer page with a 200.
+#[tokio::test]
+async fn unknown_api_paths_are_json_404s() {
+    let state = common::test_state();
+    let server = common::test_app_http(state);
+
+    for path in [
+        "/api/nope",
+        "/api/rooms/x/y/z",
+        "/api/public/rooms/r/nothing-here",
+    ] {
+        let res = server.get(path).await;
+        assert_eq!(res.status_code(), 404, "{path}");
+        assert_eq!(
+            res.json::<serde_json::Value>()["code"],
+            "NOT_FOUND",
+            "{path}"
+        );
+    }
+    // A real route with the wrong method is still the router's own 405.
+    assert_eq!(server.get("/api/auth/login").await.status_code(), 405);
+    // And a room path is still the viewer.
+    let room = server.get("/watch/some-room-a1b2c3").await;
+    assert_eq!(room.status_code(), 200);
+    assert!(room.text().contains("<html"));
+}

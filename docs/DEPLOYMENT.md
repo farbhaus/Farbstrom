@@ -23,7 +23,7 @@ flowchart TB
     Browser -->|HTTPS / WSS| Caddy
 
     Caddy -->|"/live/* · WHIP"| OME
-    Caddy -->|"/livekit/*"| LK
+    Caddy -->|"/livekit/rtc*"| LK
     Caddy -->|"API · WS · static"| Backend
 
     Backend -->|RoomService| LK
@@ -35,7 +35,7 @@ The whole stack ships as **one image** (`farbhaus/farbstrom`); the five processe
 
 | Process | Source | Purpose |
 |---|---|---|
-| Caddy | `caddy:2` binary | TLS + routing (`/live/*` → OME, `/livekit/*` → LiveKit, everything else → backend) |
+| Caddy | `caddy:2` binary | TLS + routing (`/live/*` → OME, `/livekit/rtc*` → LiveKit signalling — nothing else of LiveKit's API — everything else → backend) |
 | OvenMediaEngine | `ovenmedialabs/ovenmediaengine` base image | Broadcast ingest (SRT/RTMP/WHIP) + viewer delivery (WebRTC/LLHLS) |
 | backend | built from source (`backend/`), runs as `app` | Rust/Axum API, WebSocket hub, SQLite, static file serving |
 | LiveKit | `livekit/livekit-server` binary | SFU for participant conference |
@@ -51,7 +51,7 @@ The image is self-contained: the [Dockerfile](../Dockerfile) compiles the Rust b
 | Conference SFU | LiveKit |
 | Backend | Rust + [Axum](https://github.com/tokio-rs/axum) 0.8, Tokio |
 | Database | SQLite (WAL) via `rusqlite` + `r2d2` pool |
-| Frontend | TypeScript ES modules compiled with `tsc` (no bundler, no runtime npm deps) — admin SPA, viewer page, landing page. CDN-loaded OvenPlayer + HLS.js + LiveKit JS SDK |
+| Frontend | TypeScript ES modules compiled with `tsc` (no bundler) — admin SPA, viewer page, landing page. OvenPlayer + HLS.js + LiveKit JS SDK pinned in `frontend/package.json` and served from the app's own origin (`/dist/vendor`) |
 | Reverse proxy | Caddy 2 (container) |
 
 ## Local development
@@ -113,7 +113,7 @@ That's it. The script installs missing prerequisites (Docker + Compose, openssl)
 | Flag | Effect |
 |---|---|
 | `--update` | Pull the newest image and recreate (secrets untouched — live sessions survive). Roll back by pinning `FARBSTROM_TAG=vX.Y.Z` in `.env` first, then `--update`. |
-| `--behind-proxy HOST` | Deploy behind an external TLS proxy: the container serves plain HTTP on `127.0.0.1:8880`, presets `SITE_ADDRESS=:80` / `PUBLIC_HOST=HOST` / `WEB_BIND=127.0.0.1`, and skips the firewall + 80/443 free-port check. |
+| `--behind-proxy HOST` | Deploy behind an external TLS proxy: the container serves plain HTTP on `127.0.0.1:8880`, presets `SITE_ADDRESS=:80` / `PUBLIC_HOST=HOST` / `WEB_BIND=127.0.0.1` / `TRUSTED_PROXIES=private_ranges`, and skips the firewall + 80/443 free-port check. `--update` adds `TRUSTED_PROXIES` to an existing behind-proxy `.env` that predates it. |
 | `--init-env [HOST]` | Generate/refresh `.env` and exit without starting anything (openssl-only; no Docker needed). |
 | `--regenerate` | Rewrite `.env` from scratch (rotates secrets) |
 | `--yes` | Skip confirmation prompts (unattended) |
@@ -159,11 +159,16 @@ HTTP_PORT=8880                          # avoid colliding with the front's :80/:
 HTTPS_PORT=8444
 WEB_BIND=127.0.0.1                      # bind the web ports to loopback — Docker bypasses ufw, so without this
                                         # the plain-HTTP port is reachable from the internet, bypassing your TLS
+TRUSTED_PROXIES=private_ranges          # let the container's Caddy believe your proxy's X-Forwarded-For: it
+                                        # connects from a Docker bridge address, and without this every client
+                                        # shares one rate-limit bucket (one person's typos lock everyone out)
 ```
+
+Have your proxy *set* `X-Forwarded-For` from the connecting client, as Caddy's `reverse_proxy` does. The container reads it right to left and takes the first address it does not trust, so a value a client sent ahead of your proxy's entry is not believed.
 
 `PUBLIC_HOST` is required here: with `SITE_ADDRESS=:80` the container has no usable hostname, so the backend can't derive a valid `PUBLIC_ORIGIN` and panics without it. Then `docker compose -f docker-compose.yml up -d` and point your proxy at `127.0.0.1:8880`.
 
-Firewall ports (the script opens these via ufw/firewalld when active): tcp `80 443 1935 3478 7881`, udp `443 9999 9998 10000-10009 50000-50100`. The 50000-50100/udp LiveKit range is deliberately narrow — wider ranges create thousands of iptables rules and make `docker compose up/down` take minutes.
+Firewall ports (the script opens these via ufw/firewalld when active): tcp `80 443 1935 3478 7881`, udp `443 9999 9998 10000-10009 50000-50100`. The 50000-50100/udp LiveKit range is deliberately narrow — wider ranges create thousands of iptables rules and make `docker compose up/down` take minutes. LiveKit's HTTP API port (`7880`) is not published at all: browsers reach its signalling through Caddy, and the API is for the backend inside the container.
 
 ## Ingest protocols
 
@@ -265,7 +270,7 @@ OME. The client side is then automatic:
 
 | Leg | Client side |
 |---|---|
-| encoder → OME (`9999`) | The admin Stream Keys tab appends `&passphrase=<p>&pbkeylen=<n>` to the ingest SRT URL (masked, revealable) for you to paste into the encoder. |
+| encoder → OME (`9999`) | The admin Stream Keys tab appends `&passphrase=<p>&pbkeylen=<n>` to the ingest SRT URL (masked, revealable) for you to paste into the encoder. The toggle itself is in the Settings tab. |
 | OME → Farbplay (`9998`) | Farbplay reads `passphrase`/`pbkeylen` from `/api/watch/<slug>` and sets `SRTO_PASSPHRASE`/`SRTO_PBKEYLEN`. |
 
 This is **bind-level (per-port)** in OME — one passphrase per leg, not per room; it protects the media

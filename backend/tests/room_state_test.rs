@@ -217,6 +217,13 @@ async fn latin_room_names_keep_their_slug() {
         slug.starts_with("grade-review-"),
         "unexpected slug {slug:?}"
     );
+    // The link is the room's only lock when it has no password: 64 random
+    // bits, not the 24 it used to carry.
+    let suffix = slug.strip_prefix("grade-review-").unwrap();
+    assert_eq!(suffix.len(), 16, "suffix {suffix:?}");
+    assert!(suffix
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
 }
 
 // ---------------------------------------------------------------------------
