@@ -1,0 +1,21 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack timing sidechannel in `rsa`.
+    # No fixed upgrade is available. Pulled in transitively via
+    # jsonwebtoken 10's `rust_crypto` feature. Revisit when `rsa`
+    # ships a fix or when we switch jsonwebtoken to `aws_lc_rs`.
+    "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0097: `rand` is unsound only when a custom `log` logger
+    # itself calls `rand::rng()` (re-entrancy). This app logs via `tracing`,
+    # not a custom `log` logger, so the unsound path is unreachable. Pulled in
+    # via webauthn-rs / governor / tungstenite / rsa. Revisit on a `rand`
+    # (or those crates') bump.
+    "RUSTSEC-2026-0097",
+    # RUSTSEC-2026-0387: non-constant-time arithmetic in `crypto-bigint` < 0.7.6.
+    # Pulled in only via jsonwebtoken's `rust_crypto` feature → p256/p384
+    # (ES256/ES384). This app signs and verifies HS256 only and holds no EC
+    # keys, so no secret EC arithmetic ever runs. jsonwebtoken 11.1.0 still
+    # pins p256 0.13 (→ crypto-bigint 0.5), so there is no upgrade path yet.
+    # Revisit when jsonwebtoken moves to p256 0.14 or we switch to `aws_lc_rs`.
+    "RUSTSEC-2026-0387",
+]
