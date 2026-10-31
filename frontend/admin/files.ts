@@ -1,4 +1,4 @@
-import { apiFetch, getToken } from './auth.js';
+import { apiFetch, fileLinkToken, getToken } from './auth.js';
 import { closeModal, openModal } from '../shared/components.js';
 import { esc, fmtBytes, fmtDate, toast } from '../shared/utils.js';
 import type { FileEntry, Room, StorageStats } from './types.js';
@@ -78,10 +78,30 @@ function filesQueryString(): string {
   return qs ? '?' + qs : '';
 }
 
+// The file-link token the thumbnails were rendered with (`?ft=`).
+let thumbToken = '';
+
+function fileUrl(id: string, kind: 'preview' | 'download', ft: string): string {
+  return `/api/admin/files/${encodeURIComponent(id)}/${kind}?ft=${encodeURIComponent(ft)}`;
+}
+
+// A download link rather than `window.open`: the link is built after an
+// await (the token), and a popup opened that late is fair game for a blocker.
+// The response is an attachment, so the page stays put.
+async function downloadFile(id: string): Promise<void> {
+  const a = document.createElement('a');
+  a.href = fileUrl(id, 'download', await fileLinkToken());
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 export async function loadFiles(): Promise<void> {
   const res = await apiFetch('/api/admin/files' + filesQueryString());
   if (!res || !res.ok) return;
   filesList = await res.json();
+  thumbToken = await fileLinkToken();
   pruneSelection();
   renderFiles();
 }
@@ -163,14 +183,13 @@ function renderFiles(): void {
     updateBulkBar();
     return;
   }
-  const token = getToken();
   container.innerHTML = filesList
     .map((f) => {
       const checked = filesSelected.has(f.id) ? 'checked' : '';
       const selClass = filesSelected.has(f.id) ? ' selected' : '';
       const icon =
         f.mime && f.mime.startsWith('image/')
-          ? `<div class="file-icon" data-action="preview" data-id="${esc(f.id)}"><img src="/api/admin/files/${esc(f.id)}/preview?token=${encodeURIComponent(token)}" alt=""></div>`
+          ? `<div class="file-icon" data-action="preview" data-id="${esc(f.id)}"><img src="${esc(fileUrl(f.id, 'preview', thumbToken))}" alt=""></div>`
           : `<div class="file-icon" data-action="preview" data-id="${esc(f.id)}">${fileIconEmoji(f.mime || '')}</div>`;
       const chips =
         f.assignedRooms && f.assignedRooms.length
@@ -607,14 +626,14 @@ async function unassignFile(roomId: string, fileId: string): Promise<void> {
 
 // ---- Preview modal ----
 
-function openPreviewModal(id: string): void {
+async function openPreviewModal(id: string): Promise<void> {
   const f = filesList.find((x) => x.id === id);
   if (!f) return;
   const titleEl = document.getElementById('files-preview-title');
   if (titleEl) titleEl.textContent = f.name;
   const body = document.getElementById('files-preview-body');
   if (!body) return;
-  const url = `/api/admin/files/${id}/preview?token=${encodeURIComponent(getToken())}`;
+  const url = esc(fileUrl(id, 'preview', await fileLinkToken()));
   const mime = f.mime || '';
   if (mime.startsWith('image/')) {
     body.innerHTML = `<img src="${url}" alt="">`;
@@ -630,9 +649,7 @@ function openPreviewModal(id: string): void {
   }
   const dl = document.getElementById('files-preview-download') as HTMLButtonElement | null;
   if (dl) {
-    dl.onclick = () => {
-      window.open(`/api/admin/files/${id}/download?token=${encodeURIComponent(getToken())}`, '_blank');
-    };
+    dl.onclick = () => void downloadFile(id);
   }
   openModal('files-preview-modal');
 }
@@ -653,8 +670,8 @@ function openDeleteModal(ids: string[]): void {
       const chips =
         f.assignedRooms && f.assignedRooms.length
           ? f.assignedRooms.map((r) => esc(r.name || r.slug || '')).join(', ')
-          : '<span style="color:var(--faint)">no rooms</span>';
-      return `<div style="margin-bottom:6px"><b>${esc(f.name)}</b><br><span style="color:var(--dim);font-size:12px">Assigned: ${chips}</span></div>`;
+          : '<span class="delete-target-none">no rooms</span>';
+      return `<div class="delete-target"><b>${esc(f.name)}</b><br><span class="delete-target-rooms">Assigned: ${chips}</span></div>`;
     })
     .join('');
   const header = ids.length === 1 ? 'Delete this file?' : `Delete ${ids.length} files?`;
@@ -837,7 +854,7 @@ export function handleFilesAction(action: string, target: HTMLElement): void {
       break;
     }
     case 'preview':
-      openPreviewModal(id);
+      void openPreviewModal(id);
       break;
     case 'rename':
       startRename(target);
@@ -849,10 +866,7 @@ export function handleFilesAction(action: string, target: HTMLElement): void {
       openReplaceModal(id);
       break;
     case 'download':
-      window.open(
-        `/api/admin/files/${id}/download?token=${encodeURIComponent(getToken())}`,
-        '_blank',
-      );
+      void downloadFile(id);
       break;
     case 'delete-one':
       openDeleteModal([id]);

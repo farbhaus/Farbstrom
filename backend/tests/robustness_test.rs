@@ -9,10 +9,14 @@ fn auth_val(token: &str) -> axum::http::HeaderValue {
     format!("Bearer {}", token).parse().unwrap()
 }
 
-// NOTE: the SPA fallback is wired in `main.rs`, not `routes::build_router`, so
-// `common::test_app` cannot exercise it — everything unmatched 404s there for
-// unrelated reasons. The asset-vs-room decision is unit-tested against
-// `pages::path_looks_like_asset` instead (see src/routes/pages.rs).
+// NOTE: the SPA fallback lives in `app::build_app`, not `routes::build_router`,
+// so `common::test_app` cannot exercise it — everything unmatched 404s there
+// for unrelated reasons. `app_routing_test` covers it through `test_app_http`.
+
+/// The saved palette, as the pages read it (`GET /api/branding`).
+async fn saved_colors(server: &axum_test::TestServer) -> Value {
+    server.get("/api/branding").await.json::<Value>()["colors"].clone()
+}
 
 /// Branding colours land in a CSS custom property. A malformed value is not an
 /// injection (the client uses `setProperty`), but it makes every `var()` that
@@ -33,7 +37,7 @@ async fn branding_rejects_non_hex_colors() {
     }
 
     // A rejected request must not have written anything.
-    let colors = server.get("/api/branding/colors").await.json::<Value>();
+    let colors = saved_colors(&server).await;
     assert!(
         colors.get("color_accent").is_none(),
         "a rejected colour was persisted"
@@ -56,7 +60,7 @@ async fn branding_accepts_hex_colors_and_reset() {
         assert_eq!(res.status_code(), 200, "{good:?} should be accepted");
     }
     assert_eq!(
-        server.get("/api/branding/colors").await.json::<Value>()["color_accent"],
+        saved_colors(&server).await["color_accent"],
         Value::String("#12345678".into())
     );
 
@@ -66,11 +70,11 @@ async fn branding_accepts_hex_colors_and_reset() {
         .json(&serde_json::json!({ "color_accent": "" }))
         .await;
     assert_eq!(reset.status_code(), 200);
-    assert!(server.get("/api/branding/colors").await.json::<Value>()["color_accent"].is_null());
+    assert!(saved_colors(&server).await["color_accent"].is_null());
 }
 
-/// OME stream names are our own key tokens or `conf-<uuid>`; the value is
-/// spliced into the upstream OME API URL.
+/// OME stream names are our own playback ids; the value is spliced into the
+/// upstream OME API URL by the stream kick (`DELETE /api/ome/streams/:name`).
 ///
 /// The separators have to be **percent-encoded** to be interesting: axum routes
 /// on the raw path, so a literal `/` simply fails to match the single-segment
@@ -90,7 +94,7 @@ async fn ome_rejects_percent_encoded_path_escapes() {
         "%2E%2E%2F%2E%2E%2Froot", // ../../root
     ] {
         let res = server
-            .get(&format!("/api/ome/streams/{bad}"))
+            .delete(&format!("/api/ome/streams/{bad}"))
             .add_header(header::AUTHORIZATION, auth_val(&token))
             .await;
         assert_eq!(
@@ -101,22 +105,24 @@ async fn ome_rejects_percent_encoded_path_escapes() {
     }
 }
 
-/// A real key token must still get through to the OME client — 502 here means
-/// it tried to reach OME, which is the correct behaviour with no OME running.
+/// A real stream name must still get through to the OME client — 502 here
+/// means it tried to reach OME, which is the correct behaviour with no OME
+/// running.
 #[tokio::test]
-async fn ome_accepts_a_real_key_token() {
+async fn ome_accepts_a_real_stream_name() {
     let state = common::test_state();
-    let (_, key_token) = common::seed_stream_key(&state, "Key");
+    let (key_id, _) = common::seed_stream_key(&state, "Key");
+    let stream = common::playback_id(&state, &key_id);
     let token = common::admin_token(&state);
     let server = common::test_app(state);
 
     let res = server
-        .get(&format!("/api/ome/streams/{key_token}"))
+        .delete(&format!("/api/ome/streams/{stream}"))
         .add_header(header::AUTHORIZATION, auth_val(&token))
         .await;
     assert_eq!(
         res.status_code(),
         502,
-        "a valid key token should have reached the OME client"
+        "a valid stream name should have reached the OME client"
     );
 }

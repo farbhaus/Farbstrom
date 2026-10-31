@@ -8,6 +8,17 @@ fn auth_val(token: &str) -> axum::http::HeaderValue {
     format!("Bearer {}", token).parse().unwrap()
 }
 
+/// The code for the step after the current one. Every code is accepted once
+/// (RFC 6238 §5.2) and enrolment has already spent the current one; the server
+/// allows a step of skew either side, so the next code is valid now.
+fn next_code(totp: &totp_rs::Totp) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    totp.generate(now + totp.step()).to_string()
+}
+
 #[tokio::test]
 async fn settings_status_requires_auth() {
     let state = common::test_state();
@@ -90,7 +101,7 @@ async fn totp_full_flow_and_recovery_code() {
         .to_string();
 
     let totp = credentials::totp_from_secret(&secret).unwrap();
-    let code = totp.generate_current().unwrap();
+    let code = totp.generate_current().to_string();
 
     // Enable with a valid code → returns recovery codes.
     let enable = server
@@ -118,7 +129,7 @@ async fn totp_full_flow_and_recovery_code() {
     assert!(body.get("token").is_none());
 
     // Login with a valid TOTP code → token.
-    let code = totp.generate_current().unwrap();
+    let code = next_code(&totp);
     let ok = server
         .post("/api/auth/login")
         .json(&serde_json::json!({"password": "test-admin-password", "totp_code": code}))
@@ -183,7 +194,7 @@ async fn enrol_totp(server: &axum_test::TestServer, token: &str) -> (String, Vec
     let enable = server
         .post("/api/admin/settings/totp/enable")
         .add_header(header::AUTHORIZATION, auth_val(token))
-        .json(&serde_json::json!({ "code": totp.generate_current().unwrap() }))
+        .json(&serde_json::json!({ "code": totp.generate_current().to_string() }))
         .await;
     assert_eq!(enable.status_code(), 200);
     let recovery: Vec<String> = enable.json::<Value>()["recoveryCodes"]
@@ -231,7 +242,7 @@ async fn totp_setup_refuses_to_clobber_an_active_enrolment() {
         .post("/api/auth/login")
         .json(&serde_json::json!({
             "password": "test-admin-password",
-            "totp_code": totp.generate_current().unwrap(),
+            "totp_code": next_code(&totp),
         }))
         .await;
     assert_eq!(login.status_code(), 200, "original TOTP secret was rotated");
@@ -271,7 +282,7 @@ async fn totp_disable_requires_a_second_factor() {
         .add_header(header::AUTHORIZATION, auth_val(&token))
         .json(&serde_json::json!({
             "password": "test-admin-password",
-            "code": totp.generate_current().unwrap(),
+            "code": next_code(&totp),
         }))
         .await;
     assert_eq!(ok.status_code(), 200);
@@ -532,24 +543,21 @@ async fn a_trusted_session_is_still_revocable() {
 /// upgrade must not sign the operator out for no reason.
 #[tokio::test]
 async fn tokens_without_a_version_claim_still_work_on_a_fresh_install() {
-    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     #[derive(serde::Serialize)]
     struct LegacyClaims {
         admin: bool,
-        exp: usize,
+        exp: u64,
     }
 
     let state = common::test_state();
     let secret = state.config.jwt_secret.clone();
-    let legacy = encode(
-        &Header::new(Algorithm::HS256),
+    let legacy = stream_backend::jwt::sign(
         &LegacyClaims {
             admin: true,
-            exp: (now_secs() + 3600) as usize,
+            exp: now_secs() + 3600,
         },
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .unwrap();
+        secret.as_bytes(),
+    );
 
     let server = common::test_app(state);
     assert_eq!(
@@ -561,4 +569,139 @@ async fn tokens_without_a_version_claim_still_work_on_a_fresh_install() {
         200,
         "a pre-upgrade token should survive until something actually revokes it"
     );
+}
+
+/// RFC 6238 §5.2: a verifier must not accept the same one-time password twice.
+/// Each code used to keep working for its whole ~90 s skew window, so one read
+/// over a shoulder or relayed by a phishing proxy signed in again.
+#[tokio::test]
+async fn a_totp_code_signs_in_only_once() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state);
+    let (secret, _) = enrol_totp(&server, &token).await;
+    let code = next_code(&credentials::totp_from_secret(&secret).unwrap());
+
+    let login = |code: String| {
+        server.post("/api/auth/login").json(&serde_json::json!({
+            "password": "test-admin-password",
+            "totp_code": code,
+        }))
+    };
+    assert_eq!(login(code.clone()).await.status_code(), 200);
+    assert_eq!(login(code).await.status_code(), 401, "the same code twice");
+}
+
+/// The enrolment code is a real code too — it must not be replayable to sign in.
+#[tokio::test]
+async fn the_enrolment_code_cannot_then_sign_in() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state);
+
+    let secret = server
+        .post("/api/admin/settings/totp/setup")
+        .add_header(header::AUTHORIZATION, auth_val(&token))
+        .await
+        .json::<Value>()["secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let code = next_code(&credentials::totp_from_secret(&secret).unwrap());
+    let enable = server
+        .post("/api/admin/settings/totp/enable")
+        .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({ "code": code }))
+        .await;
+    assert_eq!(enable.status_code(), 200);
+
+    let login = server
+        .post("/api/auth/login")
+        .json(&serde_json::json!({ "password": "test-admin-password", "totp_code": code }))
+        .await;
+    assert_eq!(login.status_code(), 401);
+}
+
+/// Enabling again used to mint a fresh set of recovery codes, silently voiding
+/// the ones the operator had saved.
+#[tokio::test]
+async fn enabling_twice_does_not_replace_the_recovery_codes() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state);
+    let (secret, recovery) = enrol_totp(&server, &token).await;
+
+    let again = server
+        .post("/api/admin/settings/totp/enable")
+        .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({ "code": next_code(&credentials::totp_from_secret(&secret).unwrap()) }))
+        .await;
+    assert_eq!(again.status_code(), 400);
+
+    // The codes issued at enrolment still work.
+    let login = server
+        .post("/api/auth/login")
+        .json(&serde_json::json!({ "password": "test-admin-password", "totp_code": recovery[0] }))
+        .await;
+    assert_eq!(login.status_code(), 200);
+}
+
+/// Recovery codes were consumed read → bcrypt → write, and two requests could
+/// interleave across the gap: one code submitted twice at once signed in twice,
+/// and two codes at once each wrote back a list still holding the other's —
+/// restoring a code that had just been used.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recovery_code_is_spent_exactly_once_under_concurrency() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state.clone());
+    let (_, recovery) = enrol_totp(&server, &token).await;
+
+    let same: Vec<_> = (0..6)
+        .map(|_| {
+            let (state, code) = (state.clone(), recovery[0].clone());
+            tokio::spawn(async move {
+                stream_backend::credentials::consume_recovery_code(&state, &code)
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut accepted = 0;
+    for task in same {
+        accepted += task.await.unwrap() as usize;
+    }
+    assert_eq!(accepted, 1, "one code was accepted {accepted} times");
+
+    let pair: Vec<_> = [recovery[1].clone(), recovery[2].clone()]
+        .into_iter()
+        .map(|code| {
+            let state = state.clone();
+            tokio::spawn(async move {
+                stream_backend::credentials::consume_recovery_code(&state, &code)
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    for task in pair {
+        assert!(task.await.unwrap(), "a valid code was refused");
+    }
+    for spent in &recovery[..3] {
+        assert!(
+            !stream_backend::credentials::consume_recovery_code(&state, spent)
+                .await
+                .unwrap(),
+            "spent code {spent} came back"
+        );
+    }
+    let left: Vec<String> = serde_json::from_str(
+        &stream_backend::credentials::settings_get(
+            &state.db.get().unwrap(),
+            stream_backend::credentials::KEY_TOTP_RECOVERY,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(left.len(), 7);
 }

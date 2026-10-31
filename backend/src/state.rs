@@ -17,8 +17,6 @@ pub const CEREMONY_TTL_SECS: u64 = 300;
 pub type RegStates = Mutex<HashMap<Uuid, (Instant, PasskeyRegistration)>>;
 pub type AuthStates = Mutex<HashMap<Uuid, (Instant, PasskeyAuthentication)>>;
 
-pub type SharedState = Arc<AppState>;
-
 /// Last sample of cumulative network counters and CPU jiffies, used by the
 /// metrics handler to compute rates/percentages over the interval since the
 /// previous request.

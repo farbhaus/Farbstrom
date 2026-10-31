@@ -20,39 +20,57 @@ use std::time::{Duration, Instant};
 /// flood must still arrive, because dropping one of those is not recoverable
 /// the way dropping a pointer position is.
 ///
-/// Reports how many of the flooded frames actually landed, which is the only
-/// honest way to say what the 256-deep queue does under load.
+/// One socket can no longer flood on its own — its pointer moves are capped at
+/// the source (60, then 40/s) — so the flood comes from eight talkers at once,
+/// which still puts several times the 256-deep queue in front of the stalled
+/// reader. Reports how many of the flooded frames actually landed, which is the
+/// only honest way to say what the bound does under load.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stalled_reader_does_not_stall_the_room() {
     let state = test_state();
     let slug = unique_slug("bp-stall");
     let room = seed_room(&state, "Room", &slug);
-    let (talker, talker_tok) = seed_participant(&state, &room, "Talker", "viewer", true, false);
     let (reader, reader_tok) = seed_participant(&state, &room, "Reader", "viewer", true, false);
     let (stalled, stalled_tok) = seed_participant(&state, &room, "Stalled", "viewer", true, false);
+    let mut talkers = Vec::new();
+    for i in 0..8 {
+        talkers.push(seed_participant(
+            &state,
+            &room,
+            &format!("Talker {i}"),
+            "viewer",
+            true,
+            false,
+        ));
+    }
 
     let server = test_app_http(state);
-    let mut talker_ws = ws_auth(&server, &slug, &talker, &talker_tok, None).await;
     let mut reader_ws = ws_auth(&server, &slug, &reader, &reader_tok, None).await;
     // Authenticate, then never read another frame.
     let _stalled_ws = ws_auth(&server, &slug, &stalled, &stalled_tok, None).await;
+    let mut talker_ws = Vec::new();
+    for (pid, tok) in &talkers {
+        talker_ws.push(ws_auth(&server, &slug, pid, tok, None).await);
+    }
 
-    // Well past the 256-deep queue, and far faster than the client's own 33 ms
-    // pointer throttle would ever produce.
-    let flood = 1_000usize;
+    // Each talker spends its whole pointer allowance, far faster than the
+    // client's own 33 ms throttle would ever produce.
+    let per_talker = 200usize;
     let started = Instant::now();
-    for i in 0..flood {
-        talker_ws
-            .send_text(json!({"type": "pointer:move", "x": i as f64, "y": 1.0}).to_string())
-            .await;
+    for i in 0..per_talker {
+        for ws in talker_ws.iter_mut() {
+            ws.send_text(json!({"type": "pointer:move", "x": i as f64, "y": 1.0}).to_string())
+                .await;
+        }
     }
     // A state frame *after* the flood. This is the one that must not be lost.
-    talker_ws
+    talker_ws[0]
         .send_text(json!({"type": "chat:message", "text": "after the flood"}).to_string())
         .await;
     let send_elapsed = started.elapsed();
 
     // Drain until the state frame shows up, counting what the flood delivered.
+    let flood = per_talker * talker_ws.len();
     let mut pointers = 0usize;
     let mut saw_chat = false;
     for _ in 0..(flood * 2 + 100) {
@@ -72,10 +90,15 @@ async fn a_stalled_reader_does_not_stall_the_room() {
         }
     }
 
-    println!("  [measured] sending {flood} broadcasts took {send_elapsed:?}");
+    println!("  [measured] sending {flood} pointer frames took {send_elapsed:?}");
     println!("  [measured] reader received {pointers}/{flood} pointer frames");
     println!("  [measured] state frame sent after the flood arrived: {saw_chat}");
 
+    assert!(
+        pointers > 256,
+        "only {pointers} frames reached the room — the flood never got past the \
+         queue bound, so this test is not exercising it"
+    );
     assert!(
         send_elapsed < Duration::from_secs(10),
         "sending stalled behind the non-reading client: {send_elapsed:?}"

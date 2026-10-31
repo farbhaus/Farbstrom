@@ -43,27 +43,24 @@ async fn login_returns_token_on_correct_password() {
 /// silently turning into an admin credential.
 #[tokio::test]
 async fn admin_endpoint_rejects_token_without_admin_claim() {
-    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::Serialize;
 
     #[derive(Serialize)]
     struct NonAdminClaims {
         admin: bool,
-        exp: usize,
+        exp: u64,
     }
 
     let state = common::test_state();
-    let exp = (std::time::SystemTime::now()
+    let exp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        + 3600) as usize;
-    let token = encode(
-        &Header::new(Algorithm::HS256),
+        + 3600;
+    let token = stream_backend::jwt::sign(
         &NonAdminClaims { admin: false, exp },
-        &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()),
-    )
-    .unwrap();
+        state.config.jwt_secret.as_bytes(),
+    );
 
     let server = common::test_app(state);
     let res = server
@@ -71,14 +68,4 @@ async fn admin_endpoint_rejects_token_without_admin_claim() {
         .add_header("authorization", format!("Bearer {token}"))
         .await;
     assert_eq!(res.status_code(), 401);
-}
-
-#[tokio::test]
-async fn logout_returns_ok() {
-    let state = common::test_state();
-    let server = common::test_app(state);
-    let res = server.post("/api/auth/logout").await;
-    assert_eq!(res.status_code(), 200);
-    let body: Value = res.json();
-    assert_eq!(body["ok"], true);
 }

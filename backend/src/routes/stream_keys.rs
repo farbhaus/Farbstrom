@@ -20,7 +20,7 @@ async fn list_keys(
     let conn = state.db.get()?;
     let keys = tokio::task::spawn_blocking(move || {
         let mut stmt = conn.prepare(
-            "SELECT sk.id, sk.name, sk.key_token, sk.blocked, sk.created_at, \
+            "SELECT sk.id, sk.name, sk.key_token, sk.playback_id, sk.blocked, sk.created_at, \
              GROUP_CONCAT(r.name, ', ') as room_names \
              FROM stream_keys sk \
              LEFT JOIN rooms r ON r.stream_key_id = sk.id \
@@ -31,6 +31,7 @@ async fn list_keys(
             "id",
             "name",
             "key_token",
+            "playback_id",
             "blocked",
             "created_at",
             "room_names",
@@ -63,6 +64,11 @@ async fn create_key(
     let id = uuid::Uuid::new_v4().to_string();
     let key_bytes: [u8; 24] = rand::rng().random();
     let key_token: String = key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    let playback_bytes: [u8; 24] = rand::rng().random();
+    let playback_id: String = playback_bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     let conn = state.db.get()?;
     let row = {
@@ -71,12 +77,13 @@ async fn create_key(
         let key_token = key_token.clone();
         tokio::task::spawn_blocking(move || {
             conn.execute(
-                "INSERT INTO stream_keys (id, name, key_token) VALUES (?1, ?2, ?3)",
-                rusqlite::params![id, name, key_token],
+                "INSERT INTO stream_keys (id, name, key_token, playback_id) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![id, name, key_token, playback_id],
             )?;
-            let mut stmt = conn
-                .prepare("SELECT id, name, key_token, created_at FROM stream_keys WHERE id = ?1")?;
-            let cols = &["id", "name", "key_token", "created_at"];
+            let mut stmt = conn.prepare(
+                "SELECT id, name, key_token, playback_id, created_at FROM stream_keys WHERE id = ?1",
+            )?;
+            let cols = &["id", "name", "key_token", "playback_id", "created_at"];
             let row = stmt.query_row(rusqlite::params![id], |row| row_to_json(row, cols))?;
             Ok::<_, rusqlite::Error>(row)
         })
@@ -111,9 +118,10 @@ async fn update_key(
         if changes == 0 {
             return Err(AppError::NotFound("Stream key not found".into()));
         }
-        let mut stmt =
-            conn.prepare("SELECT id, name, key_token, created_at FROM stream_keys WHERE id = ?1")?;
-        let cols = &["id", "name", "key_token", "created_at"];
+        let mut stmt = conn.prepare(
+            "SELECT id, name, key_token, playback_id, created_at FROM stream_keys WHERE id = ?1",
+        )?;
+        let cols = &["id", "name", "key_token", "playback_id", "created_at"];
         let row = stmt.query_row(rusqlite::params![id], |row| row_to_json(row, cols))?;
         Ok(row)
     })
@@ -229,9 +237,9 @@ async fn srt_playback(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
-    let key_token: String = tokio::task::spawn_blocking(move || {
+    let playback_id: String = tokio::task::spawn_blocking(move || {
         conn.query_row(
-            "SELECT key_token FROM stream_keys WHERE id = ?1",
+            "SELECT playback_id FROM stream_keys WHERE id = ?1",
             rusqlite::params![id],
             |row| row.get(0),
         )
@@ -245,7 +253,7 @@ async fn srt_playback(
 
     let streamid = crate::signed_policy::sign_streamid(
         &state.config.ome_signed_policy_secret,
-        &key_token,
+        &playback_id,
         ADMIN_PLAYBACK_TTL_SECONDS,
     )?;
 

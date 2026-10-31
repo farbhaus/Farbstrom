@@ -34,6 +34,7 @@ import {
   configureScreens,
   initJoinForm,
   initLandingForm,
+  leaveWaitingScreens,
   loadRoomInfo,
   pollAdmission,
   showEnded,
@@ -46,7 +47,14 @@ import {
   stopAdmissionPoll,
   type RoomInfoOutcome,
 } from './screens.js';
-import { consumePresession, isPresenter, slug, updateSavedStreamKey } from './session.js';
+import {
+  clearSession,
+  consumePresession,
+  isPresenter,
+  markKicked,
+  slug,
+  updateSavedPlaybackId,
+} from './session.js';
 import { getState, setState, viewerStore } from './state.js';
 import type { DeliveryMode, RoomStatus } from './types.js';
 import {
@@ -144,8 +152,8 @@ function refreshStatusOverlay(playerPlaying?: boolean): void {
 // Toggle the stream tile's presence and (re)mount OvenPlayer accordingly.
 // Auto-focus is delegated to conference.ts which knows about the share state.
 function handleStreamAssigned(newKey: string): void {
-  updateSavedStreamKey(newKey);
-  setState({ streamKey: newKey });
+  updateSavedPlaybackId(newKey);
+  setState({ playbackId: newKey });
   // App-only (SRT) rooms stay call-only in the browser — no stream tile.
   if (getState().deliveryMode === 'srt') {
     document.getElementById('tile-stream')?.classList.add('hidden');
@@ -165,8 +173,8 @@ function handleStreamAssigned(newKey: string): void {
 }
 
 function handleStreamRemoved(): void {
-  updateSavedStreamKey(null);
-  setState({ streamKey: null });
+  updateSavedPlaybackId(null);
+  setState({ playbackId: null });
   destroyPlayer();
   document.getElementById('tile-stream')?.classList.add('hidden');
   // If the viewer had pinned the stream tile, that target no longer exists.
@@ -179,11 +187,15 @@ function handleStreamRemoved(): void {
 // presence the same way showApp does — an SRT room is call-only in the
 // browser, webrtc/llhls shows and auto-pins the broadcast — then re-layout.
 function handleDeliveryModeChanged(mode: DeliveryMode): void {
+  const { playbackId, deliveryMode: previous } = getState();
   setState({ deliveryMode: mode });
-  const hasBrowserBroadcast = !!getState().streamKey && mode !== 'srt';
+  const hadBrowserBroadcast = !!playbackId && previous !== 'srt';
+  const hasBrowserBroadcast = !!playbackId && mode !== 'srt';
   if (hasBrowserBroadcast) {
     document.getElementById('tile-stream')?.classList.remove('hidden');
-    initPlayer();
+    // Remount, not initPlayer: initPlayer keeps a mounted player, so a switch
+    // between WebRTC and LL-HLS went unheard until the viewer reloaded.
+    remountLivePlayer(true);
   } else {
     destroyPlayer();
     document.getElementById('tile-stream')?.classList.add('hidden');
@@ -192,7 +204,9 @@ function handleDeliveryModeChanged(mode: DeliveryMode): void {
   }
   syncConferenceTiles();
   sizeStage();
-  requestAutoFocus();
+  // Re-pin only when the stream tile came or went. WebRTC <-> LL-HLS leaves the
+  // stage as it was, which keeps a host's grid layout.
+  if (hadBrowserBroadcast !== hasBrowserBroadcast) requestAutoFocus();
 }
 
 // ---- App show / leave ----
@@ -218,7 +232,7 @@ function showApp(initialStatus?: RoomStatus): void {
   // let auto-focus pick the natural target (share > stream > grid). For
   // app-only (SRT) rooms there is no browser broadcast — it's a call-only room,
   // so the stream tile stays hidden and the layout defaults to the grid.
-  if (getState().streamKey && getState().deliveryMode !== 'srt') {
+  if (getState().playbackId && getState().deliveryMode !== 'srt') {
     document.getElementById('tile-stream')?.classList.remove('hidden');
     initPlayer();
   } else {
@@ -345,6 +359,19 @@ function init(): void {
   });
   configureScreens({
     onAdmitted: () => showApp(),
+    // What the room's socket does on a kick or room:ended, for someone who
+    // never got as far as opening one.
+    onDenied: () => {
+      leaveWaitingScreens();
+      markKicked();
+      showKicked();
+      startKickedPoller();
+    },
+    onEnded: () => {
+      leaveWaitingScreens();
+      clearSession();
+      showEnded();
+    },
   });
   configureJoinOutcome(dispatchOutcome);
 

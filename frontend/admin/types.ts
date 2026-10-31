@@ -18,7 +18,9 @@ export interface Room {
   push_to_talk: boolean | number;
   starts_at: string | null;
   expires_at: string | null;
-  password_hash: string | null;
+  // 1 when the room has a password (SQLite boolean). The hash itself never
+  // leaves the server.
+  has_password: number;
   presenter_key: string;
   stream_key_id: string | null;
   stream_key_name: string | null;
@@ -27,7 +29,10 @@ export interface Room {
 export interface StreamKey {
   id: string;
   name: string;
+  /** The ingest credential — encoders only, never handed to a viewer. */
   key_token: string;
+  /** The name OME publishes this key's stream under. */
+  playback_id: string;
   blocked?: boolean | number;
   room_names?: string;
 }
@@ -110,7 +115,6 @@ export interface OmeStream {
 export interface OmeData {
   error?: string;
   streams: OmeStream[];
-  conf_count: number;
 }
 
 export interface EnterRoomResponse {
@@ -118,7 +122,7 @@ export interface EnterRoomResponse {
   token: string;
   slug: string;
   deliveryMode: DeliveryMode;
-  streamKey?: string | null;
+  playbackId?: string | null;
 }
 
 export type TabId = 'rooms' | 'keys' | 'files' | 'ome' | 'branding' | 'settings';

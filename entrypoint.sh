@@ -15,8 +15,13 @@ chown -R app:app /data
 # Generate LiveKit config pointing at local Valkey. Keys are inlined into the
 # YAML here (entrypoint still has the full env), so the livekit process itself
 # needs no key secrets in its environment — supervisord blanks them for it.
-LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}"
-LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET:-secret}"
+#
+# No defaults. These used to fall back to LiveKit's well-known dev pair
+# (devkey / secret), so a deployment missing them still started a LiveKit that
+# anyone could mint tokens for — while the backend, which refuses to start
+# without them, crash-looped beside it.
+: "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY must be set (see .env.example)}"
+: "${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET must be set (see .env.example)}"
 cat > /livekit.yaml <<EOF
 port: 7880
 rtc:

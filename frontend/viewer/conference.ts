@@ -96,10 +96,6 @@ const SVG_MIC =
 const SVG_MIC_OFF =
   '<svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
 
-export function getLivekitRoom(): LkRoom | null {
-  return livekitRoom;
-}
-
 // ---- Focus / auto-pin ----
 
 // Resolves a TileId to its DOM element. Self-tile and remote participant
@@ -212,10 +208,10 @@ export function setFocus(tileId: TileId | null, opts: { override?: boolean } = {
 // preferred is an explicit hint (e.g. the share just started) — useful when
 // the call site knows the natural target.
 export function requestAutoFocus(preferred?: TileId): void {
-  const { focusOverride, streamKey, focusedTile, displayFile, deliveryMode } = viewerStore.get();
+  const { focusOverride, playbackId, focusedTile, displayFile, deliveryMode } = viewerStore.get();
   if (focusOverride) return;
   // App-only (SRT) rooms have no browser broadcast tile to focus.
-  const hasBrowserBroadcast = !!streamKey && deliveryMode !== 'srt';
+  const hasBrowserBroadcast = !!playbackId && deliveryMode !== 'srt';
   let target: TileId | null;
   if (preferred && findTileEl(preferred)) {
     target = preferred;
@@ -457,6 +453,7 @@ export async function disconnectLiveKit(): Promise<void> {
   if (selfTile) {
     selfTile.classList.remove('mic-only', 'cam-off');
     selfTile.style.display = 'none';
+    selfTile.classList.add('hidden');
   }
   requestAnimationFrame(sizeStage);
 }
@@ -507,9 +504,13 @@ function updateSelfTile(): void {
       micIcon.style.display = 'none';
       userIcon.style.display = 'flex';
       selfTile.style.display = 'flex';
+      selfTile.classList.remove('hidden');
     } else {
-      // Not in the conference — tile stays hidden.
+      // Not in the conference — tile stays hidden. The class as well as the
+      // inline style: the call panel's "nothing to show" rule can only see
+      // `.hidden`, so without it this tile kept an empty panel on screen.
       selfTile.style.display = 'none';
+      selfTile.classList.add('hidden');
       selfTile.classList.remove('mic-only');
       micIcon.style.display = 'none';
       userIcon.style.display = 'none';
@@ -522,12 +523,13 @@ function updateSelfTile(): void {
     if (camPub?.track) {
       v.srcObject = new MediaStream([camPub.track.mediaStreamTrack]);
     }
-    selfTile.classList.remove('mic-only');
+    selfTile.classList.remove('mic-only', 'hidden');
     micIcon.style.display = 'none';
     selfTile.style.display = 'block';
   } else {
     v.srcObject = null;
     selfTile.classList.add('mic-only');
+    selfTile.classList.remove('hidden');
     micIcon.style.display = '';
     userIcon.style.display = 'none';
     selfTile.style.display = 'flex';

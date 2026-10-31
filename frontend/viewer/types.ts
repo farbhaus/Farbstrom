@@ -40,7 +40,8 @@ export interface JoinResponse {
   token: string;
   role: Role;
   delivery_mode: DeliveryMode;
-  stream_key: string | null;
+  // The name OME publishes the room's stream under, never the ingest key.
+  playback_id: string | null;
   status: RoomStatus;
   starts_at: string | null;
   admitted: boolean;
@@ -55,6 +56,9 @@ export interface StatusResponse {
   admitted: boolean;
   kicked: boolean;
   room_status: RoomStatus;
+  started: boolean;
+  /** The room's stream as it is now; null unless admitted and not kicked. */
+  playback_id: string | null;
 }
 
 export interface LivekitTokenResponse {
@@ -124,7 +128,7 @@ export type WsMessage =
   | { type: 'room:live' }
   | { type: 'room:pending' }
   | { type: 'room:ended' }
-  | { type: 'stream:assigned'; streamKey: string }
+  | { type: 'stream:assigned'; playbackId: string }
   | { type: 'stream:removed' }
   | { type: 'delivery:changed'; deliveryMode: DeliveryMode }
   | { type: 'participants:update'; participants: RosterEntry[] }
@@ -184,6 +188,6 @@ export interface SavedSession {
   participantId: string;
   token: string;
   deliveryMode: DeliveryMode;
-  streamKey: string | null;
+  playbackId: string | null;
   role: Role;
 }

@@ -655,3 +655,298 @@ async fn ping_echoes_the_clients_clock_reading() {
     let pong = expect_frame(&mut ws, "pong").await;
     assert_eq!(pong["t"], 1234567u64);
 }
+
+// ---------------------------------------------------------------------------
+// The server ends a connection; it doesn't ask
+// ---------------------------------------------------------------------------
+
+/// Frames `ws` receives over the next second whose type is one of `types`.
+async fn frames_of(ws: &mut axum_test::TestWebSocket, types: &[&str]) -> Vec<serde_json::Value> {
+    let mut hits = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    while let Ok(text) = tokio::time::timeout_at(deadline, ws.receive_text()).await {
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        if types.iter().any(|t| v["type"] == *t) {
+            hits.push(v);
+        }
+    }
+    hits
+}
+
+/// A kick used to queue a close and keep reading until the client sent one
+/// back — so a client that never did kept chatting into the room it was kicked
+/// from (reproduced with a hand-rolled client against the running stack).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kicked_client_that_ignores_the_close_is_cut_off() {
+    let state = test_state();
+    let slug = unique_slug("kick-raw");
+    let room = seed_room(&state, "Room", &slug);
+    let (victim, v_tok) = seed_participant(&state, &room, "Mallory", "viewer", true, false);
+    let (bystander, b_tok) = seed_participant(&state, &room, "Carol", "viewer", true, false);
+    stream_backend::ws::spawn_event_listeners(state.clone());
+    let server = test_app_http(state.clone());
+
+    let mut bystander_ws = ws_auth(&server, &slug, &bystander, &b_tok, None).await;
+    let mut victim_ws = RawWs::auth(&server, &slug, &victim, &v_tok).await;
+
+    state
+        .events
+        .participant_kicked
+        .send(stream_backend::events::KickedEvent {
+            slug: slug.clone(),
+            participant_id: victim.clone(),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Keep talking as though nothing happened.
+    victim_ws
+        .send_json(&json!({"type": "chat:message", "text": "still here"}))
+        .await;
+    victim_ws
+        .send_json(&json!({"type": "pointer:move", "x": 0.5, "y": 0.5}))
+        .await;
+
+    let leaked = frames_of(&mut bystander_ws, &["chat:message", "pointer:move"]).await;
+    assert!(
+        leaked.is_empty(),
+        "kicked client still reached the room: {leaked:?}"
+    );
+}
+
+/// Same hole, worse consequence: a host whose link was rotated away kept the
+/// presenter role on an open socket and could still drive everyone's view.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_presenter_can_no_longer_steer_the_room() {
+    let state = test_state();
+    let slug = unique_slug("revoke-raw");
+    let room = seed_room(&state, "Room", &slug);
+    let (host, h_tok) = seed_participant(&state, &room, "Host", "presenter", true, false);
+    let (viewer, v_tok) = seed_participant(&state, &room, "Viewer", "viewer", true, false);
+    stream_backend::ws::spawn_event_listeners(state.clone());
+    let server = test_app_http(state.clone());
+
+    let mut viewer_ws = ws_auth(&server, &slug, &viewer, &v_tok, None).await;
+    let mut host_ws = RawWs::auth(&server, &slug, &host, &h_tok).await;
+
+    state
+        .events
+        .host_revoked
+        .send(stream_backend::events::HostRevokedEvent {
+            slug: slug.clone(),
+            participant_id: host.clone(),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    host_ws
+        .send_json(&json!({"type": "focus:set", "tileId": "stream"}))
+        .await;
+    let steered = frames_of(&mut viewer_ws, &["focus:set"]).await;
+    assert!(
+        steered.is_empty(),
+        "revoked presenter still steered the room: {steered:?}"
+    );
+}
+
+/// After a dropped link the client reconnects long before the server notices the
+/// old TCP connection is dead. When that stale socket finally ended, its
+/// disconnect timer removed the participant the new socket had just taken over:
+/// still connected, receiving nothing, gone from the roster.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reconnect_survives_the_stale_sockets_close() {
+    let state = test_state();
+    let slug = unique_slug("reconnect-race");
+    let room = seed_room(&state, "Room", &slug);
+    let (ana, a_tok) = seed_participant(&state, &room, "Ana", "viewer", true, false);
+    let (bob, b_tok) = seed_participant(&state, &room, "Bob", "viewer", true, false);
+    let server = test_app_http(state.clone());
+
+    // The stale socket is still open when the new one authenticates…
+    let mut stale = RawWs::auth(&server, &slug, &ana, &a_tok).await;
+    let mut fresh = ws_auth(&server, &slug, &ana, &a_tok, None).await;
+    // …and is told it has been superseded.
+    let mut superseded = false;
+    while let Some(frame) = stale.next().await {
+        if frame == RawFrame::Close(1008) {
+            superseded = true;
+            break;
+        }
+    }
+    assert!(superseded, "the stale socket must be closed when replaced");
+    drop(stale);
+
+    // Outlast the 3 s grace period the stale socket would have started.
+    tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
+    let mut bob_ws = ws_auth(&server, &slug, &bob, &b_tok, None).await;
+    bob_ws
+        .send_text(json!({"type": "chat:message", "text": "can you hear me"}).to_string())
+        .await;
+    expect_frame(&mut fresh, "chat:message").await;
+    assert!(
+        stream_backend::ws::connected_ids(&slug)
+            .await
+            .contains(&ana),
+        "the reconnected participant must still be in the room"
+    );
+}
+
+/// Every listener used to be `while let Ok(..) = rx.recv()`, which ends on the
+/// first `Lagged`. Reproduced against the running stack: one waiting joiner
+/// opening 150 admission streams stopped every presenter seeing new arrivals.
+#[tokio::test(flavor = "multi_thread")]
+async fn listeners_survive_a_burst_that_overflows_the_channel() {
+    let state = test_state();
+    let slug = unique_slug("lag");
+    let room = seed_room(&state, "Room", &slug);
+    let (host, h_tok) = seed_participant(&state, &room, "Host", "presenter", true, false);
+    stream_backend::ws::spawn_event_listeners(state.clone());
+    let server = test_app_http(state.clone());
+    let mut host_ws = ws_auth(&server, &slug, &host, &h_tok, None).await;
+
+    // Far more than the channel holds, faster than the listeners drain it.
+    for _ in 0..500 {
+        let _ =
+            state
+                .events
+                .moderation_changed
+                .send(stream_backend::events::ModerationChangedEvent {
+                    slug: unique_slug("noise"),
+                });
+        let _ = state.events.room_live.send(unique_slug("noise"));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Both kinds of listener must still be running afterwards.
+    seed_participant(&state, &room, "Late Arrival", "viewer", false, false);
+    let _ = state
+        .events
+        .moderation_changed
+        .send(stream_backend::events::ModerationChangedEvent { slug: slug.clone() });
+    let _ = state.events.room_live.send(slug.clone());
+
+    let mut got_waiting = false;
+    let mut got_live = false;
+    for _ in 0..40 {
+        let v = next_json(&mut host_ws).await;
+        if v["type"] == "moderation:update"
+            && v["waiting"]
+                .as_array()
+                .is_some_and(|w| w.iter().any(|p| p["name"] == "Late Arrival"))
+        {
+            got_waiting = true;
+        }
+        if v["type"] == "room:live" {
+            got_live = true;
+        }
+        if got_waiting && got_live {
+            break;
+        }
+    }
+    assert!(got_waiting, "moderation listener died after the burst");
+    assert!(got_live, "room:live listener died after the burst");
+}
+
+// ---------------------------------------------------------------------------
+// Per-connection limits
+// ---------------------------------------------------------------------------
+
+/// One modified client used to persist 2000 chat messages and fan them out to
+/// the room in a few seconds. A connection's chat now has a burst of 10 and
+/// refills at 2/s, and what it drops is neither broadcast nor stored.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_flood_is_capped_at_the_source() {
+    let state = test_state();
+    let slug = unique_slug("chat-flood");
+    let room = seed_room(&state, "Room", &slug);
+    let (talker, t_tok) = seed_participant(&state, &room, "Mallory", "viewer", true, false);
+    let (reader, r_tok) = seed_participant(&state, &room, "Carol", "viewer", true, false);
+    let server = test_app_http(state.clone());
+    let mut reader_ws = ws_auth(&server, &slug, &reader, &r_tok, None).await;
+    let mut talker_ws = RawWs::auth(&server, &slug, &talker, &t_tok).await;
+
+    for i in 0..200 {
+        talker_ws
+            .send_json(&json!({"type": "chat:message", "text": format!("spam {i}")}))
+            .await;
+    }
+    let delivered = frames_of(&mut reader_ws, &["chat:message"]).await.len();
+    let stored: i64 = state
+        .db
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM chat_messages WHERE room_id = ?1",
+            [&room],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // The burst, plus whatever refilled while the 200 were being sent.
+    assert!((10..=16).contains(&delivered), "{delivered}/200 delivered");
+    assert_eq!(stored, delivered as i64, "stored and delivered must agree");
+}
+
+/// Farbplay never throttles `pointer:hide` — a dropped one strands its cursor on
+/// every other screen — so no stream of moves may spend the hide's allowance.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pointer_flood_cannot_swallow_the_hide() {
+    let state = test_state();
+    let slug = unique_slug("pointer-flood");
+    let room = seed_room(&state, "Room", &slug);
+    let (mover, m_tok) = seed_participant(&state, &room, "Mover", "viewer", true, false);
+    let (reader, r_tok) = seed_participant(&state, &room, "Carol", "viewer", true, false);
+    let server = test_app_http(state.clone());
+    let mut reader_ws = ws_auth(&server, &slug, &reader, &r_tok, None).await;
+    let mut mover_ws = RawWs::auth(&server, &slug, &mover, &m_tok).await;
+
+    for _ in 0..500 {
+        mover_ws
+            .send_json(&json!({"type": "pointer:move", "x": 0.5, "y": 0.5}))
+            .await;
+    }
+    mover_ws.send_json(&json!({"type": "pointer:hide"})).await;
+    let frames = frames_of(&mut reader_ws, &["pointer:move", "pointer:hide"]).await;
+    let moves = frames
+        .iter()
+        .filter(|f| f["type"] == "pointer:move")
+        .count();
+    assert!(moves < 120, "{moves}/500 pointer moves fanned out");
+    assert!(
+        frames.iter().any(|f| f["type"] == "pointer:hide"),
+        "the hide was dropped behind the flood"
+    );
+}
+
+/// tungstenite accepts a 64 MiB message by default. The largest legitimate
+/// client frame is a 500-character chat message, so anything over 16 KiB ends
+/// the connection instead of being buffered and parsed.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oversized_frame_ends_the_connection() {
+    let state = test_state();
+    let slug = unique_slug("big-frame");
+    let room = seed_room(&state, "Room", &slug);
+    let (pid, tok) = seed_participant(&state, &room, "Ana", "viewer", true, false);
+    let (reader, r_tok) = seed_participant(&state, &room, "Carol", "viewer", true, false);
+    let server = test_app_http(state.clone());
+    let mut reader_ws = ws_auth(&server, &slug, &reader, &r_tok, None).await;
+    let mut ws = RawWs::auth(&server, &slug, &pid, &tok).await;
+
+    let big = "x".repeat(20 * 1024);
+    ws.send_json(&json!({"type": "chat:message", "text": big}))
+        .await;
+    // The server drops the socket; nothing from it reaches the room.
+    let mut closed = false;
+    for _ in 0..20 {
+        match ws.next().await {
+            Some(RawFrame::Close(_)) | None => {
+                closed = true;
+                break;
+            }
+            Some(RawFrame::Text(_)) => {}
+        }
+    }
+    assert!(closed, "the connection survived a 20 KiB frame");
+    assert!(frames_of(&mut reader_ws, &["chat:message"])
+        .await
+        .is_empty());
+}

@@ -192,7 +192,7 @@ function handleMessage(msg: WsMessage): void {
       onRoomEnded();
       return;
     case 'stream:assigned':
-      onStreamAssigned(msg.streamKey);
+      onStreamAssigned(msg.playbackId);
       return;
     case 'delivery:changed':
       onDeliveryModeChanged(msg.deliveryMode);
@@ -258,8 +258,8 @@ function handleMessage(msg: WsMessage): void {
         // File gone. If the stream tile was pinned only because of the file
         // (no live stream key), that target is now hidden — clear any manual
         // pin so auto-focus can fall back to grid. Mirrors handleStreamRemoved.
-        const { streamKey, focusedTile } = viewerStore.get();
-        if (!streamKey && focusedTile === 'stream') {
+        const { playbackId, focusedTile } = viewerStore.get();
+        if (!playbackId && focusedTile === 'stream') {
           viewerStore.set({ focusOverride: false });
         }
         requestAutoFocus();

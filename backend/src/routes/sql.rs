@@ -40,20 +40,18 @@ macro_rules! room_select {
         "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, \
          r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
          r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-         r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
-         sk.key_token, sk.name as stream_key_name \
+         r.started_at, r.ended_at, r.presenter_key, \
+         (r.password_hash IS NOT NULL AND r.password_hash != '') AS has_password, \
+         sk.key_token, sk.playback_id, sk.name as stream_key_name \
          FROM rooms r \
          LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id"
     };
 }
 
-/// The admin-facing room projection, joined to its stream key.
+/// Key names for the room projection (`room_select!`), in projection order.
 ///
-/// Callers append their own `WHERE`. Column order must stay in step with
-/// [`ROOM_COLS`].
-pub const ROOM_SELECT: &str = room_select!();
-
-/// Key names for [`ROOM_SELECT`], in projection order.
+/// `has_password`, not the hash: the admin UI only ever asks whether a room has
+/// a password, and the bcrypt hash used to ride along to the browser with it.
 pub const ROOM_COLS: &[&str] = &[
     "id",
     "name",
@@ -71,25 +69,28 @@ pub const ROOM_COLS: &[&str] = &[
     "started_at",
     "ended_at",
     "presenter_key",
-    "password_hash",
+    "has_password",
     "key_token",
+    "playback_id",
     "stream_key_name",
 ];
 
-/// [`ROOM_SELECT`] for exactly one room. The bind parameter is the room id.
+/// The admin-facing room projection for exactly one room, joined to its stream
+/// key. Column order must stay in step with [`ROOM_COLS`]. The bind parameter is the room id.
 /// This is the form six of the seven original copies used.
 pub const ROOM_SELECT_BY_ID: &str = concat!(room_select!(), " WHERE r.id = ?1");
 
-/// The room list for the admin index. Deliberately *not* [`ROOM_SELECT`]: it
-/// carries an extra `waiting_count` subquery, so it has its own projection and
-/// its own column names ([`ROOM_LIST_COLS`]).
+/// The room list for the admin index. Deliberately *not* the single-room
+/// projection: it carries an extra `waiting_count` subquery, so it has its own
+/// projection and its own column names ([`ROOM_LIST_COLS`]).
 pub const ROOM_LIST_SELECT: &str = "SELECT r.id, r.name, r.slug, r.delivery_mode, r.waiting_room, \
      r.noise_reduction, r.echo_cancellation, r.push_to_talk, \
      r.starts_at, r.expires_at, r.status, r.stream_key_id, r.created_at, \
-     r.started_at, r.ended_at, r.presenter_key, r.password_hash, \
+     r.started_at, r.ended_at, r.presenter_key, \
+     (r.password_hash IS NOT NULL AND r.password_hash != '') AS has_password, \
      (SELECT COUNT(*) FROM participants p \
       WHERE p.room_id = r.id AND p.is_admitted = 0 AND p.is_kicked = 0) as waiting_count, \
-     sk.key_token, sk.name as stream_key_name \
+     sk.key_token, sk.playback_id, sk.name as stream_key_name \
      FROM rooms r \
      LEFT JOIN stream_keys sk ON sk.id = r.stream_key_id \
      ORDER BY r.created_at DESC";
@@ -113,9 +114,10 @@ pub const ROOM_LIST_COLS: &[&str] = &[
     "started_at",
     "ended_at",
     "presenter_key",
-    "password_hash",
+    "has_password",
     "waiting_count",
     "key_token",
+    "playback_id",
     "stream_key_name",
 ];
 
@@ -131,29 +133,54 @@ pub const FILE_ROOM_SLUGS: &str = "SELECT DISTINCT r.slug FROM rooms r \
 mod tests {
     use super::*;
 
+    /// Top-level commas in a projection — the ones that separate columns, not
+    /// the ones inside a function call or subquery.
+    fn projected_columns(select: &str) -> usize {
+        let list = select
+            .strip_prefix("SELECT ")
+            .unwrap()
+            .split(" FROM rooms r")
+            .next()
+            .unwrap();
+        let mut depth = 0i32;
+        let mut columns = 1;
+        for c in list.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => columns += 1,
+                _ => {}
+            }
+        }
+        columns
+    }
+
     /// The projection and the column names are decoded positionally, so a
     /// mismatch would silently mislabel every field.
     #[test]
     fn room_projection_matches_its_column_names() {
-        let select_list = ROOM_SELECT
-            .strip_prefix("SELECT ")
-            .unwrap()
-            .split(" FROM ")
-            .next()
-            .unwrap();
         assert_eq!(
-            select_list.split(',').count(),
+            projected_columns(ROOM_SELECT_BY_ID),
             ROOM_COLS.len(),
-            "ROOM_SELECT projects a different number of columns than ROOM_COLS names"
+            "ROOM_SELECT_BY_ID projects a different number of columns than ROOM_COLS names"
         );
+        assert!(ROOM_SELECT_BY_ID.ends_with(" WHERE r.id = ?1"));
     }
 
     #[test]
-    fn by_id_variant_shares_the_projection() {
-        assert!(
-            ROOM_SELECT_BY_ID.starts_with(ROOM_SELECT),
-            "ROOM_SELECT_BY_ID has drifted from ROOM_SELECT"
-        );
-        assert!(ROOM_SELECT_BY_ID.ends_with(" WHERE r.id = ?1"));
+    fn list_projection_matches_its_column_names() {
+        assert_eq!(projected_columns(ROOM_LIST_SELECT), ROOM_LIST_COLS.len());
+    }
+
+    /// Neither admin projection may carry the room password's hash.
+    #[test]
+    fn no_projection_sends_the_password_hash() {
+        for (select, cols) in [
+            (ROOM_SELECT_BY_ID, ROOM_COLS),
+            (ROOM_LIST_SELECT, ROOM_LIST_COLS),
+        ] {
+            assert!(!cols.contains(&"password_hash"));
+            assert!(!select.contains("r.password_hash,"));
+        }
     }
 }

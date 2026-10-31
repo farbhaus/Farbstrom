@@ -23,16 +23,19 @@ use crate::routes;
 use crate::state::AppState;
 use crate::ws;
 
-/// Redact sensitive query-string values before they land in tracing spans.
-/// The admin `?token=…` fallback exists so `<img>` / `window.open` can reach
-/// authenticated endpoints, but we do not want JWTs in request logs.
+/// Redact sensitive query-string values before they land in tracing spans:
+/// participant tokens (`token`, which the file and status endpoints take),
+/// room passwords (`p` on a room link), and the admin's short-lived file-link
+/// (`ft`) and playback (`apt`) tokens.
 fn redact_query(q: &str) -> String {
     q.split('&')
         .map(|kv| {
             let mut it = kv.splitn(2, '=');
             let k = it.next().unwrap_or("");
             match k {
-                "token" | "presenter_key" | "password" => format!("{k}=<redacted>"),
+                "token" | "presenter_key" | "password" | "p" | "ft" | "apt" => {
+                    format!("{k}=<redacted>")
+                }
                 _ => kv.to_string(),
             }
         })
@@ -48,6 +51,13 @@ pub fn build_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(routes::build_router(state.clone()))
+        // An unknown API path is a 404 in the API's own error shape. It used to
+        // fall through to the SPA catch-all and come back as the viewer page
+        // with a 200, which a client parsing JSON reads as a server fault.
+        .route(
+            "/api/{*rest}",
+            axum::routing::any(|| async { crate::error::AppError::NotFound("Not found".into()) }),
+        )
         .merge(ws::router().with_state(state.clone()))
         .nest_service(
             "/admin",
@@ -125,6 +135,16 @@ mod tests {
         assert_eq!(
             redact_query("presenter_key=k&password=p"),
             "presenter_key=<redacted>&password=<redacted>"
+        );
+    }
+
+    #[test]
+    fn room_passwords_and_admin_link_tokens_are_redacted() {
+        assert_eq!(redact_query("p=hunter2&n=Ana"), "p=<redacted>&n=Ana");
+        assert_eq!(redact_query("ft=123.sig"), "ft=<redacted>");
+        assert_eq!(
+            redact_query("apt=123.sig&participantId=x"),
+            "apt=<redacted>&participantId=x"
         );
     }
 

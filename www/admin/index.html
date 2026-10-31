@@ -9,8 +9,8 @@
 <link rel="apple-touch-icon" href="/shared/favicon.png">
 <!-- Live-stream preview player (issue #204). HLS.js is required or LLHLS fails silently.
      Keep the OvenPlayer pin in step with www/viewer/index.html — exact on purpose. -->
-<script src="https://cdn.jsdelivr.net/npm/ovenplayer@0.10.53/dist/ovenplayer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7/dist/hls.min.js"></script>
+<script src="/dist/vendor/ovenplayer.js"></script>
+<script src="/dist/vendor/hls.min.js"></script>
 <link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/shared/components.css">
 <link rel="stylesheet" href="/shared/utils.css">
@@ -119,6 +119,7 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 .participants-group-header .participants-group-title { margin-bottom: 0; }
 .participant-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: var(--bw-hair) solid var(--border); }
 .participant-row:last-child { border-bottom: none; }
+.participant-actions { display: flex; gap: var(--sp-2); }
 .role-tag { font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--accent); border: var(--bw-hair) solid var(--accent); border-radius: var(--r-inset); padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
 .waiting-empty { font-size: var(--fs-sm); color: var(--faint); }
 
@@ -193,6 +194,8 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     transition: border-color var(--dur-fast) var(--ease-out),
                 box-shadow var(--dur-fast) var(--ease-out);
 }
+/* Stream-key URLs run long; one step down keeps more of each on screen. */
+.url-input-dense { font-size: var(--fs-xs); }
 .url-input:hover { border-color: var(--dim); }
 .url-input:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
 /* Read-only link display in the Share modal, so the dialog states exactly
@@ -256,7 +259,6 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 .stream-stat { display: flex; align-items: baseline; gap: 10px; font-size: var(--fs-base); }
 .stream-stat .stat-label { width: 52px; flex-shrink: 0; }
 .stream-meta { font-size: var(--fs-sm); color: var(--dim); padding: 8px 24px 14px; }
-.ome-subheader { font-size: var(--fs-sm); color: var(--dim); margin-bottom: 20px; min-height: 18px; }
 
 /* ---- Files tab ---- */
 .files-storage-widget { padding: var(--sp-5) var(--sp-6); }
@@ -405,6 +407,12 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
 .preview-body audio { width: 100%; }
 .preview-body iframe { width: 100%; height: 70vh; border: none; background: var(--on-media); }
 .preview-unsupported { color: var(--dim); font-size: var(--fs-base); padding: 40px; text-align: center; }
+.delete-target { margin-bottom: var(--sp-1-5); }
+.empty-note { color: var(--dim); font-size: var(--fs-base); }
+/* Spaced out so ten 10-character codes read, and copy, one per line. */
+.recovery-codes { font-size: var(--fs-base); line-height: var(--lh-body); }
+.delete-target-rooms { color: var(--dim); font-size: var(--fs-sm); }
+.delete-target-none { color: var(--faint); }
 
 /* Below ~1000px, the 8-column single-row layout can't fit without the
    actions column getting clipped. Reflow into three rows: name on top,
@@ -497,8 +505,11 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
     .url-row { flex-direction: column; align-items: stretch; gap: 4px; }
     .url-label { width: auto; }
     /* Button-only rows wrap instead of stacking — stretched full-width, three
-       buttons eat most of a phone screen. */
+       buttons eat most of a phone screen. The label takes a line of its own,
+       as it does on every other row here; inline, it left the last button to
+       wrap underneath it. */
     .url-row.url-actions { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .url-row.url-actions .url-label { flex-basis: 100%; }
 
     /* Stream key cards */
     .key-card-header { flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-4); }
@@ -694,7 +705,6 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
             <span class="section-title">Live Streams</span>
             <button class="btn btn-sm" id="ome-refresh-btn">Refresh</button>
         </div>
-        <div class="ome-subheader" id="ome-subheader"></div>
         <div id="ome-list"><div class="empty">Loading…</div></div>
 
         <!-- OvenMediaEngine log tail (issue #261), polled only while open. The
@@ -1210,7 +1220,7 @@ main { padding: 32px; padding-top: calc(var(--nav-h) + 48px); }
         </div>
         <div class="form-row">
             <label>Your Name</label>
-            <input type="text" id="enter-name" placeholder="Host" value="Host">
+            <input type="text" id="enter-name" placeholder="Host" value="Host" maxlength="50">
         </div>
         <div class="modal-footer">
             <button class="btn" id="enter-modal-cancel">Cancel</button>

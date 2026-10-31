@@ -1,12 +1,34 @@
+# Which peers may tell Caddy who the client is. The rate limits are per client
+# IP (the backend reads it from X-Forwarded-For, which the last reverse_proxy
+# below sets to exactly this), so this decides whether they work at all:
+#
+#   - standalone (the default): nothing is trusted but loopback — this Caddy is
+#     the edge, and the TCP peer is the client.
+#   - behind an external proxy: TRUSTED_PROXIES=private_ranges (deploy.sh
+#     --behind-proxy sets it). That proxy reaches us from a Docker bridge
+#     address, and without trusting it every client came out as that one
+#     address — one shared bucket, so one person could exhaust logins and joins
+#     for everybody.
+#
+# Strict mode reads X-Forwarded-For right to left, so a value a client wrote
+# ahead of the proxy's own entry is never taken for the client's address.
+{
+	servers {
+		trusted_proxies static {$TRUSTED_PROXIES:127.0.0.1/32 ::1/128}
+		trusted_proxies_strict
+	}
+}
+
 {$SITE_ADDRESS:localhost} {
 	encode gzip zstd
 
 	# Baseline security headers. HSTS is safe because Caddy terminates TLS
 	# (auto-HTTPS); X-Frame-Options + frame-ancestors block clickjacking of
-	# the admin panel; a conservative default CSP is the defence-in-depth
-	# backstop for the innerHTML-heavy frontend. CDN-loaded runtime deps
-	# (OvenPlayer, HLS.js, LiveKit) plus inline init scripts in www/*.html
-	# need 'unsafe-inline' for now — tighten once those move to local hashes.
+	# the admin panel; the CSP is the defence-in-depth backstop for the
+	# innerHTML-heavy frontend. Every script is served from this origin —
+	# the player libraries are vendored into /dist/vendor and no page has an
+	# inline script or handler — so script-src is 'self' alone. Styles keep
+	# 'unsafe-inline' for the style="" attributes the templates set.
 	#
 	# Skipped on localhost: HSTS on localhost pins HTTPS forever against
 	# Caddy's internal CA, which browsers trust inconsistently and breaks
@@ -18,7 +40,7 @@
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "interest-cohort=()"
-		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https:; font-src 'self' data:; script-src 'self' 'unsafe-inline' https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https:; font-src 'self' data:; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
 	}
 
@@ -26,10 +48,20 @@
 	# Direct ws://localhost:7880 works on Chrome/Firefox but Safari rejects
 	# it as mixed content from an https page. handle_path strips /livekit
 	# so the upstream sees /rtc/v1 etc. unchanged.
+	#
+	# Only the signalling endpoints: the client opens its WebSocket on /rtc/v1
+	# (/rtc on older servers) and probes /rtc/v1/validate when that fails.
+	# Everything else LiveKit serves — the Twirp RoomService API the backend
+	# drives from inside the container — is not for browsers. It used to be
+	# reachable from the internet twice over: here, and on a published 7880.
 	handle_path /livekit/* {
-		reverse_proxy localhost:7880 {
-			header_up Host {upstream_hostport}
+		@signal path /rtc /rtc/*
+		handle @signal {
+			reverse_proxy localhost:7880 {
+				header_up Host {upstream_hostport}
+			}
 		}
+		respond 404
 	}
 
 	# OME — LLHLS + WebRTC signaling (must be HTTP/1.1, unbuffered)
@@ -46,6 +78,11 @@
 	# the same regardless of how users type the URL.
 	redir /admin /admin/ permanent
 
-	# Everything else → backend (API + WebSocket + static files)
-	reverse_proxy localhost:4001
+	# Everything else → backend (API + WebSocket + static files). The backend
+	# keys its rate limits on the first X-Forwarded-For address, so it is handed
+	# exactly one: the client address resolved above, never a list a client
+	# could have started for it.
+	reverse_proxy localhost:4001 {
+		header_up X-Forwarded-For {client_ip}
+	}
 }

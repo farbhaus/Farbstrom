@@ -1,4 +1,4 @@
-import { apiFetch } from './auth.js';
+import { apiFetch, fetchPreviewToken } from './auth.js';
 import { closeModal, confirmModal, openModal } from '../shared/components.js';
 import {
   esc,
@@ -146,8 +146,7 @@ function browserCodecWarning(codec: string): string {
 
 function renderOme(): void {
   const container = document.getElementById('ome-list');
-  const subheader = document.getElementById('ome-subheader');
-  if (!container || !subheader) return;
+  if (!container) return;
 
   if (!omeData) {
     container.innerHTML = '<div class="empty">Loading…</div>';
@@ -155,13 +154,10 @@ function renderOme(): void {
   }
   if (omeData.error) {
     container.innerHTML = `<div class="empty">OME unavailable — ${esc(omeData.error)}</div>`;
-    subheader.textContent = '';
     return;
   }
 
-  const { streams, conf_count } = omeData;
-  subheader.textContent =
-    conf_count > 0 ? `${conf_count} conference stream${conf_count !== 1 ? 's' : ''} active` : '';
+  const { streams } = omeData;
 
   if (!streams.length) {
     container.innerHTML = '<div class="empty">No streams currently live.</div>';
@@ -227,15 +223,21 @@ function renderOme(): void {
     .join('');
 }
 
-// Live-stream preview lightbox (issue #204). The OME stream name is the ingest
-// key token (OutputStreamName=${OriginStreamName}), so it doubles as the
-// playback path — same URL shape the streamkeys tab and viewer use. `label` is
-// the human-friendly key/room name for the title (never the raw token). WebRTC
-// first with an LLHLS fallback so it plays regardless of the room's mode.
-function openStreamPreview(name: string, label: string): void {
+// Live-stream preview lightbox (issue #204). `name` is the OME stream name —
+// the key's playback id, which OME publishes under — and `label` the
+// human-friendly key/room name for the title. Playback is admission-gated, so
+// both sources carry a preview token. WebRTC first with an LLHLS fallback so
+// it plays regardless of the room's mode.
+async function openStreamPreview(name: string, label: string): Promise<void> {
   const host = location.host;
   const proto = location.protocol === 'https:' ? 'https' : 'http';
   const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const token = await fetchPreviewToken();
+  if (!token) {
+    toast('Could not start the preview');
+    return;
+  }
+  const apt = `apt=${encodeURIComponent(token)}`;
   closeStreamPreview();
   openModal('stream-preview-modal');
   const titleEl = document.getElementById('stream-preview-title');
@@ -245,8 +247,8 @@ function openStreamPreview(name: string, label: string): void {
     autoFallback: true,
     mute: true,
     sources: [
-      { type: 'webrtc', file: `${wsproto}://${host}/live/${name}` },
-      { type: 'll-hls', file: `${proto}://${host}/live/${name}/llhls.m3u8` },
+      { type: 'webrtc', file: `${wsproto}://${host}/live/${name}?${apt}` },
+      { type: 'll-hls', file: `${proto}://${host}/live/${name}/llhls.m3u8?${apt}` },
     ],
     webrtcConfig: { timeoutMaxRetry: 3, connectionTimeout: 8000 },
     hlsConfig: { liveSyncDuration: 1, liveMaxLatencyDuration: 2, maxLiveSyncPlaybackRate: 1 },
@@ -428,6 +430,6 @@ export function handleDashboardAction(action: string, target: HTMLElement): void
   if (action === 'kick-stream') {
     void kickStream(name, label);
   } else if (action === 'preview-stream') {
-    openStreamPreview(name, label);
+    void openStreamPreview(name, label);
   }
 }

@@ -62,6 +62,18 @@ fn host_from_origin(origin: &str) -> String {
         .to_string()
 }
 
+/// An internal API base URL, which must be plain `http://`: the backend's HTTP
+/// client is built without TLS, because both upstreams (OME's REST API and
+/// LiveKit's RoomService) live on localhost inside the container. Refused at
+/// startup rather than failing on the first call.
+fn internal_http_url(name: &str, default: &str) -> String {
+    let value = env::var(name).unwrap_or_else(|_| default.into());
+    if !value.starts_with("http://") {
+        panic!("FATAL: {name} must be an http:// URL (got {value:?})");
+    }
+    value
+}
+
 /// Require an env var to be set, panicking with a clear message if not.
 fn required(name: &str) -> String {
     env::var(name).unwrap_or_else(|_| panic!("FATAL: {} must be set", name))
@@ -99,13 +111,14 @@ impl AppConfig {
             jwt_secret,
             ome_webhook_secret,
             ome_signed_policy_secret,
-            ome_api_url: env::var("OME_API_URL")
-                .unwrap_or_else(|_| "http://localhost:8081/v1".into()),
+            ome_api_url: internal_http_url("OME_API_URL", "http://localhost:8081/v1"),
             ome_api_token,
             livekit_api_key,
             livekit_api_secret,
-            livekit_internal_url: env::var("LIVEKIT_INTERNAL_URL")
-                .unwrap_or_else(|_| "http://localhost:7880".into()),
+            livekit_internal_url: internal_http_url(
+                "LIVEKIT_INTERNAL_URL",
+                "http://localhost:7880",
+            ),
             livekit_url: env::var("LIVEKIT_URL").unwrap_or_else(|_| "ws://localhost:7880".into()),
             port: env::var("PORT")
                 .ok()
@@ -129,5 +142,32 @@ impl AppConfig {
             ome_log_path: env::var("OME_LOG_PATH")
                 .unwrap_or_else(|_| "/var/log/ovenmediaengine/ovenmediaengine.log".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::internal_http_url;
+
+    #[test]
+    fn internal_urls_default_and_accept_plain_http() {
+        assert_eq!(
+            internal_http_url("FARBSTROM_TEST_UNSET_URL", "http://localhost:7880"),
+            "http://localhost:7880"
+        );
+        std::env::set_var("FARBSTROM_TEST_HTTP_URL", "http://127.0.0.1:8081/v1");
+        assert_eq!(
+            internal_http_url("FARBSTROM_TEST_HTTP_URL", "http://unused"),
+            "http://127.0.0.1:8081/v1"
+        );
+    }
+
+    /// The HTTP client has no TLS, so an https upstream would fail on every
+    /// call; it fails at startup instead, saying which variable is wrong.
+    #[test]
+    #[should_panic(expected = "FARBSTROM_TEST_HTTPS_URL must be an http:// URL")]
+    fn an_https_internal_url_is_refused_at_startup() {
+        std::env::set_var("FARBSTROM_TEST_HTTPS_URL", "https://livekit.example.com");
+        internal_http_url("FARBSTROM_TEST_HTTPS_URL", "http://unused");
     }
 }

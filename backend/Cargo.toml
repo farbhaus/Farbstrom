@@ -7,38 +7,47 @@ license = "AGPL-3.0"
 [dependencies]
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "trace", "set-header"] }
+tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 r2d2 = "0.8"
-r2d2_sqlite = "0.24"
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+r2d2_sqlite = "0.35"
 bcrypt = "0.19"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# No TLS: every outbound call is container-local plain HTTP — the OME REST API
+# and LiveKit's RoomService, both on localhost (`config.rs` refuses an https
+# URL for either). Leaving TLS out drops rustls/webpki from the tree.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
+# Parses the URLs OME hands the admission webhook (`routes::webhook`). Already
+# in the tree via reqwest / webauthn-rs.
+url = "2"
 rand = "0.10"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-hmac = "0.12"
-sha1 = "0.10"
+hmac = "0.13"
+sha1 = "0.11"
 subtle = "2"
-sha2 = "0.10"
-base64 = "0.22"
+sha2 = "0.11"
+base64 = "0.23"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
 futures = "0.3"
-tower_governor = "0.7"
-governor = "0.8"
-totp-rs = { version = "5.7.1", features = ["qr"] }
+# `statvfs`, safely: uploads stop short of filling the data volume
+# (`uploads::MIN_FREE_BYTES`).
+rustix = { version = "1", features = ["fs"] }
+tower_governor = "0.8"
+governor = "0.10"
+totp-rs = { version = "6", features = ["qr"] }
 webauthn-rs = { version = "0.5", default-features = false }
-# webauthn-rs hard-depends on OpenSSL. This project builds musl-static with no
-# system OpenSSL, so vendor it (compiled statically into the binary).
+# webauthn-rs hard-depends on OpenSSL. Vendored (compiled statically into the
+# binary) so the image needs no OpenSSL dev headers and the binary does not
+# depend on the runtime base's libssl version.
 openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
-axum-test = { version = "17", features = ["ws"] }
+axum-test = { version = "21", features = ["ws"] }
 
 [profile.release]
 lto = true

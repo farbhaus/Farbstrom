@@ -1,4 +1,4 @@
-import { apiFetch } from './auth.js';
+import { apiFetch, fetchPreviewToken } from './auth.js';
 import { closeModal, confirmModal, openModal } from '../shared/components.js';
 import { esc, toast } from '../shared/utils.js';
 import type { StreamKey } from './types.js';
@@ -24,6 +24,7 @@ const maskToken = (tok: string): string => '••••••••' + tok.slic
 
 let keys: StreamKey[] = [];
 let srtConfig: SrtConfig | null = null;
+let lastRendered = '';
 let onChange: () => void = () => {};
 
 export function getStreamKeys(): StreamKey[] {
@@ -44,6 +45,12 @@ export async function loadKeys(): Promise<void> {
   // srtConfig supplies the passphrases appended to the SRT URLs below; the
   // encryption toggle itself lives in the Settings tab (gh #208).
   srtConfig = srtRes && srtRes.ok ? await srtRes.json().catch(() => null) : null;
+  // The admin reloads everything every 15 s. Re-rendering unchanged keys
+  // collapsed an open section and blanked every playback URL the admin had
+  // just generated, so only redraw when something actually changed.
+  const snapshot = JSON.stringify([keys, srtConfig]);
+  if (snapshot === lastRendered) return;
+  lastRendered = snapshot;
   renderKeys();
 }
 
@@ -56,17 +63,16 @@ function renderKeys(): void {
   }
 
   const proto = location.protocol === 'https:' ? 'https' : 'http';
-  const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
 
-  // Build every URL from a token so the masked variant (issue #204) reuses the
-  // exact same shape — only the embedded key differs.
+  // Build every ingest URL from a token so the masked variant (issue #204)
+  // reuses the exact same shape — only the embedded key differs. Playback URLs
+  // are not built here: OME publishes under the key's playback id, never the
+  // key, and every playback URL needs a credential minted on demand.
   const urlsFor = (tok: string): Record<string, string> => ({
     key: tok,
     srt: `srt://${INGEST_HOST}:9999?streamid=default/live/${tok}`,
     rtmp: `rtmp://${INGEST_HOST}:1935/live`,
     whip: `${proto}://${INGEST_HOST}/live/${tok}?direction=whip`,
-    webrtc: `${wsproto}://${INGEST_HOST}/live/${tok}`,
-    llhls: `${proto}://${INGEST_HOST}/live/${tok}/llhls.m3u8`,
   });
 
   container.innerHTML = keys
@@ -89,16 +95,18 @@ function renderKeys(): void {
       const row = (label: string, field: string): string => `
         <div class="url-row">
           <span class="url-label">${esc(label)}</span>
-          <input readonly class="url-input" data-full="${esc(full[field])}" data-masked="${esc(masked[field])}" style="font-family:monospace;font-size:11px" value="${esc(masked[field])}">
+          <input readonly class="url-input url-input-dense" data-full="${esc(full[field])}" data-masked="${esc(masked[field])}" value="${esc(masked[field])}">
         </div>`;
 
-      // SRT playback carries an expiring SignedPolicy token that only the backend
-      // can sign (gh #226), so this row starts empty and is filled per click.
-      const srtPlaybackRow = `
+      // Every playback URL carries a credential only the backend can mint — a
+      // preview token for WebRTC / LL-HLS (OME asks the backend before each
+      // browser session), a SignedPolicy signature for SRT (gh #226) — so these
+      // rows start empty and are filled per click.
+      const playbackRow = (label: string, action: string, kind: string): string => `
         <div class="url-row">
-          <span class="url-label">SRT</span>
-          <input readonly class="url-input" style="font-family:monospace;font-size:11px" placeholder="Signed URL — expires 5 min after generating" value="">
-          <button class="btn btn-sm" data-action="gen-srt-play" data-id="${esc(k.id)}">Generate</button>
+          <span class="url-label">${label}</span>
+          <input readonly class="url-input url-input-dense" placeholder="Signed URL — expires 5 min after generating" value="">
+          <button class="btn btn-sm" data-action="${action}" data-id="${esc(k.id)}" data-kind="${kind}">Generate</button>
         </div>`;
 
       const blocked = !!k.blocked;
@@ -122,9 +130,9 @@ function renderKeys(): void {
           </details>
           <details class="url-group">
             <summary>Playback URLs</summary>
-            ${row('WebRTC', 'webrtc')}
-            ${row('LLHLS', 'llhls')}
-            ${srtPlaybackRow}
+            ${playbackRow('WebRTC', 'gen-browser-play', 'webrtc')}
+            ${playbackRow('LLHLS', 'gen-browser-play', 'llhls')}
+            ${playbackRow('SRT', 'gen-srt-play', 'srt')}
           </details>
         </div>
       </div>`;
@@ -185,10 +193,14 @@ async function generateSrtPlayback(btn: HTMLElement): Promise<void> {
 
   // The streamid carries its own ?policy=&signature= query, so it has to be
   // percent-encoded inside the outer srt:// URL — left raw, a player reads them
-  // as sibling SRT socket options and the handshake fails.
-  let full = `srt://${play.host || INGEST_HOST}:${play.port}?streamid=${encodeURIComponent(play.streamid)}`;
-  const tok = keys.find((k) => k.id === id)?.key_token;
-  let masked = tok ? full.replaceAll(tok, maskToken(tok)) : full;
+  // as sibling SRT socket options and the handshake fails. The stream name in
+  // it is the playback id, which is no secret; the signature is what's masked.
+  const srtUrl = (streamid: string): string =>
+    `srt://${play.host || INGEST_HOST}:${play.port}?streamid=${encodeURIComponent(streamid)}`;
+  let full = srtUrl(play.streamid);
+  let masked = srtUrl(
+    play.streamid.replace(/signature=([^&]+)/, (_m, sig: string) => `signature=${maskToken(sig)}`),
+  );
 
   const playbackPass = srtConfig?.playbackPassphrase || '';
   if (playbackPass) {
@@ -201,6 +213,31 @@ async function generateSrtPlayback(btn: HTMLElement): Promise<void> {
   input.dataset.masked = masked;
   const revealed = (btn.closest('.key-card') as HTMLElement | null)?.dataset.revealed === 'true';
   input.value = revealed ? full : masked;
+  btn.textContent = 'Regenerate';
+}
+
+// Fill a WebRTC or LL-HLS playback row for one key. Browser playback is
+// admission-gated, so the URL carries a preview token (`?apt=`) that OME checks
+// with the backend when a session starts; the token is what Reveal hides.
+async function generateBrowserPlayback(btn: HTMLElement): Promise<void> {
+  const key = keys.find((k) => k.id === btn.getAttribute('data-id'));
+  const input = btn.closest('.url-row')?.querySelector<HTMLInputElement>('input.url-input');
+  if (!key || !input) return;
+
+  const token = await fetchPreviewToken();
+  if (!token) {
+    toast('Failed to generate playback URL');
+    return;
+  }
+  const base =
+    btn.getAttribute('data-kind') === 'llhls'
+      ? `${location.protocol}//${location.host}/live/${key.playback_id}/llhls.m3u8`
+      : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/live/${key.playback_id}`;
+  const full = `${base}?apt=${encodeURIComponent(token)}`;
+  input.dataset.full = full;
+  input.dataset.masked = `${base}?apt=${maskToken(token)}`;
+  const revealed = (btn.closest('.key-card') as HTMLElement | null)?.dataset.revealed === 'true';
+  input.value = revealed ? full : input.dataset.masked;
   btn.textContent = 'Regenerate';
 }
 
@@ -247,6 +284,10 @@ export function handleKeyAction(action: string, target: HTMLElement): void {
   }
   if (action === 'gen-srt-play') {
     void generateSrtPlayback(target);
+    return;
+  }
+  if (action === 'gen-browser-play') {
+    void generateBrowserPlayback(target);
     return;
   }
   if (action === 'reveal-key') {

@@ -107,7 +107,7 @@ async fn change_password(
         &state.config.jwt_secret,
         version,
         crate::auth::ADMIN_TOKEN_TTL_SECS,
-    )?;
+    );
     Ok(Json(json!({ "ok": true, "token": token })))
 }
 
@@ -134,7 +134,7 @@ async fn sign_out_everywhere(
         &state.config.jwt_secret,
         version,
         crate::auth::ADMIN_TOKEN_TTL_SECS,
-    )?;
+    );
     Ok(Json(json!({ "ok": true, "token": token })))
 }
 
@@ -167,12 +167,15 @@ async fn totp_setup(
     let secret = cred::gen_totp_secret();
     let totp = cred::totp_from_secret(&secret)?;
     let qr = totp
-        .get_qr_base64()
+        .to_qr_base64()
         .map_err(|e| AppError::Internal(format!("QR: {e}")))?;
     let conn = state.db.get()?;
     let s = secret.clone();
     tokio::task::spawn_blocking(move || {
         cred::settings_set(&conn, cred::KEY_TOTP_SECRET, &s)?;
+        // A new secret starts a new sequence of codes; the replay floor belongs
+        // to the old one.
+        cred::settings_del(&conn, cred::KEY_TOTP_LAST_STEP)?;
         cred::settings_set(&conn, cred::KEY_TOTP_ENABLED, "0")
     })
     .await
@@ -188,23 +191,34 @@ struct TotpEnableBody {
     code: String,
 }
 
+/// Confirm enrolment with a first code, which issues the recovery codes.
+///
+/// Refused once enabled: calling it again used to issue a fresh set of recovery
+/// codes, silently invalidating the ones the operator had saved.
 async fn totp_enable(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
     Json(body): Json<TotpEnableBody>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.get()?;
-    let secret =
-        tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_SECRET))
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?
-            .ok_or_else(|| AppError::BadRequest("Run setup first".into()))?;
+    let (secret, enabled) = tokio::task::spawn_blocking(move || {
+        (
+            cred::settings_get(&conn, cred::KEY_TOTP_SECRET),
+            cred::settings_get(&conn, cred::KEY_TOTP_ENABLED).as_deref() == Some("1"),
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    if enabled {
+        return Err(AppError::BadRequest(
+            "Two-factor authentication is already enabled.".into(),
+        ));
+    }
+    let secret = secret.ok_or_else(|| AppError::BadRequest("Run setup first".into()))?;
 
-    let totp = cred::totp_from_secret(&secret)?;
-    let valid = totp
-        .check_current(&body.code)
-        .map_err(|e| AppError::Internal(format!("TOTP: {e}")))?;
-    if !valid {
+    // Consumes the code, so the one typed to confirm enrolment can't then be
+    // replayed to sign in.
+    if !cred::verify_totp_code(&state, &secret, &body.code).await? {
         return Err(AppError::BadRequest("Incorrect code".into()));
     }
 
@@ -267,6 +281,7 @@ async fn totp_disable(
     tokio::task::spawn_blocking(move || {
         cred::settings_del(&conn, cred::KEY_TOTP_SECRET)?;
         cred::settings_del(&conn, cred::KEY_TOTP_ENABLED)?;
+        cred::settings_del(&conn, cred::KEY_TOTP_LAST_STEP)?;
         cred::settings_del(&conn, cred::KEY_TOTP_RECOVERY)
     })
     .await
