@@ -82,6 +82,7 @@ async fn totp_full_flow_and_recovery_code() {
     let setup = server
         .post("/api/admin/settings/totp/setup")
         .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
         .await;
     assert_eq!(setup.status_code(), 200);
     let secret = setup.json::<Value>()["secret"]
@@ -96,7 +97,7 @@ async fn totp_full_flow_and_recovery_code() {
     let enable = server
         .post("/api/admin/settings/totp/enable")
         .add_header(header::AUTHORIZATION, auth_val(&token))
-        .json(&serde_json::json!({ "code": code }))
+        .json(&serde_json::json!({ "code": code, "password": "test-admin-password" }))
         .await;
     assert_eq!(enable.status_code(), 200);
     let recovery: Vec<String> = enable.json::<Value>()["recoveryCodes"]
@@ -173,6 +174,7 @@ async fn enrol_totp(server: &axum_test::TestServer, token: &str) -> (String, Vec
     let setup = server
         .post("/api/admin/settings/totp/setup")
         .add_header(header::AUTHORIZATION, auth_val(token))
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
         .await;
     assert_eq!(setup.status_code(), 200);
     let secret = setup.json::<Value>()["secret"]
@@ -183,7 +185,10 @@ async fn enrol_totp(server: &axum_test::TestServer, token: &str) -> (String, Vec
     let enable = server
         .post("/api/admin/settings/totp/enable")
         .add_header(header::AUTHORIZATION, auth_val(token))
-        .json(&serde_json::json!({ "code": totp.generate_current().unwrap() }))
+        .json(&serde_json::json!({
+            "code": totp.generate_current().unwrap(),
+            "password": "test-admin-password",
+        }))
         .await;
     assert_eq!(enable.status_code(), 200);
     let recovery: Vec<String> = enable.json::<Value>()["recoveryCodes"]
@@ -214,6 +219,7 @@ async fn totp_setup_refuses_to_clobber_an_active_enrolment() {
     let again = server
         .post("/api/admin/settings/totp/setup")
         .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
         .await;
     assert_eq!(
         again.status_code(),

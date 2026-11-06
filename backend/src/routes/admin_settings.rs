@@ -138,6 +138,20 @@ async fn sign_out_everywhere(
     Ok(Json(json!({ "ok": true, "token": token })))
 }
 
+/// Re-prove the operator's password before a handler that adds or activates a login
+/// factor. `AdminAuth` is minted from the password alone, so trusting the token alone
+/// lets a stolen session bind a second factor of the attacker's own and outlive
+/// sign-out. Empty is 400, wrong is 403 - the convention `sign_out_everywhere` uses.
+async fn require_password(state: &AppState, password: &str) -> Result<(), AppError> {
+    if password.trim().is_empty() {
+        return Err(AppError::BadRequest("Password required".into()));
+    }
+    if !cred::verify_password(state, password.to_string()).await? {
+        return Err(AppError::Forbidden("Wrong password".into()));
+    }
+    Ok(())
+}
+
 // ---- TOTP -----------------------------------------------------------------
 
 /// Generate a provisional secret (NOT yet enabled) and return the QR + secret
@@ -147,10 +161,17 @@ async fn sign_out_everywhere(
 /// stored secret and sets `totp_enabled = 0`, so re-opening the setup panel on
 /// an enrolled account would silently switch 2FA off and invalidate the
 /// authenticator. Disable first (which needs a current code), then re-enrol.
+#[derive(Deserialize)]
+struct TotpSetupBody {
+    password: String,
+}
+
 async fn totp_setup(
     _auth: AdminAuth,
     State(state): State<Arc<AppState>>,
+    Json(body): Json<TotpSetupBody>,
 ) -> Result<Json<Value>, AppError> {
+    require_password(&state, &body.password).await?;
     let conn = state.db.get()?;
     let already_enabled =
         tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_ENABLED))
@@ -186,6 +207,7 @@ async fn totp_setup(
 #[derive(Deserialize)]
 struct TotpEnableBody {
     code: String,
+    password: String,
 }
 
 async fn totp_enable(
@@ -193,6 +215,7 @@ async fn totp_enable(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TotpEnableBody>,
 ) -> Result<Json<Value>, AppError> {
+    require_password(&state, &body.password).await?;
     let conn = state.db.get()?;
     let secret =
         tokio::task::spawn_blocking(move || cred::settings_get(&conn, cred::KEY_TOTP_SECRET))
@@ -291,6 +314,7 @@ pub fn load_passkeys(conn: &rusqlite::Connection) -> Result<Vec<Passkey>, AppErr
 
 #[derive(Deserialize)]
 struct RegisterStartBody {
+    password: String,
     label: String,
 }
 
@@ -299,6 +323,7 @@ async fn passkey_register_start(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RegisterStartBody>,
 ) -> Result<Json<Value>, AppError> {
+    require_password(&state, &body.password).await?;
     if body.label.trim().is_empty() {
         return Err(AppError::BadRequest("Label required".into()));
     }
@@ -328,6 +353,7 @@ async fn passkey_register_start(
 struct RegisterFinishBody {
     id: Uuid,
     label: String,
+    password: String,
     credential: RegisterPublicKeyCredential,
 }
 
@@ -336,6 +362,7 @@ async fn passkey_register_finish(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RegisterFinishBody>,
 ) -> Result<Json<Value>, AppError> {
+    require_password(&state, &body.password).await?;
     let reg = {
         let mut map = state.passkey_reg.lock().await;
         sweep(&mut map);

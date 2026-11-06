@@ -107,7 +107,20 @@ async function changePassword(): Promise<void> {
 }
 
 async function startTotpSetup(): Promise<void> {
-  const res = await apiFetch('/api/admin/settings/totp/setup', { method: 'POST' });
+  // Enrolling a factor needs the password, not just the session: otherwise a stolen
+  // token could bind an authenticator of its own and outlive sign-out.
+  const password = await promptModal({
+    title: 'Enable Two-Factor',
+    message: 'Confirm your password to start enrolling an authenticator app.',
+    label: 'Password',
+    inputType: 'password',
+    confirmLabel: 'Continue',
+  });
+  if (!password) return;
+  const res = await apiFetch('/api/admin/settings/totp/setup', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
   if (!res || !res.ok) {
     // Refused while already enrolled — re-running setup would rotate the secret
     // and switch 2FA off, so the server sends back what to do instead.
@@ -123,9 +136,17 @@ async function startTotpSetup(): Promise<void> {
 
 async function confirmTotp(): Promise<void> {
   const code = val('set-totp-code').trim();
+  const password = await promptModal({
+    title: 'Enable Two-Factor',
+    message: 'Confirm your password to finish enrolling the authenticator.',
+    label: 'Password',
+    inputType: 'password',
+    confirmLabel: 'Enable 2FA',
+  });
+  if (!password) return;
   const res = await apiFetch('/api/admin/settings/totp/enable', {
     method: 'POST',
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, password }),
   });
   if (!res || !res.ok) {
     const e = res ? await res.json().catch(() => ({})) : {};
@@ -245,9 +266,17 @@ async function addPasskey(): Promise<void> {
     return;
   }
   closeModal('passkey-modal');
+  const password = await promptModal({
+    title: 'Add Passkey',
+    message: 'Confirm your password to register a passkey.',
+    label: 'Password',
+    inputType: 'password',
+    confirmLabel: 'Continue',
+  });
+  if (!password) return;
   const start = await apiFetch('/api/admin/settings/passkeys/register/start', {
     method: 'POST',
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, password }),
   });
   if (!start || !start.ok) {
     toast('Could not start registration');
@@ -263,7 +292,7 @@ async function addPasskey(): Promise<void> {
   }
   const fin = await apiFetch('/api/admin/settings/passkeys/register/finish', {
     method: 'POST',
-    body: JSON.stringify({ id, label, credential }),
+    body: JSON.stringify({ id, label, credential, password }),
   });
   if (fin && fin.ok) {
     toast('Passkey added');
