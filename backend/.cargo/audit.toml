@@ -1,0 +1,10 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack timing sidechannel in `rsa`. No fixed
+    # upgrade is available. Pulled in via webauthn-rs 0.6 → crypto-glue, for
+    # RS256 passkeys. The attack recovers a key from the timing of private-key
+    # operations; a relying party holds no RSA private key and webauthn-rs-core
+    # only verifies (`RS256VerifyingKey`), so nothing here is timeable. Revisit
+    # when `rsa` ships a fix.
+    "RUSTSEC-2023-0071",
+]

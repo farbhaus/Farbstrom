@@ -324,7 +324,7 @@ new single-key shortcut cannot ship undocumented.
 
 GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
-- **audit** — `cargo audit` (advisory DB check). Nothing is ignored: there is no `.cargo/audit.toml`, since replacing `jsonwebtoken` took the last flagged crates (`rsa`, `crypto-bigint`) out of the tree. An advisory with no fix should be ignored there, with its reason, rather than left red.
+- **audit** — `cargo audit` (advisory DB check). `backend/.cargo/audit.toml` ignores one advisory: RUSTSEC-2023-0071 (Marvin) in `rsa`, which webauthn-rs 0.6 brought back for RS256 passkeys — a timing attack on private-key operations, and the backend only verifies. An advisory with no fix should be ignored there, with its reason, rather than left red.
 - **frontend** — Node 26 (the active LTS, as in the Dockerfile): `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
 
 Every workflow runs with a read-only `GITHUB_TOKEN` unless a job asks for more
@@ -561,6 +561,15 @@ Non-obvious facts that aren't derivable from reading the code.
 - **`totp/setup` is refused while TOTP is enabled.** It rotates the secret and
   sets `totp_enabled = 0`, so re-opening the setup panel used to switch 2FA off
   silently and invalidate the authenticator.
+- **Enrolment re-proves the login too** (`reauthenticate` in
+  `admin_settings.rs`). `totp/setup`, `passkeys/register/start` and passkey
+  removal take the password, plus a current TOTP or recovery code while TOTP is
+  on — passkey sign-in skips TOTP, so a passkey is a full login of its own. They
+  used to take the session token alone, so a stolen one could enrol a passkey
+  that outlived a password change and "Sign out other devices", or bind TOTP to
+  an authenticator the operator did not hold. `totp/enable` and
+  `register/finish` need nothing more: each completes a ceremony only a
+  re-authenticated call can begin.
 
 **Files**
 - **A participant upload is always a draft, and never de-duplicated.** There used
@@ -698,6 +707,7 @@ Non-obvious facts that aren't derivable from reading the code.
 **Timezones** (gh #263)
 - `starts_at` / `expires_at` are stored as UTC `YYYY-MM-DD HH:MM:SS`. Rooms created before that fix may be off by the UTC offset — re-save them in admin to correct.
 - **The studio timezone** (Settings → Timezone, `settings.timezone`, an IANA name; `GET`/`POST /api/admin/settings/timezone`) decides which clock admin times are *entered and shown* on: the room modal's `datetime-local` inputs, the room cards, and the invite (`12 Oct 2026, 09:00 Lisbon time (GMT+1)`). It is public through `/:slug/info`'s `timezone`, so the viewer's scheduled screen states the start in that zone and adds a "Your time:" line when the guest's offset differs at that instant. Unset, admin uses the browser's zone — byte-for-byte the old behaviour — and the viewer shows the guest's own time, labelled.
+- **The picker lists one zone per clock** (`pickerZones` in `frontend/shared/timezone.ts`): zones on the same offset in January and in July collapse to one, named by a chosen city in `PICKER_CITIES` — the name the invite prints, so Lisbon, never London. A saved zone the list doesn't offer is still shown and kept.
 - **No tz data ships anywhere.** The backend checks only the name's shape (it has no zone database); the browser resolves it through `Intl`, and one that does not know the name falls back to its own zone (`isKnownZone`). `wallToUtc` resolves DST edges the way `new Date("YYYY-MM-DDTHH:MM")` does for local time — a repeated time is the earlier instant, a skipped one moves forward — and was checked against it every 15 minutes of a year in seven zones, Lord Howe's 30-minute and Troll's two-hour shifts included.
 - **Chrome reports some zones by their legacy alias** (`Asia/Calcutta`, not `Asia/Kolkata`), so a guest's own-zone label can read "Calcutta time" there; WebKit gives the current name. Labels are the IANA name's last segment, not CLDR's display names, which say "Western European Time" where people say Lisbon.
 

@@ -21,13 +21,95 @@ export function isKnownZone(zone: string | null | undefined): zone is string {
 }
 
 /**
- * Zones for a picker: what Intl lists, plus UTC, which some engines omit. The
- * fixed-offset Etc/ zones are left out — their names carry POSIX's inverted
- * sign (Etc/GMT+5 is GMT-5), which no one should have to pick through.
+ * Every zone Intl lists, plus UTC, which some engines omit. The fixed-offset
+ * Etc/ zones are left out — their names carry POSIX's inverted sign
+ * (Etc/GMT+5 is GMT-5), which no one should have to pick through.
  */
-export function zoneList(): string[] {
+function zoneList(): string[] {
   const zones = Intl.supportedValuesOf('timeZone').filter((z) => !z.startsWith('Etc/'));
   return zones.includes('UTC') ? zones : ['UTC', ...zones];
+}
+
+// The city each clock is listed under. It is the name invites and the waiting
+// screen print, so it is chosen rather than left to the alphabet — Lisbon,
+// never London, for Western European time. A clock with no city here takes
+// the first zone Intl lists on it, by name.
+const PICKER_CITIES = [
+  'Pacific/Pago_Pago',
+  'Pacific/Honolulu',
+  'America/Adak',
+  'Pacific/Marquesas',
+  'America/Anchorage',
+  'America/Los_Angeles',
+  'America/Phoenix',
+  'America/Denver',
+  'America/Mexico_City',
+  'America/Chicago',
+  'America/Bogota',
+  'America/New_York',
+  'America/Caracas',
+  'America/Halifax',
+  'America/Santiago',
+  'America/St_Johns',
+  'America/Sao_Paulo',
+  'America/Noronha',
+  'America/Nuuk',
+  'Atlantic/Cape_Verde',
+  'Atlantic/Azores',
+  'UTC',
+  'Europe/Lisbon',
+  'Africa/Lagos',
+  'Europe/Paris',
+  'Africa/Johannesburg',
+  'Europe/Athens',
+  'Europe/Istanbul',
+  'Asia/Tehran',
+  'Asia/Dubai',
+  'Asia/Kabul',
+  'Asia/Karachi',
+  'Asia/Kolkata',
+  'Asia/Kathmandu',
+  'Asia/Dhaka',
+  'Asia/Yangon',
+  'Asia/Bangkok',
+  'Asia/Singapore',
+  'Asia/Tokyo',
+  'Australia/Darwin',
+  'Australia/Adelaide',
+  'Australia/Brisbane',
+  'Australia/Sydney',
+  'Pacific/Noumea',
+  'Pacific/Fiji',
+  'Pacific/Auckland',
+  'Pacific/Chatham',
+  'Pacific/Tongatapu',
+  'Pacific/Kiritimati',
+];
+
+/**
+ * Zones for a picker: one per clock, sorted by its offset at `now`. Zones on
+ * the same offset in January and in July keep the same time all year as far
+ * as scheduling a session goes, so four hundred cities collapse to the few
+ * dozen clocks there actually are.
+ */
+export function pickerZones(now: Date = new Date()): string[] {
+  const y = now.getUTCFullYear();
+  const jan = new Date(Date.UTC(y, 0, 15, 12));
+  const jul = new Date(Date.UTC(y, 6, 15, 12));
+  const clocks = new Map<string, { zone: string; year: number }>();
+  // The chosen cities go first and are tried by name rather than looked up in
+  // the list: engines accept a zone's current name even where they list only
+  // its legacy alias (Chrome lists Asia/Calcutta, not Asia/Kolkata).
+  for (const zone of [...PICKER_CITIES.filter(isKnownZone), ...zoneList()]) {
+    const a = offsetMs(jan, zone);
+    const b = offsetMs(jul, zone);
+    const key = `${a}/${b}`;
+    if (!clocks.has(key)) clocks.set(key, { zone, year: a + b });
+  }
+  return [...clocks.values()]
+    .map((c) => ({ ...c, now: offsetMs(now, c.zone) }))
+    .sort((p, q) => p.now - q.now || p.year - q.year)
+    .map((c) => c.zone);
 }
 
 /** "GMT+1", "GMT-4", "GMT+5:30" — the zone's offset at that instant. */

@@ -6,7 +6,7 @@ import { apiFetch, setToken } from './auth.js';
 import { toast, esc, fmtDateTime } from '../shared/utils.js';
 import { closeModal, confirmModal, openModal, promptModal } from '../shared/components.js';
 import { doRegister, webauthnSupported } from './webauthn.js';
-import { browserZone, isKnownZone, offsetLabel, zoneList } from '../shared/timezone.js';
+import { browserZone, isKnownZone, offsetLabel, pickerZones } from '../shared/timezone.js';
 import type { SettingsStatus } from './types.js';
 
 function $(id: string): HTMLElement | null {
@@ -19,6 +19,37 @@ function val(id: string): string {
 function show(id: string, visible: boolean): void {
   const el = $(id);
   if (el) el.style.display = visible ? '' : 'none';
+}
+
+// From the last status load; decides whether askReauth needs a code.
+let totpOn = false;
+
+interface Reauth {
+  password: string;
+  code?: string;
+}
+
+// Adding or removing a way to sign in re-proves the login: the password, then —
+// while TOTP is on — a current authenticator or recovery code. Null if either
+// prompt is cancelled. The server enforces this; a wrong answer is a 403 whose
+// message the caller toasts, never a 401 that would sign the operator out.
+async function askReauth(title: string, confirmLabel: string): Promise<Reauth | null> {
+  const password = await promptModal({
+    title,
+    message: 'Confirm your password.',
+    label: 'Password',
+    inputType: 'password',
+    confirmLabel: totpOn ? 'Continue' : confirmLabel,
+  });
+  if (!password) return null;
+  if (!totpOn) return { password };
+  const code = await promptModal({
+    title,
+    message: 'Enter a code from your authenticator app, or one of your recovery codes.',
+    label: 'Code',
+    confirmLabel,
+  });
+  return code ? { password, code } : null;
 }
 
 export async function loadSettings(): Promise<void> {
@@ -39,6 +70,7 @@ export async function loadSettings(): Promise<void> {
     return;
   }
   const s: SettingsStatus = await res.json();
+  totpOn = s.totpEnabled;
 
   const pwState = $('set-pw-state');
   if (pwState)
@@ -110,7 +142,12 @@ async function changePassword(): Promise<void> {
 }
 
 async function startTotpSetup(): Promise<void> {
-  const res = await apiFetch('/api/admin/settings/totp/setup', { method: 'POST' });
+  const proof = await askReauth('Enable Two-Factor', 'Continue');
+  if (!proof) return;
+  const res = await apiFetch('/api/admin/settings/totp/setup', {
+    method: 'POST',
+    body: JSON.stringify(proof),
+  });
   if (!res || !res.ok) {
     // Refused while already enrolled — re-running setup would rotate the secret
     // and switch 2FA off, so the server sends back what to do instead.
@@ -152,29 +189,13 @@ async function confirmTotp(): Promise<void> {
 
 // Teardown needs both factors: the password, then a current authenticator code
 // (or a recovery code, for the case where the authenticator is what was lost).
-// The server enforces this — asking for the password alone gets a 403, which
-// reports the reason rather than signing you out the way a 401 would.
 async function disableTotp(): Promise<void> {
-  const password = await promptModal({
-    title: 'Disable Two-Factor',
-    message: 'Confirm your password to turn off TOTP 2FA.',
-    label: 'Password',
-    inputType: 'password',
-    confirmLabel: 'Continue',
-  });
-  if (!password) return;
-
-  const code = await promptModal({
-    title: 'Disable Two-Factor',
-    message: 'Enter a code from your authenticator app, or one of your recovery codes.',
-    label: 'Code',
-    confirmLabel: 'Disable 2FA',
-  });
-  if (!code) return;
+  const proof = await askReauth('Disable Two-Factor', 'Disable 2FA');
+  if (!proof) return;
 
   const res = await apiFetch('/api/admin/settings/totp/disable', {
     method: 'POST',
-    body: JSON.stringify({ password, code }),
+    body: JSON.stringify(proof),
   });
   if (res && res.ok) {
     const box = $('set-totp-recovery');
@@ -248,12 +269,15 @@ async function addPasskey(): Promise<void> {
     return;
   }
   closeModal('passkey-modal');
+  const proof = await askReauth('Add Passkey', 'Continue');
+  if (!proof) return;
   const start = await apiFetch('/api/admin/settings/passkeys/register/start', {
     method: 'POST',
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, ...proof }),
   });
   if (!start || !start.ok) {
-    toast('Could not start registration');
+    const e = start ? await start.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not start registration');
     return;
   }
   const { id, options } = await start.json();
@@ -287,12 +311,18 @@ async function deletePasskey(id: string): Promise<void> {
     }))
   )
     return;
-  const res = await apiFetch(`/api/admin/settings/passkeys/${id}`, { method: 'DELETE' });
+  const proof = await askReauth('Remove Passkey', 'Remove');
+  if (!proof) return;
+  const res = await apiFetch(`/api/admin/settings/passkeys/${id}`, {
+    method: 'DELETE',
+    body: JSON.stringify(proof),
+  });
   if (res && res.ok) {
     toast('Passkey removed');
     void loadSettings();
   } else {
-    toast('Remove failed');
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Remove failed');
   }
 }
 
@@ -394,29 +424,18 @@ export async function loadStudioZone(): Promise<void> {
   }
 }
 
-// Grouped by region, so typing a city's first letters finds it.
+// "GMT+1 · Paris" — offset first, since that is what the list is sorted by.
+function zoneOption(zone: string, now: Date): string {
+  const city = (zone.split('/').pop() ?? zone).replace(/_/g, ' ');
+  return `<option value="${esc(zone)}">${esc(offsetLabel(zone, now))} · ${esc(city)}</option>`;
+}
+
 function zoneOptions(): string {
   const now = new Date();
-  const opt = (zone: string, text: string): string =>
-    `<option value="${esc(zone)}">${esc(text.replace(/_/g, ' '))} (${esc(offsetLabel(zone, now))})</option>`;
-  const loose: string[] = [];
-  const regions = new Map<string, string[]>();
-  for (const zone of zoneList()) {
-    const slash = zone.indexOf('/');
-    if (slash < 0) {
-      loose.push(opt(zone, zone));
-      continue;
-    }
-    const region = zone.slice(0, slash);
-    const list = regions.get(region) ?? [];
-    list.push(opt(zone, zone.slice(slash + 1)));
-    regions.set(region, list);
-  }
   return (
     `<option value="">Not set — use this browser's zone</option>` +
-    loose.join('') +
-    [...regions]
-      .map(([region, opts]) => `<optgroup label="${esc(region)}">${opts.join('')}</optgroup>`)
+    pickerZones(now)
+      .map((zone) => zoneOption(zone, now))
       .join('')
   );
 }
@@ -426,10 +445,16 @@ function renderTimezone(): void {
   if (!sel) return;
   if (!sel.options.length) sel.innerHTML = zoneOptions();
   sel.value = savedZone ?? '';
-  // A saved zone this browser does not list (renamed upstream, or an older
-  // engine) would otherwise show as "Not set" and be cleared by the next save.
+  // A saved zone the list does not offer — another city on a listed clock,
+  // renamed upstream, or unknown to this engine — would otherwise show as
+  // "Not set" and be cleared by the next save.
   if (savedZone && sel.value !== savedZone) {
-    sel.insertAdjacentHTML('beforeend', `<option value="${esc(savedZone)}">${esc(savedZone)}</option>`);
+    sel.insertAdjacentHTML(
+      'beforeend',
+      isKnownZone(savedZone)
+        ? zoneOption(savedZone, new Date())
+        : `<option value="${esc(savedZone)}">${esc(savedZone)}</option>`,
+    );
     sel.value = savedZone;
   }
 }
