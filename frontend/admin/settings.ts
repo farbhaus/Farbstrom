@@ -6,7 +6,7 @@ import { apiFetch, setToken } from './auth.js';
 import { toast, esc, fmtDateTime } from '../shared/utils.js';
 import { closeModal, confirmModal, openModal, promptModal } from '../shared/components.js';
 import { doRegister, webauthnSupported } from './webauthn.js';
-import { browserZone, isKnownZone, offsetLabel, zoneList } from '../shared/timezone.js';
+import { browserZone, isKnownZone, offsetLabel, pickerZones } from '../shared/timezone.js';
 import type { SettingsStatus } from './types.js';
 
 function $(id: string): HTMLElement | null {
@@ -424,29 +424,18 @@ export async function loadStudioZone(): Promise<void> {
   }
 }
 
-// Grouped by region, so typing a city's first letters finds it.
+// "GMT+1 · Paris" — offset first, since that is what the list is sorted by.
+function zoneOption(zone: string, now: Date): string {
+  const city = (zone.split('/').pop() ?? zone).replace(/_/g, ' ');
+  return `<option value="${esc(zone)}">${esc(offsetLabel(zone, now))} · ${esc(city)}</option>`;
+}
+
 function zoneOptions(): string {
   const now = new Date();
-  const opt = (zone: string, text: string): string =>
-    `<option value="${esc(zone)}">${esc(text.replace(/_/g, ' '))} (${esc(offsetLabel(zone, now))})</option>`;
-  const loose: string[] = [];
-  const regions = new Map<string, string[]>();
-  for (const zone of zoneList()) {
-    const slash = zone.indexOf('/');
-    if (slash < 0) {
-      loose.push(opt(zone, zone));
-      continue;
-    }
-    const region = zone.slice(0, slash);
-    const list = regions.get(region) ?? [];
-    list.push(opt(zone, zone.slice(slash + 1)));
-    regions.set(region, list);
-  }
   return (
     `<option value="">Not set — use this browser's zone</option>` +
-    loose.join('') +
-    [...regions]
-      .map(([region, opts]) => `<optgroup label="${esc(region)}">${opts.join('')}</optgroup>`)
+    pickerZones(now)
+      .map((zone) => zoneOption(zone, now))
       .join('')
   );
 }
@@ -456,10 +445,16 @@ function renderTimezone(): void {
   if (!sel) return;
   if (!sel.options.length) sel.innerHTML = zoneOptions();
   sel.value = savedZone ?? '';
-  // A saved zone this browser does not list (renamed upstream, or an older
-  // engine) would otherwise show as "Not set" and be cleared by the next save.
+  // A saved zone the list does not offer — another city on a listed clock,
+  // renamed upstream, or unknown to this engine — would otherwise show as
+  // "Not set" and be cleared by the next save.
   if (savedZone && sel.value !== savedZone) {
-    sel.insertAdjacentHTML('beforeend', `<option value="${esc(savedZone)}">${esc(savedZone)}</option>`);
+    sel.insertAdjacentHTML(
+      'beforeend',
+      isKnownZone(savedZone)
+        ? zoneOption(savedZone, new Date())
+        : `<option value="${esc(savedZone)}">${esc(savedZone)}</option>`,
+    );
     sel.value = savedZone;
   }
 }
