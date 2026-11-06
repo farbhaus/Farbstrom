@@ -561,6 +561,15 @@ Non-obvious facts that aren't derivable from reading the code.
 - **`totp/setup` is refused while TOTP is enabled.** It rotates the secret and
   sets `totp_enabled = 0`, so re-opening the setup panel used to switch 2FA off
   silently and invalidate the authenticator.
+- **Enrolment re-proves the login too** (`reauthenticate` in
+  `admin_settings.rs`). `totp/setup`, `passkeys/register/start` and passkey
+  removal take the password, plus a current TOTP or recovery code while TOTP is
+  on — passkey sign-in skips TOTP, so a passkey is a full login of its own. They
+  used to take the session token alone, so a stolen one could enrol a passkey
+  that outlived a password change and "Sign out other devices", or bind TOTP to
+  an authenticator the operator did not hold. `totp/enable` and
+  `register/finish` need nothing more: each completes a ceremony only a
+  re-authenticated call can begin.
 
 **Files**
 - **A participant upload is always a draft, and never de-duplicated.** There used

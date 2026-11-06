@@ -21,6 +21,37 @@ function show(id: string, visible: boolean): void {
   if (el) el.style.display = visible ? '' : 'none';
 }
 
+// From the last status load; decides whether askReauth needs a code.
+let totpOn = false;
+
+interface Reauth {
+  password: string;
+  code?: string;
+}
+
+// Adding or removing a way to sign in re-proves the login: the password, then —
+// while TOTP is on — a current authenticator or recovery code. Null if either
+// prompt is cancelled. The server enforces this; a wrong answer is a 403 whose
+// message the caller toasts, never a 401 that would sign the operator out.
+async function askReauth(title: string, confirmLabel: string): Promise<Reauth | null> {
+  const password = await promptModal({
+    title,
+    message: 'Confirm your password.',
+    label: 'Password',
+    inputType: 'password',
+    confirmLabel: totpOn ? 'Continue' : confirmLabel,
+  });
+  if (!password) return null;
+  if (!totpOn) return { password };
+  const code = await promptModal({
+    title,
+    message: 'Enter a code from your authenticator app, or one of your recovery codes.',
+    label: 'Code',
+    confirmLabel,
+  });
+  return code ? { password, code } : null;
+}
+
 export async function loadSettings(): Promise<void> {
   // Independent of the account-settings status call below, so they still load
   // if that fails.
@@ -39,6 +70,7 @@ export async function loadSettings(): Promise<void> {
     return;
   }
   const s: SettingsStatus = await res.json();
+  totpOn = s.totpEnabled;
 
   const pwState = $('set-pw-state');
   if (pwState)
@@ -110,7 +142,12 @@ async function changePassword(): Promise<void> {
 }
 
 async function startTotpSetup(): Promise<void> {
-  const res = await apiFetch('/api/admin/settings/totp/setup', { method: 'POST' });
+  const proof = await askReauth('Enable Two-Factor', 'Continue');
+  if (!proof) return;
+  const res = await apiFetch('/api/admin/settings/totp/setup', {
+    method: 'POST',
+    body: JSON.stringify(proof),
+  });
   if (!res || !res.ok) {
     // Refused while already enrolled — re-running setup would rotate the secret
     // and switch 2FA off, so the server sends back what to do instead.
@@ -152,29 +189,13 @@ async function confirmTotp(): Promise<void> {
 
 // Teardown needs both factors: the password, then a current authenticator code
 // (or a recovery code, for the case where the authenticator is what was lost).
-// The server enforces this — asking for the password alone gets a 403, which
-// reports the reason rather than signing you out the way a 401 would.
 async function disableTotp(): Promise<void> {
-  const password = await promptModal({
-    title: 'Disable Two-Factor',
-    message: 'Confirm your password to turn off TOTP 2FA.',
-    label: 'Password',
-    inputType: 'password',
-    confirmLabel: 'Continue',
-  });
-  if (!password) return;
-
-  const code = await promptModal({
-    title: 'Disable Two-Factor',
-    message: 'Enter a code from your authenticator app, or one of your recovery codes.',
-    label: 'Code',
-    confirmLabel: 'Disable 2FA',
-  });
-  if (!code) return;
+  const proof = await askReauth('Disable Two-Factor', 'Disable 2FA');
+  if (!proof) return;
 
   const res = await apiFetch('/api/admin/settings/totp/disable', {
     method: 'POST',
-    body: JSON.stringify({ password, code }),
+    body: JSON.stringify(proof),
   });
   if (res && res.ok) {
     const box = $('set-totp-recovery');
@@ -248,12 +269,15 @@ async function addPasskey(): Promise<void> {
     return;
   }
   closeModal('passkey-modal');
+  const proof = await askReauth('Add Passkey', 'Continue');
+  if (!proof) return;
   const start = await apiFetch('/api/admin/settings/passkeys/register/start', {
     method: 'POST',
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, ...proof }),
   });
   if (!start || !start.ok) {
-    toast('Could not start registration');
+    const e = start ? await start.json().catch(() => ({})) : {};
+    toast(e.error || 'Could not start registration');
     return;
   }
   const { id, options } = await start.json();
@@ -287,12 +311,18 @@ async function deletePasskey(id: string): Promise<void> {
     }))
   )
     return;
-  const res = await apiFetch(`/api/admin/settings/passkeys/${id}`, { method: 'DELETE' });
+  const proof = await askReauth('Remove Passkey', 'Remove');
+  if (!proof) return;
+  const res = await apiFetch(`/api/admin/settings/passkeys/${id}`, {
+    method: 'DELETE',
+    body: JSON.stringify(proof),
+  });
   if (res && res.ok) {
     toast('Passkey removed');
     void loadSettings();
   } else {
-    toast('Remove failed');
+    const e = res ? await res.json().catch(() => ({})) : {};
+    toast(e.error || 'Remove failed');
   }
 }
 

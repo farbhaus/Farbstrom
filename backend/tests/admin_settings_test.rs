@@ -93,6 +93,7 @@ async fn totp_full_flow_and_recovery_code() {
     let setup = server
         .post("/api/admin/settings/totp/setup")
         .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
         .await;
     assert_eq!(setup.status_code(), 200);
     let secret = setup.json::<Value>()["secret"]
@@ -184,6 +185,7 @@ async fn enrol_totp(server: &axum_test::TestServer, token: &str) -> (String, Vec
     let setup = server
         .post("/api/admin/settings/totp/setup")
         .add_header(header::AUTHORIZATION, auth_val(token))
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
         .await;
     assert_eq!(setup.status_code(), 200);
     let secret = setup.json::<Value>()["secret"]
@@ -225,6 +227,7 @@ async fn totp_setup_refuses_to_clobber_an_active_enrolment() {
     let again = server
         .post("/api/admin/settings/totp/setup")
         .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
         .await;
     assert_eq!(
         again.status_code(),
@@ -310,6 +313,176 @@ async fn totp_disable_accepts_a_recovery_code() {
         .await;
     assert_eq!(ok.status_code(), 200);
     assert!(!totp_is_enabled(&server).await);
+}
+
+// ---------------------------------------------------------------------------
+// Adding a sign-in factor must re-prove the login, the same as removing one.
+//
+// A session token is revocable; a factor is not. With the token alone, a thief
+// could register a passkey — a login that outlives a password change and "Sign
+// out other devices", and skips TOTP — or bind TOTP to an authenticator the
+// operator does not hold, locking them out of password sign-in.
+// ---------------------------------------------------------------------------
+
+fn passkey_count(state: &stream_backend::state::AppState) -> i64 {
+    state
+        .db
+        .get()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM admin_passkeys", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn totp_setup_needs_the_password() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state.clone());
+    let setup = || {
+        server
+            .post("/api/admin/settings/totp/setup")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+    };
+
+    // The session token alone, as the old client sent it.
+    assert_eq!(setup().await.status_code(), 415);
+    assert_eq!(
+        setup().json(&serde_json::json!({})).await.status_code(),
+        422
+    );
+    // 403, not 401 — a 401 would sign the operator out over a typo.
+    assert_eq!(
+        setup()
+            .json(&serde_json::json!({ "password": "wrong" }))
+            .await
+            .status_code(),
+        403
+    );
+    assert!(
+        credentials::settings_get(&state.db.get().unwrap(), credentials::KEY_TOTP_SECRET).is_none(),
+        "a refused setup stored a secret"
+    );
+
+    let ok = setup()
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
+        .await;
+    assert_eq!(ok.status_code(), 200);
+    assert!(ok.json::<Value>()["secret"].is_string());
+}
+
+#[tokio::test]
+async fn passkey_registration_needs_the_password() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state.clone());
+    let start = |body: Value| {
+        server
+            .post("/api/admin/settings/passkeys/register/start")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+            .json(&body)
+    };
+
+    assert_eq!(
+        start(serde_json::json!({ "label": "theirs" }))
+            .await
+            .status_code(),
+        422
+    );
+    assert_eq!(
+        start(serde_json::json!({ "label": "theirs", "password": "wrong" }))
+            .await
+            .status_code(),
+        403
+    );
+    // A refused start leaves no ceremony behind for `register/finish` to complete.
+    assert!(state.passkey_reg.lock().await.is_empty());
+
+    let ok = start(serde_json::json!({ "label": "mine", "password": "test-admin-password" })).await;
+    assert_eq!(ok.status_code(), 200);
+    assert!(ok.json::<Value>()["options"]["publicKey"]["challenge"].is_string());
+    assert_eq!(state.passkey_reg.lock().await.len(), 1);
+}
+
+/// Passkey sign-in skips TOTP, so with TOTP on, registering a passkey takes the
+/// second factor as well — or the password alone would buy a TOTP-free login.
+#[tokio::test]
+async fn passkey_registration_needs_the_second_factor_when_totp_is_on() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state.clone());
+    let (secret, _) = enrol_totp(&server, &token).await;
+    let start = |body: Value| {
+        server
+            .post("/api/admin/settings/passkeys/register/start")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+            .json(&body)
+    };
+
+    let bare = start(serde_json::json!({ "label": "pk", "password": "test-admin-password" })).await;
+    assert_eq!(
+        bare.status_code(),
+        403,
+        "password alone started a registration"
+    );
+    let wrong = start(serde_json::json!({
+        "label": "pk",
+        "password": "test-admin-password",
+        "code": "000000",
+    }))
+    .await;
+    assert_eq!(wrong.status_code(), 403);
+    assert!(state.passkey_reg.lock().await.is_empty());
+
+    let ok = start(serde_json::json!({
+        "label": "pk",
+        "password": "test-admin-password",
+        "code": next_code(&credentials::totp_from_secret(&secret).unwrap()),
+    }))
+    .await;
+    assert_eq!(ok.status_code(), 200);
+}
+
+/// Removal too — otherwise a stolen token strips the operator's passkeys.
+#[tokio::test]
+async fn passkey_removal_needs_the_password() {
+    let state = common::test_state();
+    let token = common::admin_token(&state);
+    let server = common::test_app(state.clone());
+    // `passkey_delete` never parses the credential, so a placeholder will do.
+    state
+        .db
+        .get()
+        .unwrap()
+        .execute(
+            "INSERT INTO admin_passkeys (id, label, credential) VALUES ('pk1', 'operator', '{}')",
+            [],
+        )
+        .unwrap();
+    let delete = || {
+        server
+            .delete("/api/admin/settings/passkeys/pk1")
+            .add_header(header::AUTHORIZATION, auth_val(&token))
+    };
+
+    assert_eq!(delete().await.status_code(), 415);
+    assert_eq!(
+        delete()
+            .json(&serde_json::json!({ "password": "wrong" }))
+            .await
+            .status_code(),
+        403
+    );
+    assert_eq!(
+        passkey_count(&state),
+        1,
+        "a refused removal deleted the passkey"
+    );
+
+    let ok = delete()
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
+        .await;
+    assert_eq!(ok.status_code(), 200);
+    assert_eq!(passkey_count(&state), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +775,7 @@ async fn the_enrolment_code_cannot_then_sign_in() {
     let secret = server
         .post("/api/admin/settings/totp/setup")
         .add_header(header::AUTHORIZATION, auth_val(&token))
+        .json(&serde_json::json!({ "password": "test-admin-password" }))
         .await
         .json::<Value>()["secret"]
         .as_str()
