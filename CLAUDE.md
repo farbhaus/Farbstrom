@@ -324,7 +324,7 @@ new single-key shortcut cannot ship undocumented.
 
 GitHub Actions runs on push/PR (`.github/workflows/ci.yml`):
 - **build** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`.
-- **audit** — `cargo audit` (advisory DB check). Nothing is ignored: there is no `.cargo/audit.toml`, since replacing `jsonwebtoken` took the last flagged crates (`rsa`, `crypto-bigint`) out of the tree. An advisory with no fix should be ignored there, with its reason, rather than left red.
+- **audit** — `cargo audit` (advisory DB check). `backend/.cargo/audit.toml` ignores one advisory: RUSTSEC-2023-0071 (Marvin) in `rsa`, which webauthn-rs 0.6 brought back for RS256 passkeys — a timing attack on private-key operations, and the backend only verifies. An advisory with no fix should be ignored there, with its reason, rather than left red.
 - **frontend** — Node 26 (the active LTS, as in the Dockerfile): `npm run typecheck`, `npm run build`, then `./scripts/design-lint.sh` (see below).
 
 Every workflow runs with a read-only `GITHUB_TOKEN` unless a job asks for more
