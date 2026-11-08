@@ -35,7 +35,8 @@ html { touch-action: manipulation; }
     --surface2: #1c1c1c;
     --border:   #2a2a2a;
     --faint:    #444444;
-    --dim:      #777777;
+    /* 4.5:1 on every ground it is drawn on, the amber tint included (WCAG 2.2 1.4.3). */
+    --dim:      #8b8b8b;
     --text:     #dfdfdf;
     --accent:   #ffbd2e;
     --danger:   #ff6159;

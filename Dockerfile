@@ -35,14 +35,17 @@ RUN touch src/main.rs && cargo build --release
 # builds are static, so they run on this Debian base; pick by build arch so an
 # arm64 `make dev` works the same as CI's amd64. about.toml pins the target
 # triples it reports on, so the output is identical on either arch.
+# GitHub's release downloads do go down (504s, 2026-11-08) while crates.io stays up,
+# so a failed download builds the same pinned version from source.
 ARG CARGO_ABOUT_VERSION=0.9.0
 COPY backend/about.toml backend/about.hbs ./
 RUN case "$(uname -m)" in \
         aarch64|arm64) ABOUT_ARCH=aarch64 ;; \
         *)             ABOUT_ARCH=x86_64  ;; \
     esac \
-    && curl -fsSL "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/cargo-about-${CARGO_ABOUT_VERSION}-${ABOUT_ARCH}-unknown-linux-musl.tar.gz" \
+    && { curl -fsSL --retry 3 --retry-delay 2 "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/cargo-about-${CARGO_ABOUT_VERSION}-${ABOUT_ARCH}-unknown-linux-musl.tar.gz" \
         | tar -xz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-about' \
+        || cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli --root /usr/local; } \
     && cargo about generate about.hbs -o /app/THIRD_PARTY_NOTICES.md
 
 # ------------------------------------------------------------------------------

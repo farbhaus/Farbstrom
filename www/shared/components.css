@@ -164,7 +164,7 @@
 .form-row input:focus,
 .form-row select:focus,
 .form-row textarea:focus { border-color: var(--accent); box-shadow: var(--ring-accent); }
-.form-row input::placeholder { color: var(--faint); }
+.form-row input::placeholder { color: var(--dim); }
 /* iOS renders native date/time inputs at an intrinsic width that ignores
    width:100% and overflows the modal. Resetting the appearance lets them honour
    the box width like any other input. */
