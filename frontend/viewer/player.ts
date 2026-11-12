@@ -50,6 +50,29 @@ let blockedCodec: string | null = null;
 // bad picture. Empty until a live stream has been probed.
 let liveCodecs: string[] = [];
 
+// WebRTC transport for the live broadcast: direct UDP first, OME's TCP relay
+// (TURN on :3478) as the fallback. The choice rides on the playback URL as
+// `?transport=`, which both ends read — OME offers only UDP candidates for
+// `udp` and only its relay for `relay` (`webrtc_publisher.cpp`), and OvenPlayer
+// builds the RTCPeerConnection to match. Don't try `all` (both at once): when
+// OME offers a relay server OvenPlayer sets `iceTransportPolicy: 'relay'`
+// unless the URL says `transport=all`, and Firefox then opens two relay
+// connections to the same server and OME can send down the one it isn't
+// reading. Relay used to be forced for everyone. It put every viewer behind
+// their own TCP stack, and one MacBook's collapsed its receive window for
+// 1–2.5 s every 30 s — in Chrome and Safari alike — stalling delivery while
+// UDP to the same machine was unaffected.
+//
+// Sticky for the page: once UDP has failed here it is not retried, since the
+// usual cause (a network that blocks UDP) won't change mid-session.
+type WebrtcTransport = 'udp' | 'relay';
+let webrtcTransport: WebrtcTransport = 'udp';
+let udpFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+// A UDP session normally plays within 1–3 s (ICE ~0.3 s, then the next
+// keyframe). Kept under OvenPlayer's own 8 s connectionTimeout so the fallback
+// fires before it starts retrying the same dead path.
+const UDP_FALLBACK_MS = 6000;
+
 let onPlayingChange: () => void = () => {};
 let onPlaybackBlocked: (message: string | null) => void = () => {};
 let wsSend: (msg: WsClientMessage) => void = () => {};
@@ -78,6 +101,9 @@ export interface StreamDiagnostics {
   /** The element the stats panel samples. OvenPlayer owns it, so it's looked
    *  up rather than held — a remount replaces it. */
   video: HTMLVideoElement | null;
+  /** The transport a WebRTC broadcast was requested over. OME offers only
+   *  that path, so a playing stream is on it. */
+  webrtcTransport: WebrtcTransport;
 }
 
 export function getStreamDiagnostics(): StreamDiagnostics {
@@ -86,6 +112,7 @@ export function getStreamDiagnostics(): StreamDiagnostics {
     codecs: liveCodecs,
     blockedCodec,
     video: document.querySelector<HTMLVideoElement>('#player video'),
+    webrtcTransport,
   };
 }
 
@@ -120,6 +147,7 @@ function mimeKind(mime: string): 'image' | 'video' | 'other' {
 function destroyPlayerInstance(): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
+  clearUdpFallback();
   if (player) {
     try {
       player.remove();
@@ -151,6 +179,10 @@ export function reloadPlayer(): void {
   try {
     if (player.getState() === 'playing') return;
     player.load();
+    // A reload re-runs ICE on the same transport, so it gets the same
+    // deadline: UDP that worked at mount can stop working (the viewer moved
+    // to a network that blocks it).
+    if (mode === 'live') armUdpFallback();
   } catch {
     if (mode === 'file' && currentFileId) {
       const id = currentFileId;
@@ -388,6 +420,35 @@ function waitForStreamThenMount(playbackId: string, isLlhls: boolean): void {
   void attempt();
 }
 
+// Arm the UDP deadline for a live WebRTC mount or reload. No-op for LL-HLS and
+// once the page has fallen back to the relay.
+function armUdpFallback(): void {
+  clearUdpFallback();
+  if (webrtcTransport !== 'udp' || viewerStore.get().deliveryMode === 'llhls') return;
+  udpFallbackTimer = setTimeout(() => {
+    udpFallbackTimer = null;
+    if (mode !== 'live' || !player) return;
+    try {
+      if (player.getState() === 'playing') return;
+    } catch {
+      // A half-torn-down instance can throw; treat it as not playing.
+    }
+    webrtcTransport = 'relay';
+    logDiag(
+      'player',
+      'warn',
+      `WebRTC over UDP did not start within ${UDP_FALLBACK_MS / 1000} s — switching to the TCP relay`,
+    );
+    destroyPlayerInstance();
+    initLivePlayer();
+  }, UDP_FALLBACK_MS);
+}
+
+function clearUdpFallback(): void {
+  if (udpFallbackTimer) clearTimeout(udpFallbackTimer);
+  udpFallbackTimer = null;
+}
+
 function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
   if (player || mode !== 'live') return;
   const host = location.host;
@@ -395,7 +456,12 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
   const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
   const sources = isLlhls
     ? [{ type: 'll-hls', file: `${proto}://${host}/live/${playbackId}/llhls.m3u8?${playbackQuery()}` }]
-    : [{ type: 'webrtc', file: `${wsproto}://${host}/live/${playbackId}?${playbackQuery()}` }];
+    : [
+        {
+          type: 'webrtc',
+          file: `${wsproto}://${host}/live/${playbackId}?${playbackQuery()}&transport=${webrtcTransport}`,
+        },
+      ];
 
   player = OvenPlayer.create('player', {
     autoStart: true,
@@ -410,6 +476,7 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
   enablePlayerControls(true);
   showSeekBar(false);
   syncPlayerControls();
+  armUdpFallback();
 
   // Event handlers — wired exactly as on dev to avoid behavioural drift.
   // (file mode uses bindCommonEvents + an extra `play`/`pause`/`seek`
@@ -418,6 +485,7 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
     syncPlayerControls();
     if (!player || mode !== 'live') return;
     if (e?.newstate === 'playing') {
+      clearUdpFallback();
       onPlayingChange();
       routeStageAudio();
     } else if (e?.newstate === 'error') {

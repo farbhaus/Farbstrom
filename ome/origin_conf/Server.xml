@@ -64,7 +64,8 @@
                 <IceCandidates>
                     <!--
                         INGEST side (WHIP / WebRTC push). Relay must NOT be forced
-                        here — that is the Publishers block's business, further down.
+                        here. (Playback no longer forces it either — see the
+                        Publishers block, further down.)
 
                         With TcpRelayForce=true, OME withholds its real candidates
                         and advertises the working path only through its embedded
@@ -77,11 +78,9 @@
                         then "PeerConnection state is now: Connecting" → "Failed"
                         about 40 s later, with no media ever sent.
 
-                        The Firefox finding that justifies forcing the relay is
-                        about *playback* and lives in the Publishers block; it does
-                        not apply to ingest. TcpRelay stays configured, so clients
-                        that do honour the Link headers keep a relay fallback.
-                        TcpRelayForce is v0.21.0's rename of the deprecated TcpForce.
+                        TcpRelay stays configured, so clients that do honour the
+                        Link headers keep a relay fallback. TcpRelayForce is
+                        v0.21.0's rename of the deprecated TcpForce.
 
                         OME_ICE_ADDRESS is derived in entrypoint.sh: "*" (enumerate
                         interfaces + the STUN-discovered public IP) on a real host,
@@ -112,23 +111,43 @@
                 </Signalling>
                 <IceCandidates>
                     <!--
-                        PLAYBACK side, and here the relay IS forced on purpose —
-                        deliberately unlike the ingest provider above.
+                        PLAYBACK side: direct UDP first, the TCP relay as fallback,
+                        chosen per session by the viewer.
 
-                        Direct ICE was tried on OME v0.21.0 (${PublicIP} candidates
-                        + RFC 6544 TCP ICE, TcpRelayForce=false) and broke Firefox:
-                        it never nominated a candidate and looped "Added session"/
-                        "Removed session" forever. Offering the relay alongside
-                        direct candidates did not fix it either, because with the
-                        container behind Docker NAT the relay is only advertised at
-                        ${PublicIP} and 172.x — neither reachable as localhost.
-                        Forcing the relay is the configuration verified to work in
-                        Chrome, Safari and Firefox. Don't flip it without retesting
-                        Firefox playback.
+                        The viewer (frontend/viewer/player.ts) asks for
+                        ?transport=udp, and remounts with ?transport=relay if
+                        nothing plays within 6 s (a network that blocks UDP). OME
+                        reads the parameter per session (webrtc_publisher.cpp):
+                        udp offers only the UDP candidates below, relay offers only
+                        the embedded TURN server on 3478. DefaultTransport applies
+                        to a session that doesn't ask — an old cached viewer — and
+                        keeps it on the relay, which is what every session got
+                        while the relay was forced. TcpRelayForce must stay false:
+                        true overrides ?transport for every session.
+
+                        Why not force the relay any more: it put every viewer
+                        behind their own TCP stack. Measured 2026-11-12, a MacBook
+                        collapsed the receive window of its relay connection to
+                        14 KB for 1-2.5 s every 30 s, in Chrome and Safari alike,
+                        while UDP to the same machine was unaffected. Firefox, the
+                        reason it was forced, plays fine over direct UDP on a real
+                        host; the "Firefox never nominates" failure was measured on
+                        a localhost Docker Desktop stack.
+
+                        Don't use transport=all (both at once). OvenPlayer sets
+                        iceTransportPolicy "relay" whenever OME offers a relay
+                        server, unless the URL itself says transport=all; and with
+                        all, Firefox opens two relay connections to this one server
+                        and OME can send down the one it isn't reading.
+
+                        The UDP candidate address follows the ingest provider's
+                        (OME_ICE_ADDRESS, entrypoint.sh): "*" on a real host,
+                        127.0.0.1 on a localhost stack.
                     -->
-                    <IceCandidate>*:10000-10009/udp</IceCandidate>
+                    <IceCandidate>${env:OME_ICE_ADDRESS:*}:10000-10009/udp</IceCandidate>
                     <TcpRelay>*:3478</TcpRelay>
-                    <TcpRelayForce>true</TcpRelayForce>
+                    <TcpRelayForce>false</TcpRelayForce>
+                    <DefaultTransport>relay</DefaultTransport>
                     <TcpRelayWorkerCount>2</TcpRelayWorkerCount>
                 </IceCandidates>
             </WebRTC>

@@ -232,9 +232,12 @@ const section = (title: string, body: string): string =>
    </div>`;
 
 function sourceLabel(): string {
-  const { mode } = getStreamDiagnostics();
+  const { mode, webrtcTransport } = getStreamDiagnostics();
   const { deliveryMode } = viewerStore.get();
-  if (mode === 'live') return `Live broadcast · ${deliveryMode === 'llhls' ? 'LL-HLS' : 'WebRTC'}`;
+  if (mode === 'live') {
+    if (deliveryMode === 'llhls') return 'Live broadcast · LL-HLS';
+    return `Live broadcast · WebRTC · ${webrtcTransport === 'udp' ? 'UDP' : 'TCP relay'}`;
+  }
   if (mode === 'file') return 'Shared file';
   if (mode === 'image') return 'Shared image';
   if (deliveryMode === 'srt') return 'Farbplay app only';
