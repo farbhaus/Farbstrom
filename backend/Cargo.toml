@@ -10,9 +10,9 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 r2d2 = "0.8"
-r2d2_sqlite = "0.35"
+r2d2_sqlite = "0.36"
 bcrypt = "0.19"
 # No TLS: every outbound call is container-local plain HTTP — the OME REST API
 # and LiveKit's RoomService, both on localhost (`config.rs` refuses an https
