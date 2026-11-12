@@ -12,7 +12,7 @@
   "devDependencies": {
     "hls.js": "1.7.4",
     "livekit-client": "2.23.0",
-    "ovenplayer": "0.10.54",
+    "ovenplayer": "0.10.55",
     "typescript": "7.0.2"
   }
 }
