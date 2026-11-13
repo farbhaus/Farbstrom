@@ -32,6 +32,12 @@ body {
 .legal li { margin-bottom: var(--sp-1-5); }
 .legal code { font-family: var(--ff-mono); font-size: var(--fs-sm); color: var(--text); }
 .legal a { color: var(--accent); }
+.legal .app-version {
+    font-size: var(--fs-xs);
+    margin-top: var(--sp-12);
+    padding-top: var(--sp-4);
+    border-top: var(--bw-hair) solid var(--border);
+}
 </style>
 </head>
 <body>
@@ -115,6 +121,11 @@ body {
         For privacy questions, contact the operator of this deployment (the team that shared the
         room link with you).
     </p>
+
+    <!-- The backend (routes::pages::serve_privacy) replaces the marker with the
+         release this server runs. The page is rebrandable; the software is not,
+         so this line says Farbstrom whatever the wordmark above says. -->
+    <p class="app-version">Farbstrom <!--farbstrom-version--></p>
 </div>
 
 <script type="module" src="/dist/privacy/main.js"></script>

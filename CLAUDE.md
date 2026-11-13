@@ -58,6 +58,24 @@ neither the source nor a Node/Rust toolchain. Deploy hosts pin a tag via
 `FARBSTROM_TAG` in `.env`. Requires repo secrets `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN`.
 
+**Cutting a release — bump the version files first.** The tag is the version,
+and four files must say the same: `backend/Cargo.toml`, `backend/Cargo.lock`,
+`frontend/package.json`, `frontend/package-lock.json`. They sat at `0.1.0`
+through every release up to v1.2.2.
+
+```bash
+./scripts/bump-version.sh 1.2.3          # writes all four; nothing to git
+# commit, merge to main, then tag main: git tag v1.2.3 && git push origin v1.2.3
+```
+
+`Cargo.toml`'s is the one that reaches users: the backend compiles it in
+(`stream_backend::VERSION`), logs it at startup, and stamps it into the privacy
+page's footer (`routes::pages::serve_privacy`, replacing
+`<!--farbstrom-version-->`). `docker-single.yml` runs
+`bump-version.sh --check <tag>` before publishing and refuses a tag the files
+disagree with — so a forgotten bump fails the release rather than shipping an
+image that names the wrong version.
+
 One-command production deploy to a fresh VPS: `./deploy.sh your.domain.com`.
 
 ### Environment setup
@@ -92,7 +110,7 @@ cp .env.example .env
 | `PUBLIC_ORIGIN` | `http://localhost:4001` | WebAuthn RP origin/ID — must match the browser origin exactly. In the container, **derived from `PUBLIC_HOST`** (`https://<PUBLIC_HOST>`). |
 | `SITE_ADDRESS` | `localhost` | Caddy site address for the container's own Caddy. Set to your domain for standalone TLS, or `:80` (plain HTTP) to run behind an external TLS proxy. |
 | `PUBLIC_HOST` | `$SITE_ADDRESS` | Browser-facing host that `PUBLIC_ORIGIN`/`LIVEKIT_URL` derive from. Defaults to `SITE_ADDRESS` (standalone). **Required** when `SITE_ADDRESS=:80` — a bare port is not a valid host, so without it the backend panics. |
-| `WEB_ROOT` | `/www` | Root of the built frontend (static mounts, `/privacy`, `/favicon.ico`, and the two HTML documents `routes::pages` rewrites). The Dockerfile copies there and the dev overlay bind-mounts `./www:/www`, so deployments never set it; it exists so tests can point at a fixture tree. |
+| `WEB_ROOT` | `/www` | Root of the built frontend (static mounts, `/favicon.ico`, and the three HTML documents `routes::pages` rewrites — landing, viewer, privacy). The Dockerfile copies there and the dev overlay bind-mounts `./www:/www`, so deployments never set it; it exists so tests can point at a fixture tree. |
 | `OME_LOG_PATH` | `/var/log/ovenmediaengine/ovenmediaengine.log` | OME's on-disk log, tailed by the admin dashboard's **OME Logs** panel (`GET /api/admin/ome-logs`, gh #261). OME's REST API has no log endpoint, so this reads the file sink set in the image's `origin_conf/Logger.xml` (root-owned but world-readable). Like `WEB_ROOT`, deployments never set it; it exists for test fixtures. |
 | `WEB_BIND` | `0.0.0.0` | Host interface the published HTTP/HTTPS ports bind to. Set to `127.0.0.1` when behind an external proxy so the plain-HTTP port isn't internet-reachable (Docker bypasses ufw). |
 | `TRUSTED_PROXIES` | loopback only | Peers the container's Caddy trusts to report the client address (`X-Forwarded-For`). Set `private_ranges` behind an external proxy — `deploy.sh --behind-proxy` does — or every client is seen as the proxy's Docker bridge address and shares one rate-limit bucket. See the global block in [`caddy/Caddyfile`](caddy/Caddyfile). |
@@ -154,7 +172,7 @@ to `SITE_ADDRESS`); the Caddyfile
 - `src/signed_policy.rs` — OME SignedPolicy streamid minting for SRT playback; the single signing helper behind both `/api/watch/:slug` (Farbplay) and the admin `/api/stream-keys/:id/srt-playback`
 - `src/tasks.rs` — background pollers: OME stream status, room expiry, file cleanup
 - `src/uploads.rs` — chunked multipart upload helper: streams a field to a temp file, Sha256-hashes as it goes, enforces the size cap (bounded memory, atomic rename), and stops at `MIN_FREE_BYTES` (4 GiB) free on the data volume — checked as the file grows, so concurrent uploads can't fill the disk the database lives on
-- `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `ome_logs` (admin tail of OME's log file), `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages)
+- `src/routes/` — one file per resource: `rooms`, `rooms_public`, `files`, `admin_files`, `stream_keys`, `webhook`, `branding`, `metrics`, `ome`, `ome_logs` (admin tail of OME's log file), `auth`, `admin_settings`, `rate_limit`, `watch` (Farbplay SRT room-link playback), `pages` (server-rendered link-preview HTML for the landing/viewer pages, and the privacy page with the running version filled in)
 - `src/routes/sql.rs` — shared SQL: `row_to_json`, the room projection (`ROOM_SELECT_BY_ID` / `ROOM_COLS`, plus the `ROOM_LIST_*` variant carrying `waiting_count`) and `FILE_ROOM_SLUGS`. **A new `rooms` column is added here, not in seven handlers** — the projection and its column names are paired positionally, and a unit test asserts they stay the same length. The projections carry `has_password`, never `password_hash` (another test pins that)
 - `src/credentials.rs` — single-admin credential helpers: `settings` accessors, DB-or-env password resolver, TOTP, recovery codes, `verify_totp_or_recovery` (the one definition of "valid second factor", shared by login and 2FA teardown), WebAuthn RP builder
 - `src/time.rs` — `now_ms()`. **Every timestamp crossing the wire to a browser is epoch milliseconds**; route new ones through here rather than re-deriving, or they land in `new Date(ts)` as 1970

@@ -115,6 +115,39 @@ async fn static_mounts_serve_real_files() {
     assert_eq!(server.get("/privacy").await.status_code(), 200);
 }
 
+/// The privacy page names the release the server runs, filled in from the
+/// compiled-in `Cargo.toml` version.
+#[tokio::test(flavor = "multi_thread")]
+async fn privacy_page_shows_the_running_version() {
+    let state = test_state();
+    let server = test_app_http(state);
+
+    let res = server.get("/privacy").await;
+    assert_eq!(res.status_code(), 200);
+    let body = res.text();
+    assert!(
+        body.contains(&format!("Farbstrom v{}", env!("CARGO_PKG_VERSION"))),
+        "version not filled in: {body}"
+    );
+    assert!(
+        !body.contains(stream_backend::routes::pages::VERSION_MARKER),
+        "marker left in the page: {body}"
+    );
+}
+
+/// The test above runs against a fixture page, so it cannot notice the marker
+/// going missing from the real one — the footer would then just read
+/// "Farbstrom". Check the shipped file carries it.
+#[test]
+fn shipped_privacy_page_carries_the_version_marker() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../www/privacy/index.html");
+    let html = std::fs::read_to_string(path).unwrap();
+    assert!(
+        html.contains(stream_backend::routes::pages::VERSION_MARKER),
+        "{path} lost the version marker"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Link-preview injection
 // ---------------------------------------------------------------------------

@@ -68,6 +68,14 @@ jobs:
             exit 1
           fi
 
+      # The version the app reports (the privacy page) is compiled in from
+      # backend/Cargo.toml, so a tag the version files disagree with would
+      # publish an image naming the wrong release. They sat at 0.1.0 through
+      # every release up to v1.2.2. Bump with scripts/bump-version.sh first.
+      - name: Refuse a release tag the version files do not match
+        if: steps.pub.outputs.push == 'true'
+        run: ./scripts/bump-version.sh --check "$GITHUB_REF_NAME"
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Docker Hub

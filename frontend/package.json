@@ -1,7 +1,7 @@
 {
   "name": "farbstrom-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.2.2",
   "description": "TypeScript sources for the Farbstrom pages. Output is plain ES modules served by the Rust backend, plus the three player libraries copied in by vendor.mjs.",
   "type": "module",
   "scripts": {

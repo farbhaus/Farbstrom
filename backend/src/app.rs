@@ -72,19 +72,17 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/favicon.ico",
             ServeFile::new(format!("{web}/shared/favicon.png")),
         )
-        // Privacy / functional-cookie disclosure (static; themed via JS branding).
-        .route_service(
-            "/privacy",
-            ServeFile::new(format!("{web}/privacy/index.html")),
-        )
         // Landing + viewer go through handlers that inject brand-aware
         // link-preview (Open Graph) tags; the viewer handler is the SPA
-        // catch-all for /watch/{slug} and any other unmatched path. These need
-        // AppState, so they live in a state-applied sub-router that is merged in
-        // (its fallback becomes the app's fallback).
+        // catch-all for /watch/{slug} and any other unmatched path. The privacy
+        // / functional-cookie disclosure (themed via JS branding) goes through
+        // one too, which fills in the running version. These need AppState, so
+        // they live in a state-applied sub-router that is merged in (its
+        // fallback becomes the app's fallback).
         .merge(
             Router::new()
                 .route("/", get(routes::pages::serve_landing))
+                .route("/privacy", get(routes::pages::serve_privacy))
                 .fallback(get(routes::pages::serve_viewer))
                 .with_state(state),
         )

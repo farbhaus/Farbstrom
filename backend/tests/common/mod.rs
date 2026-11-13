@@ -345,7 +345,11 @@ pub fn seed_web_root(state: &Arc<AppState>) {
     std::fs::write(format!("{web}/viewer/index.html"), page("viewer")).unwrap();
     std::fs::write(format!("{web}/landing/index.html"), page("landing")).unwrap();
     std::fs::write(format!("{web}/admin/index.html"), page("admin")).unwrap();
-    std::fs::write(format!("{web}/privacy/index.html"), page("privacy")).unwrap();
+    std::fs::write(
+        format!("{web}/privacy/index.html"),
+        page("privacy <p>Farbstrom <!--farbstrom-version--></p>"),
+    )
+    .unwrap();
     std::fs::write(format!("{web}/shared/favicon.png"), b"\x89PNG\r\n\x1a\n").unwrap();
     std::fs::write(format!("{web}/shared/tokens.css"), ":root{}").unwrap();
     std::fs::write(format!("{web}/dist/app.js"), "export {};").unwrap();

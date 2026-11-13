@@ -116,7 +116,11 @@ async fn main() {
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("stream-backend running on port {}", port);
+    tracing::info!(
+        "stream-backend v{} running on port {}",
+        stream_backend::VERSION,
+        port
+    );
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     // `into_make_service_with_connect_info` surfaces the peer SocketAddr so
     // tower_governor's SmartIpKeyExtractor has a fallback when X-Forwarded-For

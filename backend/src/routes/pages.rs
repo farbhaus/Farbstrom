@@ -1,5 +1,5 @@
 //! HTML index pages (landing + viewer) served with server-rendered
-//! link-preview metadata.
+//! link-preview metadata, and the privacy page with the running version.
 //!
 //! The viewer is a static SPA served as `index.html` for every room slug, and
 //! the tab title is set by JS — so social/link-preview crawlers (which don't run
@@ -20,6 +20,11 @@ use crate::state::AppState;
 /// `config.web_root` (`/www` in the container).
 const LANDING_HTML: &str = "landing/index.html";
 const VIEWER_HTML: &str = "viewer/index.html";
+const PRIVACY_HTML: &str = "privacy/index.html";
+
+/// Where the privacy page's footer takes the version. An HTML comment, so a
+/// copy served without this handler reads "Farbstrom" rather than a raw token.
+pub const VERSION_MARKER: &str = "<!--farbstrom-version-->";
 
 /// Minimal HTML-attribute escaping for values injected into `content="…"` /
 /// `<title>…</title>`. `site_name` is admin-set, but escape anyway so the brand
@@ -90,19 +95,35 @@ pub fn path_looks_like_asset(path: &str) -> bool {
         .is_some_and(|(_, ext)| ASSET_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
-async fn serve_page(
-    state: &Arc<AppState>,
-    relative_path: &str,
-    is_room: bool,
-) -> Result<Html<String>, AppError> {
+/// `GET /privacy` — the static disclosure page, its footer naming the release
+/// this server runs. Read per request like the other two, so the dev overlay's
+/// `./www` bind mount still serves edits live.
+pub async fn serve_privacy(State(state): State<Arc<AppState>>) -> Result<Html<String>, AppError> {
+    let html = read_page(&state, PRIVACY_HTML).await?;
+    Ok(Html(html.replacen(
+        VERSION_MARKER,
+        &format!("v{}", crate::VERSION),
+        1,
+    )))
+}
+
+async fn read_page(state: &Arc<AppState>, relative_path: &str) -> Result<String, AppError> {
     let path = format!(
         "{}/{}",
         state.config.web_root.trim_end_matches('/'),
         relative_path
     );
-    let html = tokio::fs::read_to_string(&path)
+    tokio::fs::read_to_string(&path)
         .await
-        .map_err(|e| AppError::Internal(format!("read {path}: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("read {path}: {e}")))
+}
+
+async fn serve_page(
+    state: &Arc<AppState>,
+    relative_path: &str,
+    is_room: bool,
+) -> Result<Html<String>, AppError> {
+    let html = read_page(state, relative_path).await?;
 
     let has_logo = tokio::fs::metadata(format!("{}/branding/logo", state.config.data_path))
         .await
