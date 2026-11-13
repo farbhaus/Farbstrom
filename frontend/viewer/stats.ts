@@ -26,7 +26,7 @@ import {
   type DiagEvent,
   type Quality,
 } from './diagnostics.js';
-import { codecLabel, getStreamDiagnostics } from './player.js';
+import { codecLabel, getStreamDiagnostics, refreshWebrtcPath } from './player.js';
 import { getParticipantId } from './session.js';
 import { viewerStore } from './state.js';
 
@@ -131,6 +131,7 @@ function playbackQuality(video: HTMLVideoElement): { total: number; dropped: num
 }
 
 function sample(): void {
+  refreshWebrtcPath();
   const { video } = getStreamDiagnostics();
   if (!video) {
     snapshot = null;
@@ -232,11 +233,13 @@ const section = (title: string, body: string): string =>
    </div>`;
 
 function sourceLabel(): string {
-  const { mode, webrtcTransport } = getStreamDiagnostics();
+  const { mode, webrtcPath } = getStreamDiagnostics();
   const { deliveryMode } = viewerStore.get();
   if (mode === 'live') {
     if (deliveryMode === 'llhls') return 'Live broadcast · LL-HLS';
-    return `Live broadcast · WebRTC · ${webrtcTransport === 'udp' ? 'UDP' : 'TCP relay'}`;
+    // The path the picture is actually arriving on — unknown until the first
+    // video bytes land, and the race in player.ts can pick either.
+    return webrtcPath ? `Live broadcast · WebRTC · ${webrtcPath}` : 'Live broadcast · WebRTC';
   }
   if (mode === 'file') return 'Shared file';
   if (mode === 'image') return 'Shared image';

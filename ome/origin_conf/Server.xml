@@ -111,19 +111,21 @@
                 </Signalling>
                 <IceCandidates>
                     <!--
-                        PLAYBACK side: direct UDP first, the TCP relay as fallback,
-                        chosen per session by the viewer.
+                        PLAYBACK side: direct UDP and the TCP relay raced per
+                        session, the relay alone as the fallback, chosen by the
+                        viewer.
 
                         The viewer (frontend/viewer/player.ts) asks for
-                        ?transport=udp, and remounts with ?transport=relay if
-                        nothing plays within 6 s (a network that blocks UDP). OME
-                        reads the parameter per session (webrtc_publisher.cpp):
-                        udp offers only the UDP candidates below, relay offers only
-                        the embedded TURN server on 3478. DefaultTransport applies
-                        to a session that doesn't ask — an old cached viewer — and
-                        keeps it on the relay, which is what every session got
-                        while the relay was forced. TcpRelayForce must stay false:
-                        true overrides ?transport for every session.
+                        ?transport=all, and remounts with ?transport=relay if
+                        nothing plays within 6 s. OME reads the parameter per
+                        session (webrtc_publisher.cpp): all offers the UDP
+                        candidates below plus the embedded TURN server on 3478,
+                        and the browser takes UDP when it gets through; relay
+                        offers only the TURN server. DefaultTransport applies to a
+                        session that doesn't ask (an old cached viewer) and keeps
+                        it on the relay, which is what every session got while the
+                        relay was forced. TcpRelayForce must stay false: true
+                        overrides ?transport for every session.
 
                         Why not force the relay any more: it put every viewer
                         behind their own TCP stack. Measured 2026-11-12, a MacBook
@@ -134,11 +136,18 @@
                         host; the "Firefox never nominates" failure was measured on
                         a localhost Docker Desktop stack.
 
-                        Don't use transport=all (both at once). OvenPlayer sets
+                        transport=all has to be in the URL: OvenPlayer sets
                         iceTransportPolicy "relay" whenever OME offers a relay
-                        server, unless the URL itself says transport=all; and with
-                        all, Firefox opens two relay connections to this one server
-                        and OME can send down the one it isn't reading.
+                        server and the URL doesn't say all, so DefaultTransport=all
+                        on its own means relay-only. Measured 2026-11-13 with all in
+                        the URL: Chrome and Firefox on UDP in 0.2-0.4 s, and with
+                        their UDP dropped, on the relay in 0.3-0.55 s.
+
+                        OME sends media down the pair the browser nominates first
+                        and ignores later nominations. That is why the viewer keeps
+                        its 6 s fallback: Safari with iCloud Private Relay reaches
+                        the UDP candidates through Apple's relay, connects and
+                        completes DTLS, and gets no picture when that pair wins.
 
                         The UDP candidate address follows the ingest provider's
                         (OME_ICE_ADDRESS, entrypoint.sh): "*" on a real host,
