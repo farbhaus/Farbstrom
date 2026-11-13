@@ -7,6 +7,9 @@ declare const OvenPlayer: {
 };
 
 interface OvenPlayerInstance {
+  // The WebRTC provider fires this with the RTCPeerConnection it just built, and
+  // the API re-emits every provider event (OvenPlayer 0.10.55, `A.on("all", …)`).
+  on(event: 'peerConnectionPrepared', handler: (pc: RTCPeerConnection) => void): void;
   on(
     event: string,
     handler: (e?: { newstate?: string; position?: number; offset?: number; duration?: number }) => void,

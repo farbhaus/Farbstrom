@@ -50,28 +50,53 @@ let blockedCodec: string | null = null;
 // bad picture. Empty until a live stream has been probed.
 let liveCodecs: string[] = [];
 
-// WebRTC transport for the live broadcast: direct UDP first, OME's TCP relay
-// (TURN on :3478) as the fallback. The choice rides on the playback URL as
-// `?transport=`, which both ends read — OME offers only UDP candidates for
-// `udp` and only its relay for `relay` (`webrtc_publisher.cpp`), and OvenPlayer
-// builds the RTCPeerConnection to match. Don't try `all` (both at once): when
-// OME offers a relay server OvenPlayer sets `iceTransportPolicy: 'relay'`
-// unless the URL says `transport=all`, and Firefox then opens two relay
-// connections to the same server and OME can send down the one it isn't
-// reading. Relay used to be forced for everyone. It put every viewer behind
-// their own TCP stack, and one MacBook's collapsed its receive window for
-// 1–2.5 s every 30 s — in Chrome and Safari alike — stalling delivery while
-// UDP to the same machine was unaffected.
+// WebRTC transport for the live broadcast. The choice rides on the playback URL
+// as `?transport=`, which both ends read (`webrtc_publisher.cpp` in OME,
+// `searchParams.get("transport")` in OvenPlayer):
 //
-// Sticky for the page: once UDP has failed here it is not retried, since the
-// usual cause (a network that blocks UDP) won't change mid-session.
-type WebrtcTransport = 'udp' | 'relay';
-let webrtcTransport: WebrtcTransport = 'udp';
-let udpFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-// A UDP session normally plays within 1–3 s (ICE ~0.3 s, then the next
-// keyframe). Kept under OvenPlayer's own 8 s connectionTimeout so the fallback
-// fires before it starts retrying the same dead path.
-const UDP_FALLBACK_MS = 6000;
+//   all   — OME offers its direct UDP candidates *and* its TCP relay (TURN on
+//           :3478), and OvenPlayer builds the RTCPeerConnection with
+//           `iceTransportPolicy: 'all'`, so the browser races the two and takes
+//           UDP when it gets through. Measured 2026-11-13: Chrome and Firefox on
+//           UDP in 0.2–0.4 s, and with their UDP dropped, on the relay in
+//           0.3–0.55 s.
+//   relay — only the relay. The fallback, see below.
+//
+// `all` must be in the URL itself: OvenPlayer sets `iceTransportPolicy:
+// 'relay'` whenever OME offers a relay server and the URL doesn't say `all`, so
+// OME's `<DefaultTransport>all</DefaultTransport>` alone meant relay-only.
+//
+// The relay used to be forced for everyone. That put every viewer behind their
+// own TCP stack, and one MacBook collapsed its receive window for 1–2.5 s every
+// 30 s, in Chrome and Safari alike, stalling delivery while UDP to the same
+// machine was unaffected.
+//
+// The safety net: if nothing plays 6 s after a mount or reload, remount on
+// `relay`, sticky for the page. The race cannot catch a path that connects but
+// carries no video, and OME sends media down whichever pair the browser
+// nominates *first*, ignoring later nominations. Safari with iCloud Private
+// Relay hits exactly that: its UDP goes through Apple's relay, connects and
+// completes DTLS in under a second, and no picture arrives. When that pair wins
+// the race, only this timer gets it onto the relay.
+type WebrtcTransport = 'all' | 'relay';
+let webrtcTransport: WebrtcTransport = 'all';
+let relayFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+// A session normally plays within 1–3 s (ICE well under a second, then the
+// next keyframe). Kept under OvenPlayer's own 8 s connectionTimeout so the
+// fallback fires before it starts retrying the same dead path.
+const RELAY_FALLBACK_MS = 6000;
+
+// The path the broadcast is actually arriving on, read from the peer
+// connection's stats: the candidate pair with the most bytes received, and its
+// local candidate's type (`relay` is the TCP relay; host/srflx/prflx is UDP).
+// Bytes rather than the browser's selected pair, because OME keeps sending on
+// the first nominated pair even after the browser prefers another — Safari
+// showed its UDP pair selected while every byte came over the relay. Null until
+// the first video bytes land. Refreshed by the stats sampler once a second.
+type WebrtcPath = 'UDP' | 'TCP relay';
+let peerConnection: RTCPeerConnection | null = null;
+let webrtcPath: WebrtcPath | null = null;
+let pathQueryInFlight = false;
 
 let onPlayingChange: () => void = () => {};
 let onPlaybackBlocked: (message: string | null) => void = () => {};
@@ -101,9 +126,9 @@ export interface StreamDiagnostics {
   /** The element the stats panel samples. OvenPlayer owns it, so it's looked
    *  up rather than held — a remount replaces it. */
   video: HTMLVideoElement | null;
-  /** The transport a WebRTC broadcast was requested over. OME offers only
-   *  that path, so a playing stream is on it. */
-  webrtcTransport: WebrtcTransport;
+  /** The path a WebRTC broadcast is actually arriving on, or null until the
+   *  first bytes land (and always for LL-HLS). */
+  webrtcPath: WebrtcPath | null;
 }
 
 export function getStreamDiagnostics(): StreamDiagnostics {
@@ -112,8 +137,42 @@ export function getStreamDiagnostics(): StreamDiagnostics {
     codecs: liveCodecs,
     blockedCodec,
     video: document.querySelector<HTMLVideoElement>('#player video'),
-    webrtcTransport,
+    webrtcPath,
   };
+}
+
+// Re-read which path the broadcast arrives on. Called by the stats sampler once
+// a second; cheap, and a no-op without a live WebRTC peer connection. Logs a
+// change of path to the diagnostics panel, so a fallback shows up there.
+export function refreshWebrtcPath(): void {
+  const pc = peerConnection;
+  if (!pc || pathQueryInFlight || mode !== 'live') return;
+  pathQueryInFlight = true;
+  pc.getStats()
+    .then((report) => {
+      if (pc !== peerConnection) return;
+      let bestBytes = 0;
+      let bestLocal: string | null = null;
+      report.forEach((s) => {
+        if (s.type === 'candidate-pair' && typeof s.bytesReceived === 'number' && s.bytesReceived > bestBytes) {
+          bestBytes = s.bytesReceived;
+          bestLocal = typeof s.localCandidateId === 'string' ? s.localCandidateId : null;
+        }
+      });
+      if (!bestLocal) return;
+      const local = report.get(bestLocal);
+      const path: WebrtcPath = local?.candidateType === 'relay' ? 'TCP relay' : 'UDP';
+      if (path !== webrtcPath) {
+        webrtcPath = path;
+        logDiag('player', 'info', `Broadcast arriving over ${path === 'UDP' ? 'UDP' : 'the TCP relay'}`);
+      }
+    })
+    .catch(() => {
+      // A closed or half-built connection; the next tick tries again.
+    })
+    .finally(() => {
+      pathQueryInFlight = false;
+    });
 }
 
 // What's loaded right now. Used by callers like the offline overlay and
@@ -147,7 +206,9 @@ function mimeKind(mime: string): 'image' | 'video' | 'other' {
 function destroyPlayerInstance(): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
-  clearUdpFallback();
+  clearRelayFallback();
+  peerConnection = null;
+  webrtcPath = null;
   if (player) {
     try {
       player.remove();
@@ -180,9 +241,9 @@ export function reloadPlayer(): void {
     if (player.getState() === 'playing') return;
     player.load();
     // A reload re-runs ICE on the same transport, so it gets the same
-    // deadline: UDP that worked at mount can stop working (the viewer moved
-    // to a network that blocks it).
-    if (mode === 'live') armUdpFallback();
+    // deadline: a path that worked at mount can stop carrying the picture
+    // (the viewer moved networks, or the race now lands on a dead pair).
+    if (mode === 'live') armRelayFallback();
   } catch {
     if (mode === 'file' && currentFileId) {
       const id = currentFileId;
@@ -420,13 +481,13 @@ function waitForStreamThenMount(playbackId: string, isLlhls: boolean): void {
   void attempt();
 }
 
-// Arm the UDP deadline for a live WebRTC mount or reload. No-op for LL-HLS and
+// Arm the 6 s deadline for a live WebRTC mount or reload. No-op for LL-HLS and
 // once the page has fallen back to the relay.
-function armUdpFallback(): void {
-  clearUdpFallback();
-  if (webrtcTransport !== 'udp' || viewerStore.get().deliveryMode === 'llhls') return;
-  udpFallbackTimer = setTimeout(() => {
-    udpFallbackTimer = null;
+function armRelayFallback(): void {
+  clearRelayFallback();
+  if (webrtcTransport !== 'all' || viewerStore.get().deliveryMode === 'llhls') return;
+  relayFallbackTimer = setTimeout(() => {
+    relayFallbackTimer = null;
     if (mode !== 'live' || !player) return;
     try {
       if (player.getState() === 'playing') return;
@@ -437,16 +498,16 @@ function armUdpFallback(): void {
     logDiag(
       'player',
       'warn',
-      `WebRTC over UDP did not start within ${UDP_FALLBACK_MS / 1000} s — switching to the TCP relay`,
+      `Broadcast did not start within ${RELAY_FALLBACK_MS / 1000} s — switching to the TCP relay`,
     );
     destroyPlayerInstance();
     initLivePlayer();
-  }, UDP_FALLBACK_MS);
+  }, RELAY_FALLBACK_MS);
 }
 
-function clearUdpFallback(): void {
-  if (udpFallbackTimer) clearTimeout(udpFallbackTimer);
-  udpFallbackTimer = null;
+function clearRelayFallback(): void {
+  if (relayFallbackTimer) clearTimeout(relayFallbackTimer);
+  relayFallbackTimer = null;
 }
 
 function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
@@ -476,7 +537,14 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
   enablePlayerControls(true);
   showSeekBar(false);
   syncPlayerControls();
-  armUdpFallback();
+  armRelayFallback();
+
+  // Each (re)connect builds a new RTCPeerConnection; keep the latest so the
+  // stats panel can tell which path the picture arrives on.
+  player.on('peerConnectionPrepared', (pc) => {
+    peerConnection = pc;
+    webrtcPath = null;
+  });
 
   // Event handlers — wired exactly as on dev to avoid behavioural drift.
   // (file mode uses bindCommonEvents + an extra `play`/`pause`/`seek`
@@ -485,7 +553,7 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
     syncPlayerControls();
     if (!player || mode !== 'live') return;
     if (e?.newstate === 'playing') {
-      clearUdpFallback();
+      clearRelayFallback();
       onPlayingChange();
       routeStageAudio();
     } else if (e?.newstate === 'error') {
