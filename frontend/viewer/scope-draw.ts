@@ -34,6 +34,10 @@ export interface DrawOpts {
   // tone-mapped display output rather than the source signal. Nits labels are
   // dimmed and '~'-prefixed in this mode — see codeToNits() in scope-color.ts.
   approxNits: boolean;
+  // The luminance at the top of the PQ scale, in nits — the stream's peak, so a
+  // 1000-nit master fills the height instead of the bottom three-quarters of a
+  // 10 000-nit one. Ignored by every other scale.
+  topNits: number;
   gamutWarn: boolean;
   dpr: number;
   // Vectorscope magnification, 1 = full 100%-saturation circle fits the panel.
@@ -182,23 +186,33 @@ interface Mark {
   key: boolean;
 }
 
-// The trace is always the coded value, so the y-axis geometry never changes —
-// only the graticule labelling does. That is exactly how a hardware scope
-// switches between IRE and nits.
+// The trace is always the coded value — only the graticule labelling changes,
+// which is exactly how a hardware scope switches between IRE and nits. The PQ
+// scale is the one exception to a fixed geometry: its top is the stream's peak
+// (DrawOpts.topNits), and everything above it clips at the top edge.
+function scaleTop(o: DrawOpts): number {
+  return o.scale === 'pq' ? Math.min(1, nitsToCode(o.topNits, o.approxNits)) : 1;
+}
+
+// The PQ graticule: the 1-2-5 nits steps of a Dolby Vision scope, up to the
+// peak — which is always marked, and keyed along with SDR's 100-nit white.
+const PQ_STEPS = [0, 0.1, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 4000, 10000];
+
 function marksFor(o: DrawOpts): { marks: Mark[]; unit: string } {
   if (o.scale === 'pq') {
-    const nits = [0.1, 1, 10, 100, 203, 1000, 4000, 10000];
+    const top = scaleTop(o);
+    const nits = [...PQ_STEPS.filter((n) => n < o.topNits * 0.999), o.topNits];
     const marks: Mark[] = [];
     for (const n of nits) {
-      const v = nitsToCode(n, o.approxNits);
+      const v = nitsToCode(n, o.approxNits) / top;
       // In approximate mode anything above the 203-nit reference maps past
       // full scale; dropping those marks is itself the honest signal that the
       // path cannot see highlights.
       if (v > 1.0001) continue;
       marks.push({
         v,
-        label: (o.approxNits ? '~' : '') + (n >= 1 ? String(n) : n.toFixed(1)),
-        key: n === 203,
+        label: (o.approxNits ? '~' : '') + (n >= 1 || n === 0 ? String(n) : n.toFixed(1)),
+        key: n === 100 || n === o.topNits,
       });
     }
     return { marks, unit: 'nits' };
@@ -265,10 +279,11 @@ export function drawLumaWaveform(
   const xs = w / f.w;
   const t = stampSize(o.dpr);
   const { kr, kg, kb } = coeffsFor(o.space);
+  const inv = 1 / scaleTop(o);
   for (let sy = 0; sy < f.h; sy++) {
     for (let sx = 0; sx < f.w; sx++) {
       const i = (sy * f.w + sx) * 3;
-      const y = kr * data[i]! + kg * data[i + 1]! + kb * data[i + 2]!;
+      const y = (kr * data[i]! + kg * data[i + 1]! + kb * data[i + 2]!) * inv;
       const py = ((1 - Math.min(Math.max(y, 0), 1)) * (h - 1)) | 0;
       const px = (sx * xs) | 0;
       deposit(buf, w, h, px, py, t);
@@ -290,12 +305,13 @@ export function drawRgbParade(ctx: CanvasRenderingContext2D, f: ScopeFrame, o: D
   const { data } = f;
   const xs = pw / f.w;
   const t = stampSize(o.dpr);
+  const inv = 1 / scaleTop(o);
 
   for (let ch = 0; ch < 3; ch++) {
     const buf = intensity(pw, h);
     for (let sy = 0; sy < f.h; sy++) {
       for (let sx = 0; sx < f.w; sx++) {
-        const v = data[(sy * f.w + sx) * 3 + ch]!;
+        const v = data[(sy * f.w + sx) * 3 + ch]! * inv;
         const py = ((1 - Math.min(Math.max(v, 0), 1)) * (h - 1)) | 0;
         const px = (sx * xs) | 0;
         deposit(buf, pw, h, px, py, t);
