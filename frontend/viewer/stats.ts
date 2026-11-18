@@ -26,7 +26,8 @@ import {
   type DiagEvent,
   type Quality,
 } from './diagnostics.js';
-import { codecLabel, getStreamDiagnostics, refreshWebrtcPath } from './player.js';
+import { getStreamDiagnostics, refreshWebrtcPath } from './player.js';
+import { codecLabel } from '../shared/codecs.js';
 import { getParticipantId } from './session.js';
 import { viewerStore } from './state.js';
 
@@ -248,8 +249,24 @@ function sourceLabel(): string {
 }
 
 function videoSection(): string {
-  const { codecs, blockedCodec } = getStreamDiagnostics();
+  const { codecs, blockedCodec, variant, fallbackAvailable } = getStreamDiagnostics();
   const rows: string[] = [row('Source', sourceLabel())];
+
+  // Which version of a two-version stream is on the stage. A colourist judging
+  // the picture needs to know when it's the 8-bit fallback. The room chrome only
+  // hints at it — a dashed border on the LIVE badge (markFallback in
+  // player.ts) — and this row says it. The badge takes the row's is-warn
+  // accent: .badge-outline draws in currentColor.
+  if (variant === 'fallback') {
+    rows.push(
+      `<div class="stat-row is-warn">
+         <span class="stat-key">Stream</span>
+         <span class="stat-val"><span class="badge badge-outline" title="This browser can't decode the 10-bit stream.">8-bit fallback</span></span>
+       </div>`,
+    );
+  } else if (variant === 'primary' && fallbackAvailable) {
+    rows.push(row('Stream', 'Main (fallback available)'));
+  }
 
   if (blockedCodec) {
     rows.push(row('Codec', `${codecLabel(blockedCodec)} — not decodable here`, 'is-bad'));

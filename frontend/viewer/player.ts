@@ -9,11 +9,23 @@
 //   • null    — nothing to show.
 // Toolbar play/pause/mute/volume/resync drive whichever source is loaded.
 
-import { getParticipantId, getToken, slug } from './session.js';
+import { forceFallback, getParticipantId, getToken, slug } from './session.js';
 import { viewerStore } from './state.js';
 import { applySavedSpeaker } from './devices.js';
 import { countPlayerError, logDiag } from './diagnostics.js';
 import type { DisplayFileState, WsClientMessage } from './types.js';
+import {
+  FALLBACK_PLAYLIST,
+  codecLabel,
+  fetchPlaylist,
+  firstVariantUri,
+  isAvcCodec,
+  parseCodecs,
+  parseTargetDuration,
+  unplayableViaMse,
+  unplayableViaWebrtc,
+  videoCodecOf,
+} from '../shared/codecs.js';
 
 type Mode = 'live' | 'file' | 'image' | null;
 
@@ -44,11 +56,57 @@ let fileSyncPending = false;
 // every (re)mount.
 let blockedCodec: string | null = null;
 
-// Codecs the startup probe read out of the LL-HLS playlist. Kept for the stats
-// panel (gh #40) — the probe already has to parse them, and "what is this
-// stream actually sending" is the first thing you want when a client reports a
-// bad picture. Empty until a live stream has been probed.
+// Codecs the startup probe read out of the LL-HLS playlist of the version that
+// is mounted. Kept for the stats panel (gh #40) — the probe already has to
+// parse them, and "what is this stream actually sending" is the first thing you
+// want when a client reports a bad picture. Empty until a live stream has been
+// probed.
 let liveCodecs: string[] = [];
+
+// Which of the stream's two versions is mounted. An encoder can send an H.264
+// fallback beside its HEVC in the same SRT stream (Farbcode does); OME then
+// publishes the main picture on the usual URLs and the H.264 on its `fallback`
+// playlist (FALLBACK_PLAYLIST, and the <Playlist> block in Server.xml). Every
+// browser that can decode the main picture gets it; the rest get the fallback.
+//
+// Two ways onto the fallback. The startup probe takes it at once when the main
+// picture's codec is one this browser can't decode. And when the browser
+// accepts the codec but can't decode it — getCapabilities has no HEVC profile
+// detail, so a browser advertising video/h265 can still fail on 4:2:2 — the
+// decode watchdog and the player's decode errors take it after two startup
+// failures, the first having restarted the main picture. (`#stream=fallback`
+// forces it, for testing.) A main picture that has decoded once is never
+// abandoned: a flaky one gets the ordinary retry. A switch is sticky
+// (`variantLock`) until the stream changes (remountLivePlayer) or the viewer
+// presses Resync, which is the way back from a wrong call; reloads and the
+// relay remount keep it.
+type Variant = 'primary' | 'fallback';
+let variant: Variant = 'primary';
+let variantLock: Variant | null = null;
+// The fallback playlist's codecs once the probe has found one with a video
+// track; empty for a stream that has no fallback (or before it was looked for).
+let fallbackCodecs: string[] = [];
+let decodeWatchdog: ReturnType<typeof setInterval> | null = null;
+// Startup decode failures — a decode error, or a silent watchdog window — the
+// main picture has had without ever showing a frame. One isn't proof (measured:
+// headless Chrome intermittently fails the first second of an H.265 LL-HLS
+// stream that its retry then plays), so it takes two.
+let startupDecodeFailures = 0;
+// Whether the main picture has decoded at all since the stream was (re)chosen.
+// Held here rather than read off the element: OvenPlayer's own quick recovery
+// rebuilds the <video> (measured: four decode errors inside 0.7 s, frame count
+// back to zero after the first two), and a picture that has decoded once is a
+// flaky one for the retry, never one this browser can't decode.
+let primaryEverDecoded = false;
+// How long the fallback playlist is polled after the main one is up. OME serves
+// it from the moment the stream exists, but a non-2xx is "not yet", not "no".
+const FALLBACK_WAIT_MS = 3000;
+// The watchdog's window: twice the keyframe interval — a session can only start
+// decoding at a keyframe — and never less than this. With SegmentDuration 1 in
+// Server.xml an LL-HLS segment is one GOP, so #EXT-X-TARGETDURATION is the
+// keyframe interval; when it can't be read, a 5 s GOP is assumed.
+const WATCHDOG_MIN_MS = 5000;
+const WATCHDOG_DEFAULT_MS = 10000;
 
 // WebRTC transport for the live broadcast. The choice rides on the playback URL
 // as `?transport=`, which both ends read (`webrtc_publisher.cpp` in OME,
@@ -129,6 +187,10 @@ export interface StreamDiagnostics {
   /** The path a WebRTC broadcast is actually arriving on, or null until the
    *  first bytes land (and always for LL-HLS). */
   webrtcPath: WebrtcPath | null;
+  /** Which version of the broadcast is mounted, or null when no broadcast is. */
+  variant: Variant | null;
+  /** Whether the stream carries an H.264 fallback this browser can play. */
+  fallbackAvailable: boolean;
 }
 
 export function getStreamDiagnostics(): StreamDiagnostics {
@@ -138,6 +200,8 @@ export function getStreamDiagnostics(): StreamDiagnostics {
     blockedCodec,
     video: document.querySelector<HTMLVideoElement>('#player video'),
     webrtcPath,
+    variant: mode === 'live' && player ? variant : null,
+    fallbackAvailable: fallbackCodecs.length > 0,
   };
 }
 
@@ -207,14 +271,23 @@ function destroyPlayerInstance(): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   clearRelayFallback();
+  clearDecodeWatchdog();
+  markFallback(false);
   peerConnection = null;
   webrtcPath = null;
-  if (player) {
+  // Let go of the instance before removing it: remove() can emit a last state
+  // change, and with `player` still pointing at it the live handlers took it for
+  // the current player — logging an error and arming a retry for one that was
+  // already gone.
+  const inst = player;
+  player = null;
+  if (inst) {
     try {
-      player.remove();
+      inst.remove();
     } catch {}
-    player = null;
   }
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
 }
 
 export function destroyPlayer(): void {
@@ -225,7 +298,18 @@ export function destroyPlayer(): void {
   lastFileState = null;
   fileSyncPending = false;
   blockedCodec = null;
+  forgetVariant();
   onPlaybackBlocked(null);
+}
+
+// The stream changed, or the viewer asked to start over: decide the version
+// afresh on the next mount.
+function forgetVariant(): void {
+  variant = 'primary';
+  variantLock = null;
+  fallbackCodecs = [];
+  startupDecodeFailures = 0;
+  primaryEverDecoded = false;
 }
 
 // Reload current source. For live mode that pings OvenPlayer's load();
@@ -290,6 +374,7 @@ export function remountLivePlayer(force = false): void {
   destroyPlayerInstance();
   blockedCodec = null;
   onPlaybackBlocked(null);
+  forgetVariant();
   mode = null;
   initLivePlayer();
 }
@@ -302,91 +387,12 @@ export function remountLivePlayer(force = false): void {
 // hardware-gated nearly everywhere — so a perfectly healthy stream can render
 // as a permanent black tile. Nothing else in the pipeline can tell the viewer
 // that: OvenPlayer just errors, and the handler below would retry every 8 s
-// forever.
+// forever. (The support checks live in frontend/shared/codecs.ts, shared with
+// the admin dashboard's preview.)
 //
 // OME publishes LL-HLS for every stream regardless of the room's delivery mode,
-// so this playlist is the codec source of truth for WebRTC rooms too.
-async function playlistCodecs(playlistUrl: string): Promise<string[]> {
-  let manifest: string;
-  try {
-    const res = await fetch(playlistUrl);
-    // Not live yet, or a transient blip — that's the retry loop's job, not ours.
-    if (!res.ok) return [];
-    manifest = await res.text();
-  } catch {
-    return [];
-  }
-  const codecs = new Set<string>();
-  for (const match of manifest.matchAll(/CODECS="([^"]+)"/g)) {
-    const list = match[1];
-    if (!list) continue;
-    for (const codec of list.split(',')) codecs.add(codec.trim());
-  }
-  return [...codecs];
-}
-
-const isAudioCodec = (codec: string): boolean => /^(mp4a|opus|ac-3|ec-3)/.test(codec);
-
-// LL-HLS goes through MSE, which takes the playlist's codec strings verbatim.
-// Returns the first codec this browser can't decode, or null.
-function unplayableViaMse(codecs: string[]): string | null {
-  if (typeof MediaSource === 'undefined') return null;
-  for (const codec of codecs) {
-    const container = isAudioCodec(codec) ? 'audio/mp4' : 'video/mp4';
-    if (!MediaSource.isTypeSupported(`${container}; codecs="${codec}"`)) return codec;
-  }
-  return null;
-}
-
-// Playlist fourcc -> the mime type WebRTC negotiates under. The two namespaces
-// are unrelated, so the mapping has to be explicit.
-const WEBRTC_MIME: ReadonlyArray<readonly [RegExp, string]> = [
-  [/^avc[13]/, 'video/h264'],
-  [/^(hvc1|hev1)/, 'video/h265'],
-  [/^av01/, 'video/av1'],
-  [/^vp0?8/, 'video/vp8'],
-  [/^vp0?9/, 'video/vp9'],
-];
-
-// WebRTC negotiates codecs in SDP, so MSE support is the wrong question — what
-// matters is whether the browser will *accept* the codec in its answer. When it
-// won't, OME finds no matching rendition and 403s the session, which is the
-// Firefox-plus-H.265 case that looks like a dead stream.
-//
-// Audio is deliberately ignored: OME transcodes to Opus for WebRTC while the
-// playlist advertises the AAC variant, so the playlist's audio entry says
-// nothing about this path.
-//
-// Fails open. Only blocks when the browser reports a non-empty codec list that
-// doesn't contain ours — an unknown fourcc, a missing API, or an empty list all
-// mean "let it try". A false "can't play" on a working stream would be worse
-// than the black tile this replaces.
-//
-// Catches codec mismatch, NOT profile mismatch: getCapabilities exposes no
-// profile detail for HEVC, so a browser advertising video/h265 can still fail on
-// profile 4 (Range Extensions, 4:2:2). Don't treat this guard as total.
-function unplayableViaWebrtc(codecs: string[]): string | null {
-  if (typeof RTCRtpReceiver === 'undefined' || !RTCRtpReceiver.getCapabilities) return null;
-  const supported = RTCRtpReceiver.getCapabilities('video')?.codecs ?? [];
-  if (supported.length === 0) return null;
-  const mimes = new Set(supported.map((c) => c.mimeType.toLowerCase()));
-
-  for (const codec of codecs) {
-    if (isAudioCodec(codec)) continue;
-    const mapped = WEBRTC_MIME.find(([re]) => re.test(codec))?.[1];
-    if (mapped && !mimes.has(mapped)) return codec;
-  }
-  return null;
-}
-
-// Also used by the stats panel, so the readout and the blocked-playback
-// message never disagree about a codec's name.
-export function codecLabel(codec: string): string {
-  if (codec.startsWith('av01')) return 'AV1';
-  if (codec.startsWith('hvc1') || codec.startsWith('hev1')) return 'H.265 (HEVC)';
-  if (codec.startsWith('avc1')) return 'H.264';
-  return codec;
-}
+// so this playlist is the codec source of truth for WebRTC rooms too — and the
+// fallback's LL-HLS playlist is how a WebRTC room learns there is a fallback.
 
 // Bumped on every (re)mount and teardown so a poll still in flight from a
 // previous stream can't apply its verdict to the current one.
@@ -397,6 +403,31 @@ let probeGeneration = 0;
 // The request is a small playlist fetch and only runs during startup.
 const PROBE_INTERVAL_MS = 250;
 const PROBE_TIMEOUT_MS = 30000;
+
+const unplayableHere = (codecs: readonly string[], isLlhls: boolean): string | null =>
+  isLlhls ? unplayableViaMse(codecs) : unplayableViaWebrtc(codecs);
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The fallback playlist's codecs, empty when the stream has none. OME answers
+// 200 with no variant for a stream without a second video track — a definite
+// no — so only a missing playlist is asked again, until `waitMs` runs out.
+async function probeFallback(
+  playbackId: string,
+  generation: number,
+  waitMs: number,
+  intervalMs: number,
+): Promise<string[]> {
+  const url = liveUrls(playbackId, 'fallback').llhls;
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const manifest = await fetchPlaylist(url);
+    if (generation !== probeGeneration) return [];
+    if (manifest !== null) return parseCodecs(manifest);
+    if (Date.now() >= until) return [];
+    await delay(intervalMs);
+  }
+}
 
 // ---- Live broadcast mount --------------------------------------------------
 
@@ -444,17 +475,36 @@ function playbackQuery(): string {
   return `participantId=${encodeURIComponent(getParticipantId())}&token=${encodeURIComponent(getToken())}`;
 }
 
-function waitForStreamThenMount(playbackId: string, isLlhls: boolean): void {
-  const generation = ++probeGeneration;
+// Both versions' URLs. The main picture is OME's default playlist; the
+// fallback is the `fallback` one, for LL-HLS and WebRTC alike. Either way the
+// stream is the path segment after the app, which is what the admission webhook
+// gates on (backend/src/routes/webhook.rs).
+function liveUrls(playbackId: string, which: Variant): { llhls: string; webrtc: string } {
   const host = location.host;
   const proto = location.protocol === 'https:' ? 'https' : 'http';
-  const url = `${proto}://${host}/live/${playbackId}/llhls.m3u8?${playbackQuery()}`;
+  const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const base = `/live/${playbackId}`;
+  const fallback = which === 'fallback';
+  return {
+    llhls: `${proto}://${host}${base}/${fallback ? FALLBACK_PLAYLIST : 'llhls'}.m3u8?${playbackQuery()}`,
+    webrtc:
+      `${wsproto}://${host}${base}${fallback ? `/${FALLBACK_PLAYLIST}` : ''}` +
+      `?${playbackQuery()}&transport=${webrtcTransport}`,
+  };
+}
+
+function waitForStreamThenMount(playbackId: string, isLlhls: boolean): void {
+  const generation = ++probeGeneration;
+  const url = liveUrls(playbackId, 'primary').llhls;
   const deadline = Date.now() + PROBE_TIMEOUT_MS;
+  const stale = (): boolean => generation !== probeGeneration || mode !== 'live';
 
   const attempt = async (): Promise<void> => {
-    if (generation !== probeGeneration || mode !== 'live') return;
-    const codecs = await playlistCodecs(url);
-    if (generation !== probeGeneration || mode !== 'live') return;
+    if (stale()) return;
+    const manifest = await fetchPlaylist(url);
+    if (stale()) return;
+    // Not live yet, or a transient blip — that's the retry loop's job.
+    const codecs = manifest === null ? [] : parseCodecs(manifest);
 
     if (codecs.length === 0) {
       if (Date.now() < deadline) {
@@ -463,22 +513,227 @@ function waitForStreamThenMount(playbackId: string, isLlhls: boolean): void {
         // Never showed up. Mount anyway rather than leaving a permanently dead
         // tile — LL-HLS could be disabled, or this could be a stream shape the
         // playlist doesn't describe. The player's own retry takes it from here.
-        mountLivePlayer(playbackId, isLlhls);
+        mountLivePlayer(playbackId, isLlhls, 'primary');
       }
       return;
     }
 
-    liveCodecs = codecs;
-    const codec = isLlhls ? unplayableViaMse(codecs) : unplayableViaWebrtc(codecs);
-    if (codec) {
-      blockedCodec = codec;
-      onPlaybackBlocked(`This browser can't decode the ${codecLabel(codec)} video in this stream.`);
+    const blocked = unplayableHere(codecs, isLlhls);
+    if (!blocked && !forceFallback && variantLock !== 'fallback') {
+      liveCodecs = codecs;
+      mountLivePlayer(playbackId, isLlhls, 'primary');
+      // An H.264 main picture plays in every browser: no fallback worth looking
+      // for, and nothing for the watchdog to catch. Anything else, find out —
+      // without holding up the mount — whether there is one to fall back to.
+      const video = videoCodecOf(codecs);
+      if (video && !isAvcCodec(video)) {
+        void armWatchdogIfFallback(playbackId, isLlhls, generation, manifest ?? '', url);
+      }
       return;
     }
-    mountLivePlayer(playbackId, isLlhls);
+
+    // The main picture won't play here, or the fallback was asked for. A
+    // fallback is only taken when this browser can play it. (Nothing reorders
+    // a stream whose encoder put the H.264 on the lower PID: an H.264 main
+    // picture plays everywhere and is never probed past, which keeps H.264-only
+    // streams — most of them — at one playlist request. Farbcode's contract puts
+    // the HEVC first.)
+    const fallback = await probeFallback(playbackId, generation, FALLBACK_WAIT_MS, PROBE_INTERVAL_MS);
+    if (stale()) return;
+    if (videoCodecOf(fallback) && !unplayableHere(fallback, isLlhls)) {
+      fallbackCodecs = fallback;
+      liveCodecs = fallback;
+      if (blocked) {
+        logDiag('player', 'info', `${codecLabel(blocked)} isn't decodable here — playing the 8-bit H.264 fallback`);
+      }
+      mountLivePlayer(playbackId, isLlhls, 'fallback');
+      return;
+    }
+    liveCodecs = codecs;
+    if (blocked) {
+      blockedCodec = blocked;
+      onPlaybackBlocked(`This browser can't decode the ${codecLabel(blocked)} video in this stream.`);
+      return;
+    }
+    // The fallback was asked for, but this stream has none: the main picture.
+    mountLivePlayer(playbackId, isLlhls, 'primary');
   };
 
   void attempt();
+}
+
+// ---- Decode watchdog -------------------------------------------------------
+
+// Armed on the main picture once the probe has found a fallback this browser can
+// play. It covers what the pre-flight check cannot see: a browser that accepts
+// the codec — getCapabilities lists video/h265 — and then never decodes a frame
+// of it (HEVC 4:2:2 on hardware without a Range Extensions decoder). The tile
+// stays black over running audio, and nothing errors.
+//
+// The verdict needs video arriving AND no frame decoded for a whole window.
+// Decoding can only start at a keyframe, so the window is twice the keyframe
+// interval; nothing arriving at all is a transport problem — the relay timer's,
+// not a codec one. Once a frame decodes, it stands down for the session.
+async function armWatchdogIfFallback(
+  playbackId: string,
+  isLlhls: boolean,
+  generation: number,
+  manifest: string,
+  masterUrl: string,
+): Promise<void> {
+  const fallback = await probeFallback(playbackId, generation, FALLBACK_WAIT_MS, 1000);
+  if (generation !== probeGeneration || variant !== 'primary') return;
+  if (!videoCodecOf(fallback) || unplayableHere(fallback, isLlhls)) return;
+  fallbackCodecs = fallback;
+  const windowMs = await keyframeWindow(manifest, masterUrl);
+  if (generation !== probeGeneration || variant !== 'primary') return;
+  armDecodeWatchdog(windowMs, generation);
+}
+
+// Twice the keyframe interval, from the main picture's chunklist: with
+// SegmentDuration 1 (Server.xml) an LL-HLS segment is one GOP, so
+// #EXT-X-TARGETDURATION is the interval. OME's chunklist URI carries its own
+// `session`, so the request needs no credentials of ours.
+async function keyframeWindow(manifest: string, masterUrl: string): Promise<number> {
+  const uri = firstVariantUri(manifest);
+  const chunklist = uri ? await fetchPlaylist(new URL(uri, masterUrl).toString()) : null;
+  const seconds = chunklist ? parseTargetDuration(chunklist) : null;
+  return seconds ? Math.max(WATCHDOG_MIN_MS, 2 * seconds * 1000) : WATCHDOG_DEFAULT_MS;
+}
+
+function armDecodeWatchdog(windowMs: number, generation: number): void {
+  clearDecodeWatchdog();
+  let arrivingSince: number | null = null;
+  let lastTime = -1;
+  let busy = false;
+  decodeWatchdog = setInterval(() => {
+    if (busy) return;
+    if (generation !== probeGeneration || mode !== 'live' || variant !== 'primary' || !player) {
+      clearDecodeWatchdog();
+      return;
+    }
+    busy = true;
+    void decodeProgress()
+      .then((progress) => {
+        if (!progress || generation !== probeGeneration || variant !== 'primary') return;
+        if (progress.decoded > 0) {
+          // It decodes here: an earlier startup failure was a hiccup.
+          primaryEverDecoded = true;
+          startupDecodeFailures = 0;
+          clearDecodeWatchdog();
+          return;
+        }
+        // WebRTC says whether video bytes are coming in; LL-HLS has no such
+        // count, but its clock runs on the audio, so a moving clock with no
+        // frame shown is the same picture.
+        const arriving = progress.bytes !== null ? progress.bytes > 0 : lastTime >= 0 && progress.time > lastTime;
+        lastTime = progress.time;
+        if (!arriving) {
+          arrivingSince = null;
+          return;
+        }
+        arrivingSince ??= Date.now();
+        if (Date.now() - arrivingSince < windowMs) return;
+        const label = codecLabel(videoCodecOf(liveCodecs) ?? 'video');
+        const silent = `No ${label} frame decoded in ${Math.round(windowMs / 1000)} s with video arriving`;
+        // One silent window is no more proof than one decode error, and counts
+        // with them (measured: Chrome decoding nothing of an H.265 session for
+        // 5 s that every other session decoded at once). The first starts the
+        // main picture over; the second gives up on it.
+        startupDecodeFailures += 1;
+        if (startupDecodeFailures < 2) {
+          logDiag('player', 'warn', `${silent} — restarting the main picture`);
+          destroyPlayerInstance();
+          initLivePlayer();
+          return;
+        }
+        switchToFallback(`${silent} — switched to the 8-bit H.264 fallback`);
+      })
+      .finally(() => {
+        busy = false;
+      });
+  }, 1000);
+}
+
+function clearDecodeWatchdog(): void {
+  if (decodeWatchdog) clearInterval(decodeWatchdog);
+  decodeWatchdog = null;
+}
+
+// What the browser has decoded of the main picture, and whether video is
+// arriving to decode: WebRTC from the receiver's stats, LL-HLS from the element
+// (frames shown, and its clock). Null when this browser can't tell, which
+// leaves the main picture alone — fail open, like the pre-flight check.
+async function decodeProgress(): Promise<{ decoded: number; bytes: number | null; time: number } | null> {
+  const video = document.querySelector<HTMLVideoElement>('#player video');
+  const shown = video?.getVideoPlaybackQuality?.().totalVideoFrames ?? 0;
+  const time = video?.currentTime ?? 0;
+  const pc = peerConnection;
+  if (pc) {
+    try {
+      const inbound = await inboundVideo(pc);
+      if (!inbound) return { decoded: shown, bytes: 0, time };
+      if (typeof inbound.framesDecoded !== 'number') return null;
+      return { decoded: Math.max(shown, inbound.framesDecoded), bytes: inbound.bytesReceived ?? 0, time };
+    } catch {
+      return null;
+    }
+  }
+  if (viewerStore.get().deliveryMode !== 'llhls' || !video?.getVideoPlaybackQuality) return null;
+  return { decoded: shown, bytes: null, time };
+}
+
+interface InboundVideo {
+  bytesReceived?: number;
+  framesDecoded?: number;
+}
+
+// The receiver's inbound video stats, or null before the first packet lands.
+async function inboundVideo(pc: RTCPeerConnection): Promise<InboundVideo | null> {
+  const report = await pc.getStats();
+  for (const s of report.values()) {
+    if (s.type === 'inbound-rtp' && (s.kind ?? s.mediaType) === 'video') return s as InboundVideo;
+  }
+  return null;
+}
+
+// Whether the mounted player's <video> has decoded any frame of its source —
+// cumulative for the element, so it still answers after an error.
+function hasDecodedFrames(): boolean {
+  const video = document.querySelector<HTMLVideoElement>('#player video');
+  return (video?.getVideoPlaybackQuality?.().totalVideoFrames ?? 0) > 0;
+}
+
+// OvenPlayer reports a <video> decode failure as 303 and an unsupported source
+// as 304, but its hls.js provider reports EVERY fatal hls.js error as 302 (306–
+// 308 for an HTTP status) with hls.js's own error attached — so a fatal media
+// error from LL-HLS is told apart by that error's type, not by the code.
+function isDecodeError(e: { code?: number; error?: { type?: string; fatal?: boolean } } | undefined): boolean {
+  const video = document.querySelector<HTMLVideoElement>('#player video');
+  return (
+    e?.code === 303 ||
+    e?.code === 304 ||
+    (e?.error?.type === 'mediaError' && e.error.fatal === true) ||
+    video?.error?.code === MediaError.MEDIA_ERR_DECODE
+  );
+}
+
+// Move this page onto the fallback until the stream changes or the viewer
+// presses Resync. Callers inside OvenPlayer's own event dispatch defer it, so
+// an instance is never removed mid-emit.
+function switchToFallback(reason: string): void {
+  if (mode !== 'live' || variant === 'fallback' || fallbackCodecs.length === 0) return;
+  variantLock = 'fallback';
+  logDiag('player', 'warn', reason);
+  destroyPlayerInstance();
+  initLivePlayer();
+}
+
+// While the fallback is what's on the stage, the top bar's LIVE badge wears a
+// dashed border (www/viewer/index.html) — the only sign of it in the room
+// chrome; the connection stats panel spells it out.
+function markFallback(on: boolean): void {
+  document.body.classList.toggle('stream-fallback', on);
 }
 
 // Arm the 6 s deadline for a live WebRTC mount or reload. No-op for LL-HLS and
@@ -488,20 +743,29 @@ function armRelayFallback(): void {
   if (webrtcTransport !== 'all' || viewerStore.get().deliveryMode === 'llhls') return;
   relayFallbackTimer = setTimeout(() => {
     relayFallbackTimer = null;
-    if (mode !== 'live' || !player) return;
+    const inst = player;
+    if (mode !== 'live' || !inst) return;
     try {
-      if (player.getState() === 'playing') return;
+      if (inst.getState() === 'playing') return;
     } catch {
       // A half-torn-down instance can throw; treat it as not playing.
     }
-    webrtcTransport = 'relay';
-    logDiag(
-      'player',
-      'warn',
-      `Broadcast did not start within ${RELAY_FALLBACK_MS / 1000} s — switching to the TCP relay`,
-    );
-    destroyPlayerInstance();
-    initLivePlayer();
+    const pc = peerConnection;
+    void (pc ? inboundVideo(pc).catch(() => null) : Promise.resolve(null)).then((inbound) => {
+      if (mode !== 'live' || player !== inst || webrtcTransport !== 'all') return;
+      // Video is reaching the browser, so the path works and the relay would
+      // change nothing. A picture that arrives and doesn't play is the decode
+      // watchdog's to judge.
+      if ((inbound?.bytesReceived ?? 0) > 0) return;
+      webrtcTransport = 'relay';
+      logDiag(
+        'player',
+        'warn',
+        `Broadcast did not start within ${RELAY_FALLBACK_MS / 1000} s — switching to the TCP relay`,
+      );
+      destroyPlayerInstance();
+      initLivePlayer();
+    });
   }, RELAY_FALLBACK_MS);
 }
 
@@ -510,21 +774,13 @@ function clearRelayFallback(): void {
   relayFallbackTimer = null;
 }
 
-function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
+function mountLivePlayer(playbackId: string, isLlhls: boolean, which: Variant): void {
   if (player || mode !== 'live') return;
-  const host = location.host;
-  const proto = location.protocol === 'https:' ? 'https' : 'http';
-  const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const sources = isLlhls
-    ? [{ type: 'll-hls', file: `${proto}://${host}/live/${playbackId}/llhls.m3u8?${playbackQuery()}` }]
-    : [
-        {
-          type: 'webrtc',
-          file: `${wsproto}://${host}/live/${playbackId}?${playbackQuery()}&transport=${webrtcTransport}`,
-        },
-      ];
+  variant = which;
+  const urls = liveUrls(playbackId, which);
+  const sources = isLlhls ? [{ type: 'll-hls', file: urls.llhls }] : [{ type: 'webrtc', file: urls.webrtc }];
 
-  player = OvenPlayer.create('player', {
+  const inst = OvenPlayer.create('player', {
     autoStart: true,
     autoFallback: false,
     mute: true,
@@ -533,15 +789,19 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
     webrtcConfig: { timeoutMaxRetry: 3, connectionTimeout: 8000 },
     hlsConfig: { liveSyncDuration: 1, liveMaxLatencyDuration: 2, maxLiveSyncPlaybackRate: 1 },
   });
+  player = inst;
 
   enablePlayerControls(true);
   showSeekBar(false);
+  markFallback(which === 'fallback');
   syncPlayerControls();
   armRelayFallback();
 
   // Each (re)connect builds a new RTCPeerConnection; keep the latest so the
-  // stats panel can tell which path the picture arrives on.
-  player.on('peerConnectionPrepared', (pc) => {
+  // stats panel can tell which path the picture arrives on, and the decode
+  // watchdog what has been decoded.
+  inst.on('peerConnectionPrepared', (pc) => {
+    if (player !== inst) return;
     peerConnection = pc;
     webrtcPath = null;
   });
@@ -549,9 +809,9 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
   // Event handlers — wired exactly as on dev to avoid behavioural drift.
   // (file mode uses bindCommonEvents + an extra `play`/`pause`/`seek`
   // wiring; for live we stay 1:1 with what worked before.)
-  player.on('stateChanged', (e) => {
+  inst.on('stateChanged', (e) => {
     syncPlayerControls();
-    if (!player || mode !== 'live') return;
+    if (player !== inst || mode !== 'live') return;
     if (e?.newstate === 'playing') {
       clearRelayFallback();
       onPlayingChange();
@@ -569,12 +829,38 @@ function mountLivePlayer(playbackId: string, isLlhls: boolean): void {
           : 'Stream playback error — retrying',
       );
       if (viewerStore.get().status !== 'ended' && !blockedCodec) {
-        retryTimer = setTimeout(reloadPlayer, 8000);
+        // One pending retry, for this instance only. OvenPlayer's own quick
+        // recovery can fail several times in under a second, and each failure
+        // used to arm another timer over the last — an orphan that later
+        // reloaded whatever was on the stage by then (measured: the fallback,
+        // 8 s after the main picture's first decode error).
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+          if (player === inst) reloadPlayer();
+        }, 8000);
       }
     }
   });
-  player.on('mute', () => syncPlayerControls());
-  player.on('volumeChanged', () => syncPlayerControls());
+  // A main picture that fails to decode twice without ever showing a frame
+  // won't fix itself on another retry: with a fallback to go to, go now. The
+  // first such failure, and everything else, keeps the retry above — network
+  // errors, and decode errors after frames have decoded (measured in WebKit: a
+  // fatal decode error 7.7 s into an H.265 LL-HLS stream that a retry plays
+  // again) — so a blip never sends anyone to 8-bit.
+  inst.on('error', (e) => {
+    if (player !== inst || variant !== 'primary' || fallbackCodecs.length === 0 || !isDecodeError(e)) return;
+    if (hasDecodedFrames()) primaryEverDecoded = true;
+    if (primaryEverDecoded) return;
+    startupDecodeFailures += 1;
+    if (startupDecodeFailures < 2) return;
+    setTimeout(() => {
+      if (player !== inst) return;
+      const label = codecLabel(videoCodecOf(liveCodecs) ?? 'video');
+      switchToFallback(`The ${label} picture failed to decode — switched to the 8-bit H.264 fallback`);
+    }, 0);
+  });
+  inst.on('mute', () => syncPlayerControls());
+  inst.on('volumeChanged', () => syncPlayerControls());
 }
 
 // ---- File mount ------------------------------------------------------------
@@ -909,7 +1195,10 @@ export function initPlayerControls(): void {
       destroyPlayerInstance();
       initFilePlayer(id);
     } else {
+      // Resync also decides the version afresh — the way back for a viewer the
+      // decode watchdog moved to the fallback.
       destroyPlayerInstance();
+      forgetVariant();
       mode = null;
       initLivePlayer();
     }

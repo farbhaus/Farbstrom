@@ -187,6 +187,14 @@ roughly three quarters of macOS viewers would see nothing; the admin dashboard f
 and the viewer shows an explicit message rather than a black tile. Transcoding *to* AV1 is not an
 option either — OME's only AV1 encoder is libaom in non-realtime mode.
 
+**H.264 browser fallback.** An encoder may send an 8-bit H.264 beside its HEVC in the same SRT
+stream — one MPEG-TS, the H.264 on a higher video PID than the HEVC (Farbcode: HEVC `0x101`, AAC
+`0x102`, H.264 `0x103`). OME serves the HEVC on the usual URLs and the H.264 on the stream's
+`fallback` playlist; browsers that can't decode the HEVC play the H.264, shown by a dashed border on
+the viewer's LIVE badge and an "8-bit fallback" badge in its connection stats panel. Same stream
+key, same URL — nothing to configure on the server. The fallback is fixed for the SRT session, and
+OME's SRT output (Farbplay) carries both video tracks.
+
 ### Native SRT playback (Farbplay room link)
 
 The native HDR SRT viewer [Farbplay] connects from a room link instead of a raw SRT URL, and

@@ -20,6 +20,11 @@ export const autoPassword = hash.get('p') || query.get('p') || '';
 export const autoName = query.get('n') || '';
 export const presenterKey = hash.get('pk') || '';
 export const isPresenter = hash.get('role') === 'presenter' && presenterKey.length > 0;
+// `#stream=fallback` plays the stream's H.264 fallback even where the main
+// picture would decode — to exercise that path in a browser that never needs
+// it, and as an escape hatch when the main picture plays badly. For this page
+// load only: the fragment is wiped below with the rest.
+export const forceFallback = hash.get('stream') === 'fallback';
 
 if (location.hash || query.has('p')) {
   const kept = new URLSearchParams(location.search);
