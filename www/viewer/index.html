@@ -281,6 +281,11 @@ body.chrome-hidden.has-focus #stage > .tile[data-focused] .tile-name {
 }
 /* Alignment and gap come from .top-pill; this only reverses the hidden state. */
 #live-badge.visible { display: inline-flex; }
+/* While the stage plays the stream's 8-bit H.264 fallback, the badge's border
+   turns dashed — a quiet hint; the connection stats panel (the Connected
+   status) says so outright (frontend/viewer/stats.ts). Same width, so nothing
+   moves. */
+body.stream-fallback #live-badge { border-style: dashed; }
 
 /* ---- Main row: the full app area, and the containing block for every
    floating panel (#248). The stage fills it; nothing else takes flow space. */

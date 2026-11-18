@@ -26,7 +26,9 @@ import {
   type DiagEvent,
   type Quality,
 } from './diagnostics.js';
-import { codecLabel, getStreamDiagnostics, refreshWebrtcPath } from './player.js';
+import { getStreamDiagnostics, refreshWebrtcPath } from './player.js';
+import { codecLabel } from '../shared/codecs.js';
+import { detectFromColor, readFrameColour } from './scope-color.js';
 import { getParticipantId } from './session.js';
 import { viewerStore } from './state.js';
 
@@ -220,8 +222,8 @@ function sample(): void {
 
 // ---- Rendering -------------------------------------------------------------
 
-const row = (label: string, value: string, extraClass = ''): string =>
-  `<div class="stat-row${extraClass ? ` ${extraClass}` : ''}">
+const row = (label: string, value: string, extraClass = '', title = ''): string =>
+  `<div class="stat-row${extraClass ? ` ${extraClass}` : ''}"${title ? ` title="${esc(title)}"` : ''}>
      <span class="stat-key">${esc(label)}</span>
      <span class="stat-val">${esc(value)}</span>
    </div>`;
@@ -247,15 +249,69 @@ function sourceLabel(): string {
   return 'Nothing playing';
 }
 
+// ---- Colour ----------------------------------------------------------------
+//
+// The colour space the browser hands the picture over in — the transfer function
+// and primaries it displays it with. That is what tells a client whether the HDR
+// is reaching them: Safari 27.2, for one, tags a PQ stream arriving over WebRTC
+// as sRGB and shows it flat (CLAUDE.md, OvenPlayer). Read off the frame on the
+// stage by readFrameColour (scope-color.ts), which the scopes use to pick their
+// scale — so the panel and the scope never disagree about what is arriving.
+
+const SDR_TRANSFER: Record<string, string> = {
+  bt709: 'BT.709',
+  smpte170m: 'BT.601',
+  'iec61966-2-1': 'sRGB',
+  linear: 'Linear',
+};
+const SPACE_LABEL = { rec2020: 'BT.2020', p3: 'Display P3', rec709: 'BT.709' } as const;
+
+// "HDR · PQ · BT.2020" / "SDR · sRGB · BT.709", the raw reading on hover — and
+// beside it whether this screen can show HDR at all, since a correctly tagged PQ
+// picture on an SDR monitor is still SDR to the eye.
+function colourRows(video: HTMLVideoElement): string {
+  const c = readFrameColour(video);
+  if (!c) return row('Colour', 'Not measured');
+  const { label, space } = detectFromColor(c);
+  const transfer =
+    label === 'HDR10' ? 'PQ' : label === 'HLG' ? 'HLG' : (SDR_TRANSFER[c.transfer.toLowerCase()] ?? (c.transfer || 'unspecified'));
+  const primaries = c.primaries ? SPACE_LABEL[space] : 'unspecified';
+  const detail =
+    `primaries ${c.primaries || 'unspecified'} · transfer ${c.transfer || 'unspecified'} · ` +
+    `matrix ${c.matrix || 'unspecified'} · ${c.fullRange ? 'full' : 'limited'} range`;
+  const hdrScreen = typeof matchMedia === 'function' && matchMedia('(dynamic-range: high)').matches;
+  return (
+    row('Colour', `${label === 'SDR' ? 'SDR' : 'HDR'} · ${transfer} · ${primaries}`, '', detail) +
+    row('Display', hdrScreen ? 'HDR' : 'SDR')
+  );
+}
+
 function videoSection(): string {
-  const { codecs, blockedCodec } = getStreamDiagnostics();
+  const { codecs, blockedCodec, variant, fallbackAvailable, video } = getStreamDiagnostics();
   const rows: string[] = [row('Source', sourceLabel())];
+
+  // Which version of a two-version stream is on the stage. A colourist judging
+  // the picture needs to know when it's the 8-bit fallback. The room chrome only
+  // hints at it — a dashed border on the LIVE badge (markFallback in
+  // player.ts) — and this row says it. The badge takes the row's is-warn
+  // accent: .badge-outline draws in currentColor.
+  if (variant === 'fallback') {
+    rows.push(
+      `<div class="stat-row is-warn">
+         <span class="stat-key">Stream</span>
+         <span class="stat-val"><span class="badge badge-outline" title="This browser can't decode the 10-bit stream.">8-bit fallback</span></span>
+       </div>`,
+    );
+  } else if (variant === 'primary' && fallbackAvailable) {
+    rows.push(row('Stream', 'Main (fallback available)'));
+  }
 
   if (blockedCodec) {
     rows.push(row('Codec', `${codecLabel(blockedCodec)} — not decodable here`, 'is-bad'));
   } else if (codecs.length > 0) {
     rows.push(row('Codec', codecs.map(codecLabel).join(', ')));
   }
+  if (video) rows.push(colourRows(video));
 
   if (!snapshot) {
     rows.push(row('Picture', 'No video to measure'));

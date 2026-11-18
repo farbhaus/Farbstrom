@@ -280,3 +280,30 @@ export function detectFromColor(c: DetectedColor | null): Detection {
   }
   return { space, scale: 'sdr', label: 'SDR' };
 }
+
+// The colour space a frame on the stage is tagged with — what the browser will
+// display it as. Shared by the scopes (which pick their scale from it) and the
+// connection stats panel (its Colour row). The VideoFrame is closed at once.
+// Null when there is no frame yet, or a source this browser won't wrap.
+export interface FrameColour extends DetectedColor {
+  matrix: string;
+}
+
+export function readFrameColour(video: HTMLVideoElement): FrameColour | null {
+  if (typeof VideoFrame === 'undefined' || video.readyState < 2) return null;
+  let frame: VideoFrame | null = null;
+  try {
+    frame = new VideoFrame(video);
+    const c = frame.colorSpace;
+    return {
+      primaries: String(c.primaries ?? ''),
+      transfer: String(c.transfer ?? ''),
+      matrix: String(c.matrix ?? ''),
+      fullRange: c.fullRange === true,
+    };
+  } catch {
+    return null;
+  } finally {
+    frame?.close();
+  }
+}

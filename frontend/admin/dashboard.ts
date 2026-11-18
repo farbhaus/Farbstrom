@@ -11,7 +11,8 @@ import {
   pctClass,
   toast,
 } from '../shared/utils.js';
-import type { MetricsResponse, OmeData, OmeLogLine, OmeLogsResponse } from './types.js';
+import { FALLBACK_PLAYLIST, unplayableViaWebrtc } from '../shared/codecs.js';
+import type { MetricsResponse, OmeData, OmeLogLine, OmeLogsResponse, OmeTrack } from './types.js';
 
 let metricsData: MetricsResponse | null = null;
 let omeData: OmeData | null = null;
@@ -144,6 +145,19 @@ function browserCodecWarning(codec: string): string {
   return '';
 }
 
+// OME's codec names, as the fourcc the shared support checks understand.
+const OME_CODEC_FOURCC: Readonly<Record<string, string>> = { H264: 'avc1', H265: 'hvc1', AV1: 'av01', VP8: 'vp08' };
+
+// A stream carrying a second video track has an H.264 fallback (OME's
+// `fallback` playlist, ome/origin_conf/Server.xml). Preview that instead when
+// this browser's WebRTC can't take the main picture's codec — the dashboard
+// preview is WebRTC first, and Firefox has no H.265 there.
+function previewNeedsFallback(videoTracks: readonly OmeTrack[]): boolean {
+  if (videoTracks.length < 2) return false;
+  const fourcc = OME_CODEC_FOURCC[videoTracks[0]?.video?.codec ?? ''];
+  return !!fourcc && unplayableViaWebrtc([fourcc]) !== null;
+}
+
 function renderOme(): void {
   const container = document.getElementById('ome-list');
   if (!container) return;
@@ -168,14 +182,18 @@ function renderOme(): void {
     .map((s) => {
       const input = s.detail?.input || {};
       const tracks = input.tracks || [];
-      const vTrack = tracks.find((t) => t.type === 'Video');
+      // Every video track, in OME's order: the first is the main picture, a
+      // second one the H.264 fallback an encoder sent beside it.
+      const vTracks = tracks.filter((t) => t.type === 'Video');
       const aTrack = tracks.find((t) => t.type === 'Audio');
-      const v = vTrack?.video;
+      const v = vTracks[0]?.video;
+      const fb = vTracks[1]?.video;
       const a = aTrack?.audio;
 
-      const videoStr = v
-        ? `${v.codec} · ${v.width}×${v.height} · ${Math.round(v.framerate)}fps · ${fmtBitsPerSec(v.bitrateLatest)}`
-        : '—';
+      const describe = (t: NonNullable<OmeTrack['video']>): string =>
+        `${t.codec} · ${t.width}×${t.height} · ${Math.round(t.framerate)}fps · ${fmtBitsPerSec(t.bitrateLatest)}`;
+      const videoStr = v ? describe(v) : '—';
+      const fallbackPreview = previewNeedsFallback(vTracks);
       // Farbstrom passes video through untouched, so the ingest codec is what
       // every viewer's browser has to decode. Two of them can't be relied on:
       // Safari ships no AV1 software decoder (needs M3-or-later hardware), and
@@ -209,11 +227,12 @@ function renderOme(): void {
             }</div>
           </div>
           <span class="badge badge-source">${esc(sourceType)}</span>
-          <button class="btn btn-sm" data-action="preview-stream" data-name="${esc(s.name)}" data-label="${esc(s.key_name || s.room_name || displayName)}">Preview</button>
+          <button class="btn btn-sm" data-action="preview-stream" data-name="${esc(s.name)}" data-label="${esc(s.key_name || s.room_name || displayName)}"${fallbackPreview ? ' data-fallback="1" title="Previews the H.264 fallback: this browser can\'t play the main picture"' : ''}>Preview</button>
           <button class="btn btn-sm btn-danger" data-action="kick-stream" data-name="${esc(s.name)}" data-label="${esc(s.key_name || s.room_name || displayName)}">Kick</button>
         </div>
         <div class="stream-card-body">
           <div class="stream-stat"><span class="stat-label">Video</span><span>${videoStr}</span></div>
+          ${fb ? `<div class="stream-stat"><span class="stat-label">Fallback</span><span>${describe(fb)}</span></div>` : ''}
           <div class="stream-stat"><span class="stat-label">Audio</span><span>${audioStr}</span></div>
         </div>
         ${codecWarning ? `<div class="stream-meta" style="color:var(--danger)">${esc(codecWarning)}</div>` : ''}
@@ -228,7 +247,7 @@ function renderOme(): void {
 // human-friendly key/room name for the title. Playback is admission-gated, so
 // both sources carry a preview token. WebRTC first with an LLHLS fallback so
 // it plays regardless of the room's mode.
-async function openStreamPreview(name: string, label: string): Promise<void> {
+async function openStreamPreview(name: string, label: string, fallback: boolean): Promise<void> {
   const host = location.host;
   const proto = location.protocol === 'https:' ? 'https' : 'http';
   const wsproto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -246,10 +265,15 @@ async function openStreamPreview(name: string, label: string): Promise<void> {
     autoStart: true,
     autoFallback: true,
     mute: true,
-    sources: [
-      { type: 'webrtc', file: `${wsproto}://${host}/live/${name}?${apt}` },
-      { type: 'll-hls', file: `${proto}://${host}/live/${name}/llhls.m3u8?${apt}` },
-    ],
+    sources: fallback
+      ? [
+          { type: 'webrtc', file: `${wsproto}://${host}/live/${name}/${FALLBACK_PLAYLIST}?${apt}` },
+          { type: 'll-hls', file: `${proto}://${host}/live/${name}/${FALLBACK_PLAYLIST}.m3u8?${apt}` },
+        ]
+      : [
+          { type: 'webrtc', file: `${wsproto}://${host}/live/${name}?${apt}` },
+          { type: 'll-hls', file: `${proto}://${host}/live/${name}/llhls.m3u8?${apt}` },
+        ],
     webrtcConfig: { timeoutMaxRetry: 3, connectionTimeout: 8000 },
     hlsConfig: { liveSyncDuration: 1, liveMaxLatencyDuration: 2, maxLiveSyncPlaybackRate: 1 },
   });
@@ -430,6 +454,6 @@ export function handleDashboardAction(action: string, target: HTMLElement): void
   if (action === 'kick-stream') {
     void kickStream(name, label);
   } else if (action === 'preview-stream') {
-    void openStreamPreview(name, label);
+    void openStreamPreview(name, label, target.getAttribute('data-fallback') === '1');
   }
 }

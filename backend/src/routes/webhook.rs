@@ -342,6 +342,16 @@ mod tests {
                 "pb",
             ),
             ("ws://localhost:3333/live/pb?participantId=p&token=t", "pb"),
+            // The H.264 fallback playlist (Server.xml): the stream is still
+            // the segment after the app, never the playlist name.
+            (
+                "http://localhost:18443/live/pb/fallback.m3u8?participantId=p&token=t",
+                "pb",
+            ),
+            (
+                "ws://localhost:3333/live/pb/fallback?participantId=p&token=t",
+                "pb",
+            ),
             ("/live/bare", "bare"),
         ] {
             assert_eq!(
