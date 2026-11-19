@@ -276,6 +276,67 @@
                             <Name>bypass</Name>
                             <OutputStreamName>${OriginStreamName}</OutputStreamName>
 
+                            <!--
+                                H.264 fallback for browsers that cannot decode the main
+                                (HEVC 10-bit) picture. An encoder that sends BOTH an HEVC and
+                                an H.264 video PID in one SRT stream (Farbcode's fallback
+                                output: HEVC on 0x101, AAC on 0x102, H.264 on 0x103) gets two
+                                tracks in the bypass_video group, numbered in PID order - the
+                                lower PID is index 0. So the H.264 PID must be the higher one.
+
+                                Every default playlist starts from index 0 - llhls.m3u8, the
+                                bare WebRTC URL and SRT's own - so the main picture and any
+                                single-track stream are served exactly as before. This
+                                playlist exposes index 1:
+                                  LL-HLS  /live/<pid>/fallback.m3u8
+                                  WebRTC  /live/<pid>/fallback
+                                The admission webhook gates both like any other playback
+                                URL: the stream is the path segment after the app.
+
+                                Two renditions because a rendition names one audio track:
+                                LL-HLS keeps the AAC one and drops the Opus one (unsupported
+                                codec there), and WebRTC's offer skips the AAC payload and
+                                negotiates Opus.
+
+                                The H.264 cannot share a playlist with the HEVC. WebRTC
+                                serves the codec the browser's answer lists first
+                                (rtc_session.cpp), OME offers H.264 before H.265 (a map keyed
+                                by codec id), and browsers answer in the offer's order - so a
+                                mixed playlist hands an HEVC-capable Chrome the H.264. The
+                                viewer picks the playlist instead (frontend/viewer/player.ts).
+
+                                SRT ignores this playlist (no EnableTsPackaging), but its
+                                default playlist muxes EVERY track of the bypass_video group
+                                (srt_stream.cpp ignores VideoIndexHint): Farbplay receives
+                                both video PIDs and must lock to the HEVC one. And use
+                                explicit renditions - RenditionTemplate's VideoIndexHint is
+                                never parsed in v0.21.0 (video_template.h).
+
+                                A single-track stream leaves this playlist without video:
+                                the LL-HLS one is empty and the WebRTC one would answer with
+                                audio only, which is why the viewer asks for it only after
+                                the LL-HLS probe has found a video track in it.
+                            -->
+                            <Playlist>
+                                <Name>fallback</Name>
+                                <FileName>fallback</FileName>
+                                <Options>
+                                    <WebRtcAutoAbr>false</WebRtcAutoAbr>
+                                </Options>
+                                <Rendition>
+                                    <Name>h264_aac</Name>
+                                    <Video>bypass_video</Video>
+                                    <VideoIndexHint>1</VideoIndexHint>
+                                    <Audio>aac_audio</Audio>
+                                </Rendition>
+                                <Rendition>
+                                    <Name>h264_opus</Name>
+                                    <Video>bypass_video</Video>
+                                    <VideoIndexHint>1</VideoIndexHint>
+                                    <Audio>opus_audio</Audio>
+                                </Rendition>
+                            </Playlist>
+
                             <Encodes>
                                 <!--
                                     Video bypass — passes H.264 or H.265 as-is for WebRTC.

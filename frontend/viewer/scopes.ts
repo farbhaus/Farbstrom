@@ -3,19 +3,19 @@
 //
 // Owns the window chrome, one shared per-frame sample, and the render loop.
 //
-// SAMPLING PROVENANCE — the caveat that shapes what these numbers mean.
-// Pixels come from a 2D-canvas readback, which is the browser's *tone-mapped
-// display output*, not the source signal. For an SDR stream that is the signal,
-// which is why the scopes read it as Rec.709 / IRE and say nothing further. It
-// would NOT be true of an HDR stream: PQ highlights are compressed into an SDR
-// buffer before we see a pixel, so absolute nits are not measurable this way.
-// scope-draw.ts is still parameterised by working space and scale (including PQ
-// and ARRI LogC) and scope-color.ts still carries the maths — none of it is
-// reachable from the UI today. Anything re-exposing those controls has to
-// restore the provenance labelling with them; see CLAUDE.md.
+// SAMPLING PROVENANCE — what these numbers are.
+// SDR frames come from a 2D-canvas readback: the browser's display output, which
+// for an SDR stream is the signal, read as Rec.709 / IRE. An HDR frame cannot go
+// that way — the canvas holds a tone-mapped SDR rendition (measured on PQ bars:
+// 1 / 10 / 100 / 1000 nits read back 8 / 42 / 135 / 249 in Chrome, 11 / 50 / 137
+// / 255 in WebKit, everything brighter clipped). A WebGL upload with
+// UNPACK_COLORSPACE_CONVERSION_WEBGL = NONE hands over the coded values instead:
+// the same bars read 38 / 76 / 129 / 191 against exact PQ codes of 38.2 / 76.4 /
+// 129.6 / 191.7, in Chrome and WebKit alike. So PQ and HLG frames are sampled
+// through WebGL and their nits are measurements; see CLAUDE.md, Scopes.
 
 import { getPlayerMode } from './player.js';
-import type { Scale, WorkingSpace } from './scope-color.js';
+import { detectFromColor, readFrameColour, type Scale, type WorkingSpace } from './scope-color.js';
 import {
   drawLumaWaveform,
   drawRgbParade,
@@ -28,9 +28,32 @@ import { viewerStore } from './state.js';
 
 type ScopeId = 'luma' | 'parade' | 'vector';
 
-// Fixed while the working-space / scale selectors are out of the UI.
-const SPACE: WorkingSpace = 'rec709';
-const SCALE: Scale = 'sdr';
+// The scale follows the picture: read off the stage's frame and refreshed once a
+// second, since it only changes with the stream. SDR reads Rec.709 / IRE as it
+// always has; PQ switches to nits, HLG to signal percent.
+interface View {
+  space: WorkingSpace;
+  scale: Scale;
+}
+const SDR_VIEW: View = { space: 'rec709', scale: 'sdr' };
+const VIEW_REFRESH_MS = 1000;
+let view: View = SDR_VIEW;
+let viewFor: Source | null = null;
+let viewAt = 0;
+
+// The top of the PQ scale. It should be the stream's peak, which an HDR10 stream
+// can state in its mastering metadata — but Farbcode writes none yet, and no
+// browser would expose it over WebRTC anyway. 1000 nits is the peak Farbcode's
+// own fallback tone map assumes.
+const HDR_TOP_NITS = 1000;
+
+function refreshView(src: Source, now: number): void {
+  if (src === viewFor && now - viewAt < VIEW_REFRESH_MS) return;
+  viewFor = src;
+  viewAt = now;
+  const d = src instanceof HTMLVideoElement && !glFailed ? detectFromColor(readFrameColour(src)) : null;
+  view = d && d.scale !== 'sdr' ? { space: d.space, scale: d.scale } : SDR_VIEW;
+}
 
 interface PanelDef {
   id: ScopeId;
@@ -220,6 +243,107 @@ function sourceSize(src: Source): [number, number] {
     : [src.naturalWidth, src.naturalHeight];
 }
 
+// ---- Source-referred sampling (HDR) ----------------------------------------
+//
+// WebGL with the browser's colour conversion off, so a PQ or HLG frame arrives
+// as its own code values (see the header). The GPU draws it into a w×h
+// framebuffer — the same downscale drawImage does on the canvas path — and
+// readPixels hands it back.
+
+let gl: WebGL2RenderingContext | null = null;
+let glTex: WebGLTexture | null = null;
+let glPixels: Uint8Array | null = null;
+// Latched when WebGL is unavailable or refuses the frame: HDR is then read as
+// SDR rather than labelling a tone-mapped readback in nits.
+let glFailed = false;
+
+const GL_VS = `#version 300 es
+in vec2 p;
+out vec2 uv;
+void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }`;
+const GL_FS = `#version 300 es
+precision highp float;
+uniform sampler2D t;
+in vec2 uv;
+out vec4 o;
+void main() { o = texture(t, uv); }`;
+
+function initGl(): WebGL2RenderingContext | null {
+  const canvasEl = document.createElement('canvas');
+  const g = canvasEl.getContext('webgl2', { alpha: false, antialias: false, depth: false, premultipliedAlpha: false });
+  if (!g) return null;
+  const compile = (type: number, source: string): WebGLShader | null => {
+    const s = g.createShader(type);
+    if (!s) return null;
+    g.shaderSource(s, source);
+    g.compileShader(s);
+    return g.getShaderParameter(s, g.COMPILE_STATUS) ? s : null;
+  };
+  const vs = compile(g.VERTEX_SHADER, GL_VS);
+  const fs = compile(g.FRAGMENT_SHADER, GL_FS);
+  const prog = g.createProgram();
+  if (!vs || !fs || !prog) return null;
+  g.attachShader(prog, vs);
+  g.attachShader(prog, fs);
+  g.bindAttribLocation(prog, 0, 'p');
+  g.linkProgram(prog);
+  if (!g.getProgramParameter(prog, g.LINK_STATUS)) return null;
+  g.useProgram(prog);
+  // One triangle covering the viewport.
+  g.bindBuffer(g.ARRAY_BUFFER, g.createBuffer());
+  g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), g.STATIC_DRAW);
+  g.enableVertexAttribArray(0);
+  g.vertexAttribPointer(0, 2, g.FLOAT, false, 0, 0);
+  glTex = g.createTexture();
+  g.bindTexture(g.TEXTURE_2D, glTex);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
+  // The whole point: the decoded code values, untouched.
+  g.pixelStorei(g.UNPACK_COLORSPACE_CONVERSION_WEBGL, g.NONE);
+  g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
+  canvasEl.addEventListener('webglcontextlost', () => {
+    gl = null;
+    glTex = null;
+  });
+  return g;
+}
+
+// Rows come back top first: the texture's first row is the picture's top, it
+// lands on the framebuffer's bottom row, and readPixels returns that row first.
+function sampleGl(video: HTMLVideoElement, w: number, h: number): boolean {
+  if (glFailed || !frame) return false;
+  gl ??= initGl();
+  const g = gl;
+  if (!g) return false;
+  if (g.canvas.width !== w || g.canvas.height !== h) {
+    g.canvas.width = w;
+    g.canvas.height = h;
+  }
+  g.viewport(0, 0, w, h);
+  g.bindTexture(g.TEXTURE_2D, glTex);
+  try {
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, video);
+  } catch {
+    return false;
+  }
+  g.drawArrays(g.TRIANGLES, 0, 3);
+  const n = w * h * 4;
+  if (!glPixels || glPixels.length !== n) glPixels = new Uint8Array(n);
+  g.readPixels(0, 0, w, h, g.RGBA, g.UNSIGNED_BYTE, glPixels);
+  if (g.getError() !== g.NO_ERROR) return false;
+  const d = glPixels;
+  const out = frame.data;
+  for (let p = 0, j = 0; j < out.length; p += 4, j += 3) {
+    out[j] = d[p]! / 255;
+    out[j + 1] = d[p + 1]! / 255;
+    out[j + 2] = d[p + 2]! / 255;
+  }
+  return true;
+}
+
 function sample(src: Source): ScopeFrame | null {
   if (readBlocked) return null;
   const [sw, sh] = sourceSize(src);
@@ -230,6 +354,12 @@ function sample(src: Source): ScopeFrame | null {
   const w = Math.max(16, Math.min(Math.round(SAMPLE_W_FULL / prefs.res), sw));
   const h = Math.max(2, Math.round(w * (sh / sw)));
   if (!ensureSampler(w, h) || !sampleCtx || !frame) return null;
+
+  if (view.scale !== 'sdr' && src instanceof HTMLVideoElement) {
+    if (sampleGl(src, w, h)) return frame;
+    glFailed = true;
+    view = SDR_VIEW;
+  }
 
   try {
     sampleCtx.drawImage(src, 0, 0, w, h);
@@ -335,6 +465,7 @@ function tick(g: number): void {
   const now = performance.now();
   if (now - lastDrawAt >= FRAME_MS) {
     lastDrawAt = now;
+    refreshView(src, now);
     const f = sample(src);
     if (f) draw(f);
   }
@@ -355,9 +486,12 @@ function draw(f: ScopeFrame): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   def.draw(ctx, f, {
-    space: SPACE,
-    scale: SCALE,
-    approxNits: true,
+    space: view.space,
+    scale: view.scale,
+    // PQ and HLG frames were sampled through WebGL, so their code values are the
+    // signal's own; an SDR frame never reads nits.
+    approxNits: false,
+    topNits: HDR_TOP_NITS,
     gamutWarn: false,
     dpr,
     zoom: prefs.zoom,

@@ -565,11 +565,16 @@ async fn may_play(server: &axum_test::TestServer, url: &str) -> bool {
     resp["allowed"] == json!(true)
 }
 
-/// Both URL shapes OME passes for browser playback.
-fn playback_urls(stream: &str, query: &str) -> [String; 2] {
+/// Every URL shape OME passes for browser playback: LL-HLS and WebRTC, for the
+/// main picture and for the `fallback` playlist (an encoder's H.264 beside its
+/// HEVC, `ome/origin_conf/Server.xml`). The playlist is a path segment after
+/// the stream, so every gate below has to hold for all four.
+fn playback_urls(stream: &str, query: &str) -> [String; 4] {
     [
         format!("http://host/live/{stream}/llhls.m3u8?{query}"),
         format!("ws://host:3333/live/{stream}?{query}"),
+        format!("http://host/live/{stream}/fallback.m3u8?{query}"),
+        format!("ws://host:3333/live/{stream}/fallback?{query}"),
     ]
 }
 

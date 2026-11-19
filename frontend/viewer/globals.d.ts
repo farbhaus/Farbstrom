@@ -12,7 +12,16 @@ interface OvenPlayerInstance {
   on(event: 'peerConnectionPrepared', handler: (pc: RTCPeerConnection) => void): void;
   on(
     event: string,
-    handler: (e?: { newstate?: string; position?: number; offset?: number; duration?: number }) => void,
+    handler: (e?: {
+      newstate?: string;
+      position?: number;
+      offset?: number;
+      duration?: number;
+      // `error` events: OvenPlayer's code (303 decode, 304 unsupported, 302 for
+      // every fatal hls.js error) and, from its hls.js provider, hls.js's error.
+      code?: number;
+      error?: { type?: string; details?: string; fatal?: boolean };
+    }) => void,
   ): void;
   getState(): string;
   getMute(): boolean;
